@@ -85,6 +85,18 @@ class MarketDataPoint:
 
     def price_for(self, price_field: PriceField) -> float:
         """Return the explicitly selected close field."""
+        return self.close_for(price_field)
+
+    def open_for(self, price_field: PriceField) -> float:
+        """Return the explicitly selected open field."""
+        if price_field is PriceField.RAW_CLOSE:
+            return self.open
+        if price_field is PriceField.ADJUSTED_CLOSE:
+            return self.adj_open
+        raise ValueError(f"Unsupported price field: {price_field}")
+
+    def close_for(self, price_field: PriceField) -> float:
+        """Return the explicitly selected close field."""
         if price_field is PriceField.RAW_CLOSE:
             return self.close
         if price_field is PriceField.ADJUSTED_CLOSE:
