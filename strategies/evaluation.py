@@ -10,7 +10,7 @@ from types import MappingProxyType
 
 from data.models import HistoricalDataSet, PriceField
 from indicators.models import IndicatorKind, IndicatorSeries
-from strategies.enums import ComparisonOperator, OperandType
+from strategies.enums import ComparisonOperator, LogicalOperator, OperandType
 from strategies.exceptions import InvalidEvaluationValueError
 from strategies.models import AssetReference, Threshold
 
@@ -154,9 +154,44 @@ class ConditionResult:
         object.__setattr__(self, "effective_right_value", float(self.effective_right_value))
 
 
+@dataclass(frozen=True)
+class RuleGroupResult:
+    """Explainable recursive result of evaluating one rule group."""
+
+    rule_group_id: str
+    date: date
+    operator: LogicalOperator
+    passed: bool
+    child_results: tuple[ConditionResult | RuleGroupResult, ...]
+    explanation: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rule_group_id, str) or not self.rule_group_id.strip():
+            raise ValueError("rule group result rule_group_id must not be empty")
+        if not isinstance(self.date, date):
+            raise TypeError("rule group result date must be a date")
+        if not isinstance(self.operator, LogicalOperator):
+            object.__setattr__(self, "operator", LogicalOperator(self.operator))
+        if not isinstance(self.passed, bool):
+            raise TypeError("rule group result passed must be boolean")
+        if isinstance(self.child_results, (str, bytes)):
+            raise TypeError("rule group result child_results must be a sequence")
+        results = tuple(self.child_results)
+        if not results:
+            raise ValueError("rule group result child_results must not be empty")
+        if not all(isinstance(item, (ConditionResult, RuleGroupResult)) for item in results):
+            raise TypeError("rule group result children must be ConditionResult or RuleGroupResult")
+        if not all(item.date == self.date for item in results):
+            raise ValueError("rule group result child dates must match result date")
+        if not isinstance(self.explanation, str) or not self.explanation.strip():
+            raise ValueError("rule group result explanation must not be empty")
+        object.__setattr__(self, "child_results", results)
+
+
 __all__ = [
     "ConditionResult",
     "EvaluationContext",
     "IndicatorKey",
     "OperandValue",
+    "RuleGroupResult",
 ]

@@ -85,3 +85,24 @@ class InvalidConditionConfigurationError(EvaluationError):
     """Raised when an operator and threshold combination is unsupported."""
 
     code = "INVALID_CONDITION_CONFIGURATION"
+
+
+class RuleGroupEvaluationError(EvaluationError):
+    """Raised when one or more children fail during full rule-group evaluation."""
+
+    code = "RULE_GROUP_EVALUATION_ERROR"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rule_group_id: str,
+        evaluation_date: object,
+        child_errors: tuple[Exception, ...],
+        evaluated_children: tuple[object, ...],
+    ) -> None:
+        super().__init__(message)
+        self.rule_group_id = rule_group_id
+        self.evaluation_date = evaluation_date
+        self.child_errors = child_errors
+        self.evaluated_children = evaluated_children
