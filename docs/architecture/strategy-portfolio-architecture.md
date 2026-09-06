@@ -79,7 +79,8 @@ StrategyDefinition
 Condition
 ├── left_operand: ValueReference
 ├── operator: ComparisonOperator
-└── right_operand: ValueReference
+├── right_operand: ValueReference
+└── threshold: optional Threshold
 ```
 
 `ValueReference` 统一表示可比较值：
@@ -96,11 +97,120 @@ ValueReference
 第一阶段至少支持：
 
 - `price > indicator`
+- `price >= indicator`
 - `price < indicator`
+- `price <= indicator`
+- `price == indicator`
 - `indicator > indicator`
+- `indicator >= indicator`
 - `indicator < indicator`
+- `indicator <= indicator`
+- `indicator == indicator`
 - `cross_above`
 - `cross_below`
+
+### Relative Threshold
+
+Condition 必须支持通用的 `Relative Threshold`，不能把阈值逻辑硬编码到某个指标或资产中。定义：
+
+```text
+Deviation(A, B) = (A - B) / B
+```
+
+当 `B != 0` 时，以下表达式具有等价语义：
+
+```text
+A > B + X%   <=>   Deviation(A, B) > X
+A >= B + X%  <=>   Deviation(A, B) >= X
+A < B - X%   <=>   Deviation(A, B) < -X
+A <= B - X%  <=>   Deviation(A, B) <= -X
+```
+
+例如：
+
+```text
+Price > MA50 + 4%  <=>  Price > MA50 × 1.04
+Price < MA50 - 3%  <=>  Price < MA50 × 0.97
+```
+
+内部建议统一转换为比较 `Deviation(left, right)` 与 threshold value：
+
+```text
+Condition
+├── left_operand: ValueReference
+├── operator: greater_than | greater_or_equal | less_than | less_or_equal | equal
+├── right_operand: ValueReference
+└── threshold: Threshold
+
+Threshold
+├── type: relative | absolute
+└── value: signed numeric value
+```
+
+本阶段只启用 `type = relative`。`value` 必须是有明确符号的小数：`0.04` 表示 `+4%`，`-0.03` 表示 `-3%`；禁止使用没有单位和方向含义的 `threshold = 3`。
+
+对于不带阈值的 `A > B`、`A >= B`、`A < B`、`A <= B`、`A == B`，规范化语义等价于 `relative threshold = 0.0`，但序列化配置可以省略 threshold 以保持简洁。对于 `A > B + 4%`，保存 `type = relative, value = 0.04`；对于 `A < B - 3%`，保存 `type = relative, value = -0.03`。
+
+`left_operand` 与 `right_operand` 都可以是 `price` 或任意 `indicator`，因此以下形式使用同一 Condition Model：
+
+```text
+Price  > MA50  + 4%
+MA20   > MA50  + 3%
+EMA20  >= EMA50 - 1%
+```
+
+当 `right_operand` 的值为零时，`Deviation` 不可计算。Condition Evaluator 必须返回明确的 `not_evaluable` / `division_by_zero` 状态或抛出领域错误；不得产生或传播 `NaN`、`Infinity`，也不得静默把该条件当作 true 或 false。
+
+### Condition 配置示例
+
+Frontend / Backend 之间传递结构化配置，不传递 Python 表达式：
+
+```json
+{
+  "left": {"kind": "price", "asset": "TQQQ", "price_field": "adjusted_close"},
+  "operator": "greater_than",
+  "right": {
+    "kind": "indicator",
+    "asset": "TQQQ",
+    "indicator": {"type": "ma", "period": 50, "price_field": "adjusted_close"}
+  },
+  "threshold": {"type": "relative", "value": 0.04}
+}
+```
+
+```json
+{
+  "left": {
+    "kind": "indicator",
+    "asset": "QQQ",
+    "indicator": {"type": "ma", "period": 20, "price_field": "adjusted_close"}
+  },
+  "operator": "greater_than",
+  "right": {
+    "kind": "indicator",
+    "asset": "QQQ",
+    "indicator": {"type": "ma", "period": 50, "price_field": "adjusted_close"}
+  },
+  "threshold": {"type": "relative", "value": 0.03}
+}
+```
+
+### Deviation 作为未来独立指标
+
+`Deviation` 应作为未来可复用的派生指标能力预留，而不是只存在于条件比较的内部实现中：
+
+```text
+DeviationSeries(A, B)
+├── date-aligned points
+├── left reference
+├── right reference
+├── price_field_used / indicator references
+└── denominator-zero policy
+```
+
+未来 Strategy Lab 和 Visualization 可以直接显示 `Price vs MA50 = +4.23%` 或 `MA50 Deviation = +6.12%`。该能力仍应复用相同的 Operand、price field 和日期对齐契约。
+
+`Absolute Threshold` 只作为未来扩展保留，例如 `A > B + $5`。本阶段不实现绝对阈值求值，但 `Threshold.type` 不应被设计成只允许百分比。
 
 示例：
 
@@ -112,7 +222,8 @@ ValueReference
     "kind": "indicator",
     "asset": "TQQQ",
     "indicator": {"type": "ma", "period": 50, "price_field": "adjusted_close"}
-  }
+  },
+  "threshold": {"type": "relative", "value": 0.04}
 }
 ```
 
@@ -152,7 +263,25 @@ OR
 - `OR`：至少一个子项为 true。
 - 空规则组非法，避免产生含义不清的默认 true 或 false。
 - `None`、缺失或尚未可计算的条件值默认不满足条件，并在求值结果中保留原因。
+- Relative Threshold 条件与普通比较条件具有相同的布尔结果，可任意嵌入 `AND` / `OR`。
+- `division_by_zero`、缺失值或指标尚未形成完整窗口时，子条件状态为不可满足/不可求值，不能绕过规则组安全检查。
 - 前端只提交结构化规则树；后端负责 schema 校验、求值和错误报告。
+
+示例：
+
+```text
+AND
+├── TQQQ Price > MA50 + 4%
+└── TQQQ MA20 > MA50 + 2%
+```
+
+或：
+
+```text
+OR
+├── QQQ Price > MA200 + 3%
+└── QQQ MA20 > MA50 + 2%
+```
 
 ## 6. Allocation Rule
 
@@ -551,12 +680,14 @@ Backtest Result
 - Portfolio 名称。
 - Assets：QQQ、TQQQ、SGOV。
 - 每个 Asset 的 price field、minimum / maximum weight 和优先级。
-- Condition / RuleGroup 树。
+- Condition / RuleGroup 树，包括 left operand、operator、right operand 和可选 signed Relative Threshold。
 - Allocation Rules 和 fallback。
 - Rebalance Policy。
 - Initial Capital、commission、slippage、执行规则和日期范围。
 
 前端不得拼接 Python、执行策略代码或直接修改持仓。后端必须返回 schema 错误、权重冲突、条件不可用和数据不足等明确错误。
+
+Strategy Lab 不要求用户输入公式。用户可以分别选择 Asset、Left（Price / Indicator）、Operator、Reference Indicator、Period 和 Threshold 百分比，页面生成结构化 Condition。对于 `Price < MA200 - 3%`，界面应显示“Less Than / MA200 / 3% below”，后端保存为 signed relative value `-0.03`，避免正负方向歧义。
 
 ## 18. Strategy -> Allocation -> Rebalance -> Backtest Data Flow
 
@@ -660,7 +791,10 @@ strategies/
         schemas.py             # 可序列化配置校验
     conditions/
         models.py              # Condition / ValueReference / operators
-        evaluator.py           # 条件求值
+        thresholds.py           # Relative / Absolute threshold semantics
+        evaluator.py           # 条件求值与除零状态
+    derived/
+        deviation.py           # 未来：Deviation(A, B) series
     rules/
         groups.py              # RuleGroup
         allocation.py          # AllocationRule
@@ -714,6 +848,7 @@ PHASE 3 应优先实现最小但完整的执行闭环：
 - `Signal` 和 `TargetAllocation` 的输入契约。
 - `OrderRequest`、`OrderFill`、`Position`、`Portfolio` 和 `Trade`。
 - `Signal at T Close -> T+1 Open`。
+- Relative Threshold 条件、signed threshold 语义、Indicator vs Indicator 和 division-by-zero policy。
 - commission、slippage、整数股、现金不足拒绝和明确的 rounding policy。
 - 单资产与多资产都通过组合模型运行。
 - 每次 Backtest Run 保存 Strategy Version 快照和完整参数。
