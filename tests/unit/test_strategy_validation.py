@@ -26,6 +26,7 @@ from strategies import (
     ValidationCode,
     validate_strategy,
 )
+from strategies.validation import StrategyValidator
 
 
 def _price(
@@ -279,6 +280,69 @@ def test_missing_condition_operand_returns_invalid_condition() -> None:
     result = validate_strategy(payload)
 
     assert ValidationCode.INVALID_CONDITION in _codes(result)
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_code"),
+    [
+        (
+            lambda payload: payload.update({"fallback": []}),
+            ValidationCode.INVALID_FALLBACK,
+        ),
+        (
+            lambda payload: payload["rules"][0]["allocations"].__setitem__(0, None),
+            ValidationCode.INVALID_ALLOCATION,
+        ),
+        (
+            lambda payload: payload["rules"][0]["condition"].update({"right": []}),
+            ValidationCode.INVALID_CONDITION,
+        ),
+        (
+            lambda payload: payload["rules"][0]["condition"].update(
+                {"type": "group", "operator": "and", "children": ["invalid"]}
+            ),
+            ValidationCode.INVALID_RULE_GROUP,
+        ),
+    ],
+)
+def test_malformed_nested_payloads_return_specific_error_codes(mutator, expected_code) -> None:
+    payload = _definition().to_dict()
+    mutator(payload)
+
+    result = validate_strategy(payload)
+
+    assert not result.is_valid
+    assert expected_code in _codes(result)
+
+
+def test_invalid_json_returns_schema_error_without_raising() -> None:
+    result = validate_strategy('{"strategy_id":')
+
+    assert not result.is_valid
+    assert result.errors[0].code == ValidationCode.SCHEMA_ERROR
+    assert result.errors[0].path == "$"
+
+
+def test_validate_or_raise_returns_definition_or_structured_code() -> None:
+    validator = StrategyValidator()
+    definition = _definition()
+
+    assert validator.validate_or_raise(definition) is definition
+    assert validator.validate_or_raise(definition.to_json()) == definition
+
+    with pytest.raises(ValueError, match="AllocationExceeds100Percent"):
+        validator.validate_or_raise(
+            _definition(
+                rules=(
+                    AllocationRule(
+                        "over",
+                        "Overweight",
+                        100,
+                        (_allocation("QQQ", 0.6), _allocation("TQQQ", 0.6)),
+                    ),
+                )
+            )
+        )
 
 
 @pytest.mark.parametrize("price_field", [PriceField.RAW_CLOSE, PriceField.ADJUSTED_CLOSE])

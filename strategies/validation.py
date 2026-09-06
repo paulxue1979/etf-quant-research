@@ -146,7 +146,10 @@ class StrategyValidator:
             )
         try:
             definition = StrategyDefinition.from_dict(strategy)
-        except Exception as exc:  # model errors become structured schema issues
+        except (TypeError, ValueError) as exc:
+            # Model construction is deliberately kept separate from cross-field
+            # validation, but malformed wire payloads still need stable result
+            # codes instead of leaking constructor exceptions to callers.
             return ValidationResult(errors=(self._issue_from_exception(exc),))
         return self._validate_definition(definition)
 
@@ -643,6 +646,36 @@ class StrategyValidator:
                 "$",
                 message or "allocation bounds are invalid",
             )
+        if "fallback" in normalized_message:
+            return self._issue(
+                ValidationCode.INVALID_FALLBACK,
+                "$",
+                message or "fallback is invalid",
+            )
+        if "rebalance policy" in normalized_message:
+            return self._issue(
+                ValidationCode.INVALID_REBALANCE_POLICY,
+                "$",
+                message or "rebalance policy is invalid",
+            )
+        if "allocation rule" in normalized_message:
+            return self._issue(
+                ValidationCode.INVALID_RULE,
+                "$",
+                message or "allocation rule is invalid",
+            )
+        if "rule group" in normalized_message or "rule node" in normalized_message:
+            return self._issue(
+                ValidationCode.INVALID_RULE_GROUP,
+                "$",
+                message or "rule group is invalid",
+            )
+        if "allocation" in normalized_message:
+            return self._issue(
+                ValidationCode.INVALID_ALLOCATION,
+                "$",
+                message or "allocation is invalid",
+            )
         if "operand must be an object" in normalized_message:
             return self._issue(
                 ValidationCode.INVALID_CONDITION,
@@ -663,12 +696,12 @@ class StrategyValidator:
         for exception_type, code in exception_codes.items():
             if isinstance(exc, exception_type):
                 return self._issue(code, "$", message or "strategy schema is invalid")
-        if "fallback" in normalized_message:
-            code = ValidationCode.INVALID_FALLBACK
-        elif "assets must contain at least one" in normalized_message:
+        if "assets must contain at least one" in normalized_message:
             code = ValidationCode.EMPTY_ASSETS
         elif "duplicate symbols" in normalized_message:
             code = ValidationCode.DUPLICATE_ASSET
+        elif "asset symbol" in normalized_message:
+            code = ValidationCode.INVALID_STRATEGY
         elif "threshold" in normalized_message:
             code = ValidationCode.INVALID_THRESHOLD
         elif "condition" in normalized_message or "operand" in normalized_message:
