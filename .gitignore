@@ -1,0 +1,28 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+coverage.xml
+htmlcov/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+.pnpm-store/
+
+# Local data and logs
+data/cache/
+*.log
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
