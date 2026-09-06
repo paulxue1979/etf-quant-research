@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,7 +19,7 @@ DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
 class TiingoSettings:
     """Runtime settings that keep the Tiingo credential server-side."""
 
-    api_key: str
+    api_key: str = field(repr=False)
     base_url: str = "https://api.tiingo.com"
 
     @classmethod

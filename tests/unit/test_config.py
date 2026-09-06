@@ -18,3 +18,4 @@ def test_api_key_is_loaded_from_provided_environment(tmp_path) -> None:
     )
 
     assert settings.api_key == "test-key"
+    assert "test-key" not in repr(settings)
