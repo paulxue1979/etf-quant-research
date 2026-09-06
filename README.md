@@ -2,7 +2,7 @@
 
 美股 ETF 量化研究与策略回测平台。
 
-当前处于 **PHASE 1 - Tiingo Data Engine**。本阶段仅包含 Tiingo 日线数据获取、标准化、严格数据质量验证和本地磁盘持久化缓存；不包含指标、策略、回测、绩效分析或业务前端功能。
+当前处于 **PHASE 2 - Indicator Engine**。本阶段在已验证的市场数据上提供 MA 和 EMA；不包含策略、回测、绩效分析或业务前端功能。
 
 ## 项目结构
 
@@ -10,7 +10,7 @@
 backend/       FastAPI 应用入口
 frontend/      React + TypeScript + Vite 前端
 data/          Tiingo 数据客户端、标准化、验证与本地缓存
-indicators/    后续指标模块边界
+indicators/    MA、EMA 与指标数据契约
 strategies/    后续策略模块边界
 backtest/      后续回测模块边界
 analytics/     后续绩效分析模块边界
@@ -70,4 +70,5 @@ pnpm build
 
 - `docs/architecture/phase-0.md` 记录项目初始化边界与运行约定。
 - `docs/architecture/phase-1-data-engine.md` 记录 Tiingo Data Engine 的数据、验证与缓存契约。
+- `docs/architecture/phase-2-indicator-engine.md` 记录 MA、EMA 与价格字段契约。
 - 后续阶段的产品、策略、研究和测试文档将按模块补充。
