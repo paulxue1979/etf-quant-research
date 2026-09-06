@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1.0",
+  "python-dotenv>=1.0,<2.0",
   "uvicorn[standard]>=0.30,<1.0",
 ]
 
@@ -21,12 +22,15 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["backend*"]
+include = ["backend*", "data*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+markers = [
+  "integration: tests that call the real Tiingo API when TIINGO_API_KEY is configured",
+]
 
 [tool.ruff]
 target-version = "py312"
