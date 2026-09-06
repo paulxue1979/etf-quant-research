@@ -19,6 +19,7 @@ from strategies import (
     OperandType,
     RebalanceFrequency,
     RebalancePolicy,
+    RemainingAllocation,
     RuleGroup,
     StrategyDefinition,
     StrategyStatus,
@@ -219,6 +220,20 @@ def test_allocations_and_rules_support_multi_asset_targets() -> None:
     assert [item.symbol.symbol for item in rule.allocations] == ["QQQ", "TQQQ", "SGOV"]
     assert rule.condition == _condition()
     assert FallbackAllocation.from_dict(fallback.to_dict()) == fallback
+
+
+def test_allocation_bounds_and_remaining_round_trip() -> None:
+    allocation = Allocation("QQQ", 0.3, minimum_weight=0.1, maximum_weight=0.5)
+    rule = AllocationRule(
+        "partial",
+        "Partial",
+        1,
+        (allocation,),
+        remaining=RemainingAllocation("SGOV"),
+    )
+
+    assert Allocation.from_dict(allocation.to_dict()) == allocation
+    assert AllocationRule.from_dict(rule.to_dict()) == rule
 
 
 def test_rule_and_fallback_require_structural_values() -> None:

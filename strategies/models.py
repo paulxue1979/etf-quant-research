@@ -235,9 +235,7 @@ class RuleGroup:
     children: tuple[RuleNode, ...]
 
     def __post_init__(self) -> None:
-        operator = _validate_enum(
-            self.operator, LogicalOperator, InvalidRuleGroupError, "operator"
-        )
+        operator = _validate_enum(self.operator, LogicalOperator, InvalidRuleGroupError, "operator")
         children = _normalize_sequence(self.children, "children")
         if not children:
             raise InvalidRuleGroupError("rule group children must not be empty")
@@ -278,25 +276,69 @@ class Allocation:
 
     symbol: AssetReference | str
     target_weight: float
+    minimum_weight: float | None = None
+    maximum_weight: float | None = None
 
     def __post_init__(self) -> None:
         symbol = (
-            self.symbol
-            if isinstance(self.symbol, AssetReference)
-            else AssetReference(self.symbol)
+            self.symbol if isinstance(self.symbol, AssetReference) else AssetReference(self.symbol)
         )
         if not _is_finite_number(self.target_weight) or not 0 <= self.target_weight <= 1:
             raise InvalidAllocationError("target_weight must be finite and in [0, 1]")
+        for label, value in (
+            ("minimum_weight", self.minimum_weight),
+            ("maximum_weight", self.maximum_weight),
+        ):
+            if value is not None and (not _is_finite_number(value) or not 0 <= value <= 1):
+                raise InvalidAllocationError(f"{label} must be finite and in [0, 1]")
         object.__setattr__(self, "symbol", symbol)
         object.__setattr__(self, "target_weight", float(self.target_weight))
+        if self.minimum_weight is not None:
+            object.__setattr__(self, "minimum_weight", float(self.minimum_weight))
+        if self.maximum_weight is not None:
+            object.__setattr__(self, "maximum_weight", float(self.maximum_weight))
 
     def to_dict(self) -> dict[str, str | float]:
-        return {"symbol": self.symbol.symbol, "target_weight": self.target_weight}
+        payload: dict[str, str | float] = {
+            "symbol": self.symbol.symbol,
+            "target_weight": self.target_weight,
+        }
+        if self.minimum_weight is not None:
+            payload["minimum_weight"] = self.minimum_weight
+        if self.maximum_weight is not None:
+            payload["maximum_weight"] = self.maximum_weight
+        return payload
 
     @classmethod
     def from_dict(cls, payload: object) -> Allocation:
         data = _require_mapping(payload, "allocation")
-        return cls(symbol=data.get("symbol", ""), target_weight=data.get("target_weight"))
+        return cls(
+            symbol=data.get("symbol", ""),
+            target_weight=data.get("target_weight"),
+            minimum_weight=data.get("minimum_weight"),
+            maximum_weight=data.get("maximum_weight"),
+        )
+
+
+@dataclass(frozen=True)
+class RemainingAllocation:
+    """Explicit recipient for the unallocated weight of a rule."""
+
+    symbol: AssetReference | str
+
+    def __post_init__(self) -> None:
+        symbol = (
+            self.symbol if isinstance(self.symbol, AssetReference) else AssetReference(self.symbol)
+        )
+        object.__setattr__(self, "symbol", symbol)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"symbol": self.symbol.symbol}
+
+    @classmethod
+    def from_dict(cls, payload: object) -> RemainingAllocation:
+        data = _require_mapping(payload, "remaining allocation")
+        return cls(symbol=data.get("symbol", ""))
 
 
 @dataclass(frozen=True)
@@ -308,6 +350,7 @@ class AllocationRule:
     priority: int
     allocations: tuple[Allocation, ...]
     condition: RuleNode | None = None
+    remaining: RemainingAllocation | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.rule_id, str) or not self.rule_id.strip():
@@ -321,6 +364,8 @@ class AllocationRule:
             raise InvalidRuleError("allocations must contain at least one Allocation")
         if self.condition is not None and not isinstance(self.condition, (Condition, RuleGroup)):
             raise InvalidRuleError("condition must be Condition, RuleGroup, or None")
+        if self.remaining is not None and not isinstance(self.remaining, RemainingAllocation):
+            raise InvalidRuleError("remaining must be a RemainingAllocation or None")
         object.__setattr__(self, "rule_id", self.rule_id.strip())
         object.__setattr__(self, "name", self.name.strip())
         object.__setattr__(self, "allocations", allocations)
@@ -332,6 +377,7 @@ class AllocationRule:
             "priority": self.priority,
             "condition": self.condition.to_dict() if self.condition else None,
             "allocations": [allocation.to_dict() for allocation in self.allocations],
+            "remaining": self.remaining.to_dict() if self.remaining else None,
         }
 
     @classmethod
@@ -355,6 +401,11 @@ class AllocationRule:
             allocations=tuple(
                 Allocation.from_dict(item)
                 for item in _normalize_sequence(data.get("allocations", []), "allocations")
+            ),
+            remaining=(
+                RemainingAllocation.from_dict(data["remaining"])
+                if data.get("remaining") is not None
+                else None
             ),
         )
 
@@ -551,9 +602,7 @@ class StrategyVersion:
             raise InvalidStrategyVersionError(
                 "configuration strategy_id must match version strategy_id"
             )
-        status = _validate_enum(
-            self.status, StrategyStatus, InvalidStrategyVersionError, "status"
-        )
+        status = _validate_enum(self.status, StrategyStatus, InvalidStrategyVersionError, "status")
         expected_hash = _content_hash(self.configuration)
         if self.content_hash is not None and self.content_hash != expected_hash:
             raise InvalidStrategyVersionError("content_hash does not match configuration")
