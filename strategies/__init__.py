@@ -1,5 +1,6 @@
-"""Strategy Engine V1.0 domain models only."""
+"""Strategy Engine V1.0 domain models and PHASE 4C evaluators."""
 
+from strategies.condition_evaluator import evaluate_condition
 from strategies.enums import (
     ComparisonOperator,
     LogicalOperator,
@@ -8,6 +9,7 @@ from strategies.enums import (
     StrategyStatus,
     ThresholdType,
 )
+from strategies.evaluation import ConditionResult, EvaluationContext, IndicatorKey, OperandValue
 from strategies.models import (
     Allocation,
     AllocationRule,
@@ -22,6 +24,7 @@ from strategies.models import (
     StrategyVersion,
     Threshold,
 )
+from strategies.operand_evaluator import evaluate_operand
 from strategies.validation import (
     StrategyValidator,
     ValidationCode,
@@ -37,10 +40,14 @@ __all__ = [
     "AssetReference",
     "ComparisonOperator",
     "Condition",
+    "ConditionResult",
+    "EvaluationContext",
     "FallbackAllocation",
     "LogicalOperator",
     "Operand",
     "OperandType",
+    "OperandValue",
+    "IndicatorKey",
     "RebalanceFrequency",
     "RebalancePolicy",
     "RemainingAllocation",
@@ -56,4 +63,6 @@ __all__ = [
     "ValidationResult",
     "validate_strategy",
     "validate_strategy_definition",
+    "evaluate_condition",
+    "evaluate_operand",
 ]

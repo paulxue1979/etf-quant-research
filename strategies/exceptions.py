@@ -43,3 +43,45 @@ class InvalidStrategyError(StrategyModelError):
 
 class InvalidStrategyVersionError(StrategyModelError):
     """Raised when a strategy version is malformed or hash-inconsistent."""
+
+
+class EvaluationError(ValueError):
+    """Base error for deterministic operand and condition evaluation failures."""
+
+    code = "EVALUATION_ERROR"
+
+
+class MissingMarketDataError(EvaluationError):
+    """Raised when a requested asset or date is absent from the market context."""
+
+    code = "MISSING_MARKET_DATA"
+
+
+class MissingIndicatorError(EvaluationError):
+    """Raised when a requested indicator series is absent from the context."""
+
+    code = "MISSING_INDICATOR"
+
+
+class MissingOperandValueError(EvaluationError):
+    """Raised when an operand has no value on the requested date."""
+
+    code = "MISSING_OPERAND_VALUE"
+
+
+class InvalidEvaluationValueError(EvaluationError):
+    """Raised when context data or an evaluated value is not finite."""
+
+    code = "INVALID_NUMERIC_VALUE"
+
+
+class ZeroReferenceValueError(EvaluationError):
+    """Raised when a relative threshold reference is zero."""
+
+    code = "ZERO_REFERENCE_VALUE"
+
+
+class InvalidConditionConfigurationError(EvaluationError):
+    """Raised when an operator and threshold combination is unsupported."""
+
+    code = "INVALID_CONDITION_CONFIGURATION"
