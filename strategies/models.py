@@ -97,12 +97,13 @@ class AssetReference:
 
 @dataclass(frozen=True)
 class Operand:
-    """A price or asset-qualified indicator reference."""
+    """A price, indicator, or asset-qualified constant reference."""
 
     asset: AssetReference | str
     operand_type: OperandType
     period: int | None = None
     price_field: PriceField | None = None
+    value: float | None = None
 
     def __post_init__(self) -> None:
         asset = self.asset if isinstance(self.asset, AssetReference) else AssetReference(self.asset)
@@ -118,6 +119,15 @@ class Operand:
                 or self.period <= 0
             ):
                 raise InvalidOperandError("MA and EMA operands require a positive integer period")
+        if operand_type is OperandType.CONSTANT:
+            if self.period is not None:
+                raise InvalidOperandError("CONSTANT operand must not have a period")
+            if self.price_field is not None:
+                raise InvalidOperandError("CONSTANT operand must not have a price_field")
+            if not _is_finite_number(self.value):
+                raise InvalidOperandError("CONSTANT operand requires a finite numeric value")
+        elif self.value is not None:
+            raise InvalidOperandError("only CONSTANT operands may have a value")
         if self.price_field is not None:
             price_field = _validate_enum(
                 self.price_field, PriceField, InvalidOperandError, "price_field"
@@ -125,6 +135,8 @@ class Operand:
             object.__setattr__(self, "price_field", price_field)
         object.__setattr__(self, "asset", asset)
         object.__setattr__(self, "operand_type", operand_type)
+        if operand_type is OperandType.CONSTANT:
+            object.__setattr__(self, "value", float(self.value))
 
     @property
     def symbol(self) -> str:
@@ -145,6 +157,8 @@ class Operand:
             payload["period"] = self.period
         if self.price_field is not None:
             payload["price_field"] = self.price_field.value
+        if self.value is not None:
+            payload["value"] = self.value
         return payload
 
     @classmethod
@@ -155,6 +169,7 @@ class Operand:
             operand_type=data.get("type", ""),
             period=data.get("period"),
             price_field=data.get("price_field"),
+            value=data.get("value"),
         )
 
 

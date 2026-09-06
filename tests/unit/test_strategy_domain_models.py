@@ -52,6 +52,10 @@ def _ema(period: int, symbol: str = "TQQQ") -> Operand:
     return Operand(symbol, OperandType.EMA, period, PriceField.ADJUSTED_CLOSE)
 
 
+def _constant(value: object, symbol: str = "TQQQ") -> Operand:
+    return Operand(symbol, OperandType.CONSTANT, value=value)  # type: ignore[arg-type]
+
+
 def _condition() -> Condition:
     return Condition(
         left=_price(),
@@ -130,6 +134,38 @@ def test_price_operand_rejects_period_and_invalid_price_field() -> None:
         Operand("QQQ", OperandType.PRICE, period=1)
     with pytest.raises(InvalidOperandError, match="price_field"):
         Operand("QQQ", OperandType.PRICE, price_field="close")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [1, 0, -2, 0.125])
+def test_constant_operand_accepts_finite_values(value: int | float) -> None:
+    operand = _constant(value)
+
+    assert operand.value == float(value)
+    assert operand.to_dict() == {"type": "constant", "asset": "TQQQ", "value": float(value)}
+
+
+@pytest.mark.parametrize("value", [None, nan, inf, -inf, "1.0", True])
+def test_constant_operand_requires_finite_numeric_value(value: object) -> None:
+    with pytest.raises(InvalidOperandError, match="finite numeric value"):
+        _constant(value)
+
+
+def test_constant_operand_rejects_indicator_only_fields_and_non_constants_reject_value() -> None:
+    with pytest.raises(InvalidOperandError, match="must not have a period"):
+        Operand("QQQ", OperandType.CONSTANT, period=1, value=1)
+    with pytest.raises(InvalidOperandError, match="must not have a price_field"):
+        Operand("QQQ", OperandType.CONSTANT, price_field=PriceField.RAW_CLOSE, value=1)
+    with pytest.raises(InvalidOperandError, match="only CONSTANT"):
+        Operand("QQQ", OperandType.PRICE, value=1)
+
+
+def test_constant_operand_round_trips_without_changing_legacy_payloads() -> None:
+    operand = _constant(0.25)
+
+    assert Operand.from_dict(operand.to_dict()) == operand
+    assert "value" not in _price().to_dict()
+    assert "value" not in _ma(50).to_dict()
+    assert "value" not in _ema(20).to_dict()
 
 
 @pytest.mark.parametrize(

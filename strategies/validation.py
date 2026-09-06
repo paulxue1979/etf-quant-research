@@ -563,6 +563,39 @@ class StrategyValidator:
                     "indicator period must be a positive integer",
                 )
             )
+        if operand.operand_type is OperandType.CONSTANT:
+            if operand.period is not None:
+                errors.append(
+                    self._issue(
+                        ValidationCode.INVALID_CONDITION,
+                        f"{path}.period",
+                        "CONSTANT must not have a period",
+                    )
+                )
+            if operand.price_field is not None:
+                errors.append(
+                    self._issue(
+                        ValidationCode.INVALID_CONDITION,
+                        f"{path}.price_field",
+                        "CONSTANT must not have a price_field",
+                    )
+                )
+            if not self._finite_number(operand.value):
+                errors.append(
+                    self._issue(
+                        ValidationCode.INVALID_CONDITION,
+                        f"{path}.value",
+                        "CONSTANT value must be finite",
+                    )
+                )
+        elif operand.value is not None:
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_CONDITION,
+                    f"{path}.value",
+                    "only CONSTANT operands may have a value",
+                )
+            )
         if operand.price_field is not None:
             if not isinstance(operand.price_field, PriceField):
                 errors.append(

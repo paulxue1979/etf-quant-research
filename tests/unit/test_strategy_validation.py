@@ -43,6 +43,10 @@ def _ma(
     return Operand(symbol, OperandType.MA, period, price_field)
 
 
+def _constant(value: object, symbol: str = "TQQQ") -> Operand:
+    return Operand(symbol, OperandType.CONSTANT, value=value)  # type: ignore[arg-type]
+
+
 def _condition(
     left: Operand | None = None,
     right: Operand | None = None,
@@ -228,6 +232,84 @@ def test_nested_rule_groups_and_condition_operands_are_validated_recursively() -
     rule = AllocationRule("nested", "Nested", 100, (_allocation("SGOV", 1.0),), nested)
 
     assert validate_strategy(_definition(rules=(rule,))).is_valid
+
+
+def test_constant_operand_is_valid_and_preserves_strategy_validation_contract() -> None:
+    condition = _condition(left=_constant(0), right=_constant(-1.25))
+    rule = AllocationRule("constants", "Constants", 100, (_allocation("QQQ", 1.0),), condition)
+
+    assert validate_strategy(_definition(rules=(rule,))).is_valid
+
+
+@pytest.mark.parametrize("value", [None, nan, inf, -inf, "1.0", True])
+def test_constant_operand_invalid_values_are_rejected_at_schema_boundary(value: object) -> None:
+    payload = _definition().to_dict()
+    payload["rules"][0]["condition"]["left"] = {
+        "type": "constant",
+        "asset": "TQQQ",
+        "value": value,
+    }
+
+    result = validate_strategy(payload)
+
+    assert not result.is_valid
+    assert ValidationCode.INVALID_CONDITION in _codes(result)
+
+
+def test_constant_operand_missing_value_is_rejected_at_schema_boundary() -> None:
+    payload = _definition().to_dict()
+    payload["rules"][0]["condition"]["left"] = {
+        "type": "constant",
+        "asset": "TQQQ",
+    }
+
+    result = validate_strategy(payload)
+
+    assert not result.is_valid
+    assert ValidationCode.INVALID_CONDITION in _codes(result)
+
+
+def test_malformed_constant_operand_value_is_rejected_at_schema_boundary() -> None:
+    payload = _definition().to_dict()
+    payload["rules"][0]["condition"]["left"] = {
+        "type": "constant",
+        "asset": "TQQQ",
+        "value": {"number": 1},
+    }
+
+    result = validate_strategy(payload)
+
+    assert not result.is_valid
+    assert ValidationCode.INVALID_CONDITION in _codes(result)
+
+
+def test_constant_operand_must_not_carry_period_or_price_field() -> None:
+    for extra in ({"period": 5}, {"price_field": "adjusted_close"}, {"value": 1}):
+        payload = _definition().to_dict()
+        constant = {"type": "constant", "asset": "TQQQ", "value": 1, **extra}
+        payload["rules"][0]["condition"]["left"] = constant
+        if extra == {"value": 1}:
+            payload["rules"][0]["condition"]["right"] = {
+                "type": "price",
+                "asset": "TQQQ",
+                "value": 1,
+            }
+
+        result = validate_strategy(payload)
+
+        assert not result.is_valid
+        assert ValidationCode.INVALID_CONDITION in _codes(result)
+
+
+def test_constant_operand_payload_round_trips_through_strategy_validation() -> None:
+    condition = _condition(left=_constant(3.5))
+    rule = AllocationRule("constant", "Constant", 100, (_allocation("QQQ", 1.0),), condition)
+    definition = _definition(rules=(rule,))
+
+    restored = StrategyDefinition.from_dict(definition.to_dict())
+
+    assert validate_strategy(restored).is_valid
+    assert restored.rules[0].condition.left.value == 3.5  # type: ignore[union-attr]
 
 
 def test_condition_threshold_must_be_finite_and_price_fields_must_match_strategy() -> None:

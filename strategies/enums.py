@@ -9,6 +9,7 @@ class OperandType(StrEnum):
     PRICE = "price"
     MA = "ma"
     EMA = "ema"
+    CONSTANT = "constant"
 
 
 class ComparisonOperator(StrEnum):
