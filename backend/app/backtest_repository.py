@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from backend.app.backtest_models import BacktestRun, dumps
@@ -11,6 +12,21 @@ from backend.app.backtest_models import BacktestRun, dumps
 
 class BacktestPersistenceError(RuntimeError):
     """Raised when a stored backtest run cannot be safely persisted or restored."""
+
+
+@dataclass(frozen=True)
+class BacktestRunRecord:
+    """One immutable run plus the analysis version stored with it."""
+
+    run: BacktestRun
+    analysis_version: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run, BacktestRun):
+            raise TypeError("run must be a BacktestRun")
+        if not isinstance(self.analysis_version, str) or not self.analysis_version.strip():
+            raise ValueError("analysis_version must be a non-empty string")
+        object.__setattr__(self, "analysis_version", self.analysis_version.strip())
 
 
 class BacktestRepository:
@@ -124,25 +140,52 @@ class BacktestRepository:
 
     def list(self, strategy_id: str | None = None) -> tuple[BacktestRun, ...]:
         """Return immutable runs, newest first, optionally scoped to a strategy."""
+        return tuple(record.run for record in self.list_records(strategy_id))
+
+    def list_records(self, strategy_id: str | None = None) -> tuple[BacktestRunRecord, ...]:
+        """Return immutable runs with their stored analysis version, newest first."""
         connection = self._connect()
         try:
             if strategy_id is None:
                 rows = connection.execute(
-                    "SELECT run_json FROM backtest_runs "
+                    "SELECT run_json, analysis_version FROM backtest_runs "
                     "ORDER BY created_at DESC, backtest_run_id DESC"
                 ).fetchall()
             else:
                 rows = connection.execute(
                     """
-                    SELECT run_json FROM backtest_runs
+                    SELECT run_json, analysis_version FROM backtest_runs
                     WHERE strategy_id = ?
                     ORDER BY created_at DESC, backtest_run_id DESC
                     """,
                     (strategy_id,),
                 ).fetchall()
-            return tuple(self._decode(row["run_json"]) for row in rows)
+            return tuple(self._record(row) for row in rows)
         except sqlite3.Error as exc:
             raise BacktestPersistenceError("could not list backtest runs") from exc
+        finally:
+            connection.close()
+
+    def get_records(self, backtest_run_ids: tuple[str, ...]) -> tuple[BacktestRunRecord, ...]:
+        """Load existing runs in request order without creating or updating data."""
+        if not backtest_run_ids:
+            return ()
+        placeholders = ", ".join("?" for _ in backtest_run_ids)
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                f"SELECT backtest_run_id, run_json, analysis_version FROM backtest_runs "
+                f"WHERE backtest_run_id IN ({placeholders})",
+                backtest_run_ids,
+            ).fetchall()
+            by_id = {str(row["backtest_run_id"]): self._record(row) for row in rows}
+            return tuple(
+                record
+                for run_id in backtest_run_ids
+                if (record := by_id.get(run_id)) is not None
+            )
+        except sqlite3.Error as exc:
+            raise BacktestPersistenceError("could not load backtest runs") from exc
         finally:
             connection.close()
 
@@ -166,9 +209,19 @@ class BacktestRepository:
         except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
             raise BacktestPersistenceError("stored backtest run failed integrity checks") from exc
 
+    @classmethod
+    def _record(cls, row: sqlite3.Row) -> BacktestRunRecord:
+        try:
+            return BacktestRunRecord(
+                run=cls._decode(row["run_json"]),
+                analysis_version=str(row["analysis_version"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BacktestPersistenceError("stored backtest run failed integrity checks") from exc
+
 
 def _reject_nonfinite(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value}")
 
 
-__all__ = ["BacktestPersistenceError", "BacktestRepository"]
+__all__ = ["BacktestPersistenceError", "BacktestRepository", "BacktestRunRecord"]

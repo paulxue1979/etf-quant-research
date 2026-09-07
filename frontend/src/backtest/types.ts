@@ -147,4 +147,88 @@ export interface BacktestRun {
   provenance: Record<string, unknown>;
 }
 
+export type ResearchSortBy =
+  | "created_at"
+  | "cagr"
+  | "sharpe_ratio"
+  | "sortino_ratio"
+  | "max_drawdown"
+  | "total_return"
+  | "annualized_volatility"
+  | "calmar_ratio"
+  | "win_rate"
+  | "profit_factor"
+  | "average_trade_return"
+  | "best_trade"
+  | "worst_trade"
+  | "average_holding_period"
+  | "turnover";
+
+export interface ResearchMetrics {
+  total_return: MetricValue;
+  cagr: MetricValue;
+  annualized_volatility: MetricValue;
+  sharpe_ratio: MetricValue;
+  sortino_ratio: MetricValue;
+  max_drawdown: MetricValue;
+  calmar_ratio: MetricValue;
+  win_rate: MetricValue;
+  profit_factor: MetricValue;
+  average_trade_return: MetricValue;
+  best_trade: MetricValue;
+  worst_trade: MetricValue;
+  average_holding_period: MetricValue;
+  turnover: MetricValue;
+}
+
+export interface ResearchBacktestSummary {
+  backtest_run_id: string;
+  strategy_id: string;
+  strategy_version_id: string;
+  strategy_version_content_hash: string;
+  created_at: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  final_equity: number;
+  price_field_used: PriceField;
+  engine_version: string;
+  analysis_version: string;
+  configuration_snapshot: Record<string, unknown>;
+  data_snapshot_reference: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+  metrics: ResearchMetrics;
+}
+
+export interface ResearchBacktestList {
+  items: ResearchBacktestSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  sort_by: ResearchSortBy;
+  order: "asc" | "desc";
+}
+
+export interface ComparisonIncompatibility {
+  code: string;
+  field: string;
+  reference_backtest_run_id: string;
+  reference_value: unknown;
+  values: Array<{ backtest_run_id: string; value: unknown }>;
+}
+
+export interface ComparisonSeries {
+  backtest_run_id: string;
+  equity_curve: Array<{ date: string; total_equity: number }>;
+  drawdown_curve: DrawdownPoint[];
+}
+
+export interface ResearchComparison {
+  comparable: boolean;
+  incompatibility_reasons: ComparisonIncompatibility[];
+  runs: ResearchBacktestSummary[];
+  series: ComparisonSeries[];
+  provenance_notice: string;
+}
+
 export type BacktestVersion = StrategyVersionSummary;

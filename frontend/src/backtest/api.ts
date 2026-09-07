@@ -1,5 +1,12 @@
 import type { StrategyVersionSummary } from "../strategy/types";
-import type { BacktestRequest, BacktestRun, StrategyCatalogItem } from "./types";
+import type {
+  BacktestRequest,
+  BacktestRun,
+  ResearchBacktestList,
+  ResearchComparison,
+  ResearchSortBy,
+  StrategyCatalogItem,
+} from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -60,5 +67,17 @@ export const backtestApi = {
 
   get(runId: string): Promise<BacktestRun> {
     return requestJson<BacktestRun>(`/backtests/${encodeURIComponent(runId)}`);
+  },
+
+  listResearchRuns(sortBy: ResearchSortBy, order: "asc" | "desc"): Promise<ResearchBacktestList> {
+    const query = new URLSearchParams({ limit: "50", sort_by: sortBy, order });
+    return requestJson<ResearchBacktestList>(`/research/backtests?${query.toString()}`);
+  },
+
+  compare(runIds: string[]): Promise<ResearchComparison> {
+    return requestJson<ResearchComparison>("/research/comparisons", {
+      method: "POST",
+      body: JSON.stringify({ backtest_run_ids: runIds }),
+    });
   },
 };

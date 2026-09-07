@@ -4,9 +4,14 @@ import { BacktestApiError, backtestApi } from "./api";
 import type {
   BacktestRequest,
   BacktestRun,
+  ComparisonSeries,
   DrawdownPoint,
   EquityPoint,
   MetricValue,
+  ResearchBacktestSummary,
+  ResearchComparison,
+  ResearchMetrics,
+  ResearchSortBy,
   StrategyCatalogItem,
 } from "./types";
 import type { PriceField, StrategyVersionSummary } from "../strategy/types";
@@ -80,6 +85,130 @@ function SeriesChart<T>({ label, items, readValue, color }: { label: string; ite
   );
 }
 
+const metricDefinitions: Array<{ label: string; key: keyof ResearchMetrics; percentage?: boolean }> = [
+  { label: "Total return", key: "total_return", percentage: true },
+  { label: "CAGR", key: "cagr", percentage: true },
+  { label: "Annualized volatility", key: "annualized_volatility", percentage: true },
+  { label: "Sharpe", key: "sharpe_ratio" },
+  { label: "Sortino", key: "sortino_ratio" },
+  { label: "Max drawdown", key: "max_drawdown", percentage: true },
+  { label: "Calmar", key: "calmar_ratio" },
+  { label: "Win rate", key: "win_rate", percentage: true },
+  { label: "Profit factor", key: "profit_factor" },
+  { label: "Average trade return", key: "average_trade_return", percentage: true },
+  { label: "Best trade", key: "best_trade", percentage: true },
+  { label: "Worst trade", key: "worst_trade", percentage: true },
+  { label: "Average holding period", key: "average_holding_period" },
+  { label: "Turnover", key: "turnover", percentage: true },
+];
+
+const researchSortOptions: Array<{ value: ResearchSortBy; label: string }> = [
+  { value: "created_at", label: "Created" },
+  ...metricDefinitions.map((metric) => ({ value: metric.key, label: metric.label })),
+];
+
+const comparisonColors = ["#6bd7d0", "#ff8b8b", "#ffd166", "#77aaff", "#b993f7", "#85d49a"];
+
+function comparisonLinePoints(
+  points: Array<{ date: string; value: number }>,
+  min: number,
+  max: number,
+): string {
+  const span = max - min || 1;
+  return points.map((point, index) => {
+    const x = points.length === 1 ? 350 : (index / (points.length - 1)) * 700;
+    const y = 190 - ((point.value - min) / span) * 160;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function ComparisonChart({ label, series, kind }: { label: string; series: ComparisonSeries[]; kind: "equity" | "drawdown" }) {
+  const pointsByRun = series.map((entry) => ({
+    backtest_run_id: entry.backtest_run_id,
+    points: kind === "equity"
+      ? entry.equity_curve.map((point) => ({ date: point.date, value: point.total_equity }))
+      : entry.drawdown_curve.map((point) => ({ date: point.date, value: point.value })),
+  }));
+  const allValues = pointsByRun.flatMap((entry) => entry.points.map((point) => point.value));
+  const min = allValues.length ? Math.min(...allValues) : 0;
+  const max = allValues.length ? Math.max(...allValues) : 1;
+  const firstDate = pointsByRun.flatMap((entry) => entry.points.map((point) => point.date)).sort()[0];
+  const dates = pointsByRun.flatMap((entry) => entry.points.map((point) => point.date)).sort();
+  const lastDate = dates.at(-1);
+  return (
+    <div className="series-chart">
+      <div className="subsection-heading"><h3>{label}</h3><span className="muted">Backend series</span></div>
+      {allValues.length === 0 ? <p className="muted">No series data returned.</p> : <>
+        <svg className="series-svg" viewBox="0 0 700 220" role="img" aria-label={label}>
+          <line x1="0" y1="190" x2="700" y2="190" stroke="#2b3942" />
+          {pointsByRun.map((entry, index) => <g key={entry.backtest_run_id}>
+            <title>{entry.backtest_run_id}</title>
+            <polyline points={comparisonLinePoints(entry.points, min, max)} fill="none" stroke={comparisonColors[index]} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+          </g>)}
+        </svg>
+        <div className="chart-timeline"><span>{firstDate ?? "-"}</span><span>{lastDate ?? "-"}</span></div>
+      </>}
+    </div>
+  );
+}
+
+function ResearchHistory({
+  runs,
+  selectedRunIds,
+  sortBy,
+  order,
+  loading,
+  onSortBy,
+  onOrder,
+  onToggle,
+  onCompare,
+}: {
+  runs: ResearchBacktestSummary[];
+  selectedRunIds: string[];
+  sortBy: ResearchSortBy;
+  order: "asc" | "desc";
+  loading: boolean;
+  onSortBy: (value: ResearchSortBy) => void;
+  onOrder: (value: "asc" | "desc") => void;
+  onToggle: (runId: string) => void;
+  onCompare: () => void;
+}) {
+  return (
+    <section className="panel research-history">
+      <div className="section-header compact"><div><span className="eyebrow">RESEARCH HISTORY</span><h2>Saved backtest runs</h2></div><span className="draft-label">{selectedRunIds.length} / 6 selected</span></div>
+      <div className="research-controls">
+        <label>Sort by<select aria-label="Research sort metric" value={sortBy} onChange={(event) => onSortBy(event.target.value as ResearchSortBy)}>{researchSortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label>Order<select aria-label="Research sort order" value={order} onChange={(event) => onOrder(event.target.value as "asc" | "desc")}><option value="desc">Descending</option><option value="asc">Ascending</option></select></label>
+        <button className="button button-primary" type="button" onClick={onCompare} disabled={loading || selectedRunIds.length < 2}>Compare selected</button>
+      </div>
+      {runs.length === 0 ? <p className="muted">No saved backtest runs yet.</p> : <div className="table-scroll"><table className="research-table"><thead><tr><th>Select</th><th>Strategy</th><th>Version</th><th>Hash</th><th>Run</th><th>Date</th><th>Initial capital</th><th>Price field</th><th>Engine</th><th>Analysis</th></tr></thead><tbody>{runs.map((item) => {
+        const selected = selectedRunIds.includes(item.backtest_run_id);
+        return <tr key={item.backtest_run_id}><td><input aria-label={`Select research run ${item.backtest_run_id}`} type="checkbox" checked={selected} disabled={!selected && selectedRunIds.length >= 6} onChange={() => onToggle(item.backtest_run_id)} /></td><td>{item.strategy_id}</td><td>{item.strategy_version_id}</td><td className="research-hash" title={item.strategy_version_content_hash}>{item.strategy_version_content_hash}</td><td>{item.backtest_run_id}</td><td>{item.start_date} to {item.end_date}</td><td>{item.initial_capital.toLocaleString(undefined, { style: "currency", currency: "USD" })}</td><td>{item.price_field_used.toUpperCase()}</td><td>{item.engine_version}</td><td>{item.analysis_version}</td></tr>;
+      })}</tbody></table></div>}
+    </section>
+  );
+}
+
+function ComparisonView({ comparison }: { comparison: ResearchComparison }) {
+  const byRunId = new Map(comparison.runs.map((run) => [run.backtest_run_id, run]));
+  return (
+    <section className="research-comparison">
+      <section className={`panel compatibility ${comparison.comparable ? "compatible" : "incompatible"}`}>
+        <span className="eyebrow">COMPARISON CONTRACT</span>
+        <h2>{comparison.comparable ? "Strictly comparable" : "NOT STRICTLY COMPARABLE"}</h2>
+        {comparison.comparable ? <p>Selected runs share the configured dates, capital, pricing, costs, execution and version contract.</p> : <ul>{comparison.incompatibility_reasons.map((reason) => <li key={reason.code}><strong>{reason.code}</strong><span>Reference: {reason.reference_backtest_run_id}</span></li>)}</ul>}
+      </section>
+      <section className="panel">
+        <div className="section-header compact"><div><span className="eyebrow">METRICS</span><h2>Research comparison</h2></div><span className="muted">Backend analytics only</span></div>
+        <div className="table-scroll"><table className="metric-matrix"><thead><tr><th>Metric</th>{comparison.runs.map((run) => <th key={run.backtest_run_id}>{run.strategy_id}<br />{run.strategy_version_id}</th>)}</tr></thead><tbody>{metricDefinitions.map((metric) => <tr key={metric.key}><th>{metric.label}</th>{comparison.runs.map((run) => { const value = run.metrics[metric.key]; return <td key={run.backtest_run_id} title={value.reason ?? undefined}>{metricText(value, metric.percentage)}{value.reason && <small>{value.reason}</small>}</td>; })}</tr>)}</tbody></table></div>
+      </section>
+      <section className="panel chart-grid"><ComparisonChart label="Equity curve comparison" series={comparison.series} kind="equity" /><ComparisonChart label="Drawdown curve comparison" series={comparison.series} kind="drawdown" /></section>
+      <section className="panel provenance-panel"><div className="section-header compact"><div><span className="eyebrow">PROVENANCE</span><h2>Immutable run references</h2></div></div><p className="muted">{comparison.provenance_notice}</p>{comparison.runs.map((run) => <details key={run.backtest_run_id}><summary>{run.strategy_id} · {run.strategy_version_id} · {run.backtest_run_id}</summary><dl><dt>Content hash</dt><dd>{run.strategy_version_content_hash}</dd><dt>Data provenance</dt><dd><code>{JSON.stringify(run.data_snapshot_reference)}</code></dd><dt>Run provenance</dt><dd><code>{JSON.stringify(run.provenance)}</code></dd></dl></details>)}</section>
+      <div className="comparison-legend">{comparison.series.map((series, index) => <span key={series.backtest_run_id}><i style={{ background: comparisonColors[index] }} />{byRunId.get(series.backtest_run_id)?.strategy_id ?? series.backtest_run_id} · {series.backtest_run_id}</span>)}</div>
+    </section>
+  );
+}
+
 function Results({ run }: { run: BacktestRun }) {
   const analysis = run.performance_analysis;
   const result = run.backtest_result;
@@ -145,8 +274,29 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
   const [versionId, setVersionId] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [researchRuns, setResearchRuns] = useState<ResearchBacktestSummary[]>([]);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [researchSortBy, setResearchSortBy] = useState<ResearchSortBy>("created_at");
+  const [researchOrder, setResearchOrder] = useState<"asc" | "desc">("desc");
+  const [comparison, setComparison] = useState<ResearchComparison | null>(null);
+  const [researchBusy, setResearchBusy] = useState(false);
+  const [researchError, setResearchError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"catalog" | "versions" | "run" | null>("catalog");
   const [error, setError] = useState<string | null>(null);
+
+  async function loadResearchRuns() {
+    setResearchBusy(true);
+    setResearchError(null);
+    try {
+      const response = await backtestApi.listResearchRuns(researchSortBy, researchOrder);
+      setResearchRuns(response.items);
+      setSelectedRunIds((current) => current.filter((runId) => response.items.some((item) => item.backtest_run_id === runId)));
+    } catch (reason) {
+      setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to load saved research runs.");
+    } finally {
+      setResearchBusy(false);
+    }
+  }
 
   useEffect(() => {
     void backtestApi.listStrategies().then((items) => {
@@ -158,6 +308,10 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       setError(reason instanceof BacktestApiError ? reason.message : "Unable to load strategies.");
     });
   }, []);
+
+  useEffect(() => {
+    void loadResearchRuns();
+  }, [researchSortBy, researchOrder]);
 
   useEffect(() => {
     if (!strategyId) {
@@ -205,10 +359,39 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     setBusy("run");
     try {
       setRun(await backtestApi.create(request));
+      void loadResearchRuns();
     } catch (reason) {
       setError(reason instanceof BacktestApiError ? reason.message : "Backtest request failed.");
     } finally {
       setBusy(null);
+    }
+  }
+
+  function toggleResearchRun(runId: string) {
+    setResearchError(null);
+    setSelectedRunIds((current) => {
+      if (current.includes(runId)) return current.filter((item) => item !== runId);
+      if (current.length >= 6) {
+        setResearchError("Select at most 6 saved backtest runs for one comparison.");
+        return current;
+      }
+      return [...current, runId];
+    });
+  }
+
+  async function compareSelectedRuns() {
+    if (selectedRunIds.length < 2 || selectedRunIds.length > 6) {
+      setResearchError("Select between 2 and 6 saved backtest runs.");
+      return;
+    }
+    setResearchBusy(true);
+    setResearchError(null);
+    try {
+      setComparison(await backtestApi.compare(selectedRunIds));
+    } catch (reason) {
+      setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to compare selected research runs.");
+    } finally {
+      setResearchBusy(false);
     }
   }
 
@@ -231,6 +414,21 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>
       {run && <Results run={run} />}
+      <section className="research-workspace">
+        {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
+        <ResearchHistory
+          runs={researchRuns}
+          selectedRunIds={selectedRunIds}
+          sortBy={researchSortBy}
+          order={researchOrder}
+          loading={researchBusy}
+          onSortBy={setResearchSortBy}
+          onOrder={setResearchOrder}
+          onToggle={toggleResearchRun}
+          onCompare={() => void compareSelectedRuns()}
+        />
+        {comparison && <ComparisonView comparison={comparison} />}
+      </section>
     </main>
   );
 }

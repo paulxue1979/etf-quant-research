@@ -100,6 +100,27 @@ def test_repository_keeps_distinct_runs_even_for_identical_inputs(tmp_path) -> N
     assert [item.backtest_run_id for item in repository.list()] == ["repo-run-2", "repo-run"]
 
 
+def test_repository_loads_requested_records_without_mutating_runs(tmp_path) -> None:
+    repository = BacktestRepository(tmp_path / "backtests.db")
+    first = _run()
+    second_analysis = replace(first.performance_analysis, backtest_run_id="repo-run-2")
+    second = BacktestRun(
+        **{
+            **first.__dict__,
+            "backtest_run_id": "repo-run-2",
+            "performance_analysis": second_analysis,
+        },
+    )
+    repository.create(first)
+    repository.create(second)
+
+    records = repository.get_records(("repo-run-2", "repo-run", "missing"))
+
+    assert [record.run.backtest_run_id for record in records] == ["repo-run-2", "repo-run"]
+    assert all(record.analysis_version == "phase-4i.0" for record in records)
+    assert [item.backtest_run_id for item in repository.list()] == ["repo-run-2", "repo-run"]
+
+
 @pytest.mark.parametrize("stored_json", ["not-json", json.dumps({"backtest_run_id": "broken"})])
 def test_corrupt_persisted_run_fails_with_safe_integrity_error(tmp_path, stored_json: str) -> None:
     db_path = tmp_path / "backtests.db"

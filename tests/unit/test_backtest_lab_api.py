@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from dataclasses import replace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from analytics.models import MetricValue
 from backend.app import backtest_lab
-from backend.app.backtest_repository import BacktestPersistenceError
+from backend.app.backtest_repository import BacktestPersistenceError, BacktestRunRecord
 from backend.app.backtest_service import BacktestServiceError
 from backend.app.main import app
 from tests.unit.test_backtest_repository import _run
@@ -34,6 +36,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         SimpleNamespace(
             get=lambda run_id: None,
             list=lambda strategy_id: (),
+            list_records=lambda strategy_id=None: (),
+            get_records=lambda run_ids: (),
         ),
     )
     return TestClient(app)
@@ -149,3 +153,129 @@ def test_list_backtests_returns_safe_persistence_error(
 
     assert response.status_code == 500
     assert response.json() == {"detail": "backtest persistence is unavailable"}
+
+
+def _record(
+    run_id: str = "repo-run",
+    *,
+    initial_capital: float = 10_000.0,
+    cagr_not_evaluable: bool = False,
+) -> BacktestRunRecord:
+    source = _run()
+    snapshot = dict(source.backtest_result.configuration_snapshot)
+    snapshot["initial_capital"] = initial_capital
+    result = replace(
+        source.backtest_result,
+        initial_capital=initial_capital,
+        configuration_snapshot=MappingProxyType(snapshot),
+    )
+    analysis = replace(
+        source.performance_analysis,
+        backtest_run_id=run_id,
+        initial_capital=initial_capital,
+    )
+    if cagr_not_evaluable:
+        analysis = replace(analysis, cagr=MetricValue.not_evaluable("fixture unavailable metric"))
+    run = replace(
+        source,
+        backtest_run_id=run_id,
+        backtest_result=result,
+        performance_analysis=analysis,
+    )
+    return BacktestRunRecord(run=run, analysis_version="phase-4i.0")
+
+
+def test_research_history_returns_saved_runs_without_running_backtests(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _record(cagr_not_evaluable=True)
+    monkeypatch.setattr(
+        backtest_lab.backtest_repository,
+        "list_records",
+        lambda strategy_id=None: (record,),
+    )
+    monkeypatch.setattr(
+        backtest_lab,
+        "_service",
+        lambda: (_ for _ in ()).throw(AssertionError("research history must not run backtests")),
+    )
+
+    response = client.get("/research/backtests?sort_by=cagr&order=desc&limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["backtest_run_id"] == "repo-run"
+    assert payload["items"][0]["metrics"]["cagr"]["status"] == "not_evaluable"
+
+
+def test_research_comparison_reads_existing_runs_and_reports_compatibility(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = (
+        _record("repo-run-a", cagr_not_evaluable=True),
+        _record("repo-run-b", cagr_not_evaluable=True),
+    )
+    monkeypatch.setattr(backtest_lab.backtest_repository, "get_records", lambda run_ids: records)
+
+    response = client.post(
+        "/research/comparisons",
+        json={"backtest_run_ids": ["repo-run-a", "repo-run-b"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["comparable"] is True
+    assert [item["backtest_run_id"] for item in payload["runs"]] == ["repo-run-a", "repo-run-b"]
+    assert payload["series"][0]["equity_curve"]
+    assert payload["runs"][0]["metrics"]["cagr"]["value"] is None
+
+
+def test_research_comparison_surfaces_configuration_mismatches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = (_record("repo-run-a"), _record("repo-run-b", initial_capital=25_000.0))
+    monkeypatch.setattr(backtest_lab.backtest_repository, "get_records", lambda run_ids: records)
+
+    response = client.post(
+        "/research/comparisons",
+        json={"backtest_run_ids": ["repo-run-a", "repo-run-b"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["comparable"] is False
+    assert "initial_capital_mismatch" in {
+        reason["code"] for reason in response.json()["incompatibility_reasons"]
+    }
+
+
+@pytest.mark.parametrize(
+    "payload, status_code",
+    [
+        ({"backtest_run_ids": ["one"]}, 422),
+        ({"backtest_run_ids": ["1", "2", "3", "4", "5", "6", "7"]}, 422),
+        ({"backtest_run_ids": ["same", "same"]}, 422),
+        ({"backtest_run_ids": ["one", "two"], "unexpected": True}, 422),
+    ],
+)
+def test_research_comparison_validates_request_shape(
+    client: TestClient, payload: dict[str, object], status_code: int
+) -> None:
+    response = client.post("/research/comparisons", json=payload)
+
+    assert response.status_code == status_code
+
+
+def test_research_comparison_returns_404_for_unknown_runs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        backtest_lab.backtest_repository,
+        "get_records",
+        lambda run_ids: (_record("one"),),
+    )
+
+    response = client.post("/research/comparisons", json={"backtest_run_ids": ["one", "missing"]})
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "one or more backtest runs were not found"}

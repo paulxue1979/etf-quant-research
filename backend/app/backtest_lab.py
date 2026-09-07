@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.backtest_models import BacktestRun
@@ -16,6 +16,7 @@ from backend.app.backtest_service import (
     BacktestServiceError,
     create_default_backtest_service,
 )
+from backend.app.research import compare_records, sorted_records, summary_payload
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
 from backtest.models import ExecutionRule
 from data.models import PriceField
@@ -108,6 +109,23 @@ class BacktestRunSummary(BaseModel):
     price_field_used: PriceField
 
 
+class ResearchComparisonRequest(BaseModel):
+    """A bounded set of immutable run identifiers for a read-only comparison."""
+
+    model_config = ConfigDict(extra="forbid")
+    backtest_run_ids: list[str] = Field(min_length=2, max_length=6)
+
+    @field_validator("backtest_run_ids")
+    @classmethod
+    def unique_non_blank_ids(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() if isinstance(item, str) else "" for item in value]
+        if not all(normalized):
+            raise ValueError("backtest run ids must be non-empty strings")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("backtest run ids must be unique")
+        return normalized
+
+
 def _run_summary(run: BacktestRun) -> BacktestRunSummary:
     return BacktestRunSummary(
         backtest_run_id=run.backtest_run_id,
@@ -180,4 +198,66 @@ def list_backtests(strategy_id: str) -> list[BacktestRunSummary]:
         raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
 
 
-__all__ = ["BacktestRequest", "backtest_repository", "backtest_service", "router"]
+@router.get("/research/backtests")
+def list_research_backtests(
+    strategy_id: str | None = Query(default=None, min_length=1),
+    sort_by: Literal[
+        "created_at",
+        "cagr",
+        "sharpe_ratio",
+        "sortino_ratio",
+        "max_drawdown",
+        "total_return",
+        "annualized_volatility",
+        "calmar_ratio",
+        "win_rate",
+        "profit_factor",
+        "average_trade_return",
+        "best_trade",
+        "worst_trade",
+        "average_holding_period",
+        "turnover",
+    ] = "created_at",
+    order: Literal["asc", "desc"] = "desc",
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """List persisted research runs only; this route never runs a backtest or fetches data."""
+    try:
+        records = sorted_records(
+            backtest_repository.list_records(strategy_id),
+            sort_by=sort_by,
+            order=order,
+        )
+    except BacktestPersistenceError as exc:
+        raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
+    return {
+        "items": [summary_payload(record) for record in records[offset : offset + limit]],
+        "total": len(records),
+        "limit": limit,
+        "offset": offset,
+        "sort_by": sort_by,
+        "order": order,
+    }
+
+
+@router.post("/research/comparisons")
+def compare_research_backtests(request: ResearchComparisonRequest) -> dict[str, Any]:
+    """Return a transient comparison view over existing immutable run artifacts."""
+    run_ids = tuple(request.backtest_run_ids)
+    try:
+        records = backtest_repository.get_records(run_ids)
+    except BacktestPersistenceError as exc:
+        raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
+    if len(records) != len(run_ids):
+        raise HTTPException(status_code=404, detail="one or more backtest runs were not found")
+    return compare_records(records).to_dict()
+
+
+__all__ = [
+    "BacktestRequest",
+    "ResearchComparisonRequest",
+    "backtest_repository",
+    "backtest_service",
+    "router",
+]

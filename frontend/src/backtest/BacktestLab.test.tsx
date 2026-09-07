@@ -80,11 +80,82 @@ function runPayload() {
   };
 }
 
+function researchRun(runId: string, strategyId: string) {
+  const payload = runPayload();
+  const analysis = payload.performance_analysis;
+  return {
+    backtest_run_id: runId,
+    strategy_id: strategyId,
+    strategy_version_id: `${strategyId}-v1`,
+    strategy_version_content_hash: `hash-${strategyId}`,
+    created_at: "2026-09-07T00:00:00Z",
+    start_date: "2025-01-01",
+    end_date: "2025-01-03",
+    initial_capital: 100000,
+    final_equity: 103000,
+    price_field_used: "adjusted_close",
+    engine_version: "phase-3.0",
+    analysis_version: "phase-4i.0",
+    configuration_snapshot: { execution_rule: "next_trading_day_open" },
+    data_snapshot_reference: { QQQ: { source: "fixture" } },
+    provenance: { source: "BacktestService" },
+    metrics: {
+      total_return: analysis.total_return,
+      cagr: analysis.cagr,
+      annualized_volatility: analysis.annualized_volatility,
+      sharpe_ratio: analysis.sharpe_ratio,
+      sortino_ratio: analysis.sortino_ratio,
+      max_drawdown: analysis.max_drawdown,
+      calmar_ratio: analysis.calmar_ratio,
+      win_rate: analysis.trade_metrics.win_rate,
+      profit_factor: analysis.trade_metrics.profit_factor,
+      average_trade_return: analysis.trade_metrics.average_trade_return,
+      best_trade: analysis.trade_metrics.best_trade,
+      worst_trade: analysis.trade_metrics.worst_trade,
+      average_holding_period: analysis.trade_metrics.average_holding_period,
+      turnover: analysis.trade_metrics.turnover,
+    },
+  };
+}
+
+function researchPayload() {
+  const runs = [researchRun("backtest-research-a", "allocation-a"), researchRun("backtest-research-b", "allocation-b")];
+  return {
+    comparable: true,
+    incompatibility_reasons: [],
+    runs,
+    series: runs.map((run) => ({
+      backtest_run_id: run.backtest_run_id,
+      equity_curve: [
+        { date: "2025-01-01", total_equity: 100000 },
+        { date: "2025-01-03", total_equity: 103000 },
+      ],
+      drawdown_curve: [{ date: "2025-01-01", value: 0 }, { date: "2025-01-03", value: -0.01 }],
+    })),
+    provenance_notice: "Data provenance recorded; complete immutable market-data snapshot versioning is not yet implemented.",
+  };
+}
+
+function researchHistory() {
+  const items = [
+    researchRun("backtest-research-a", "allocation-a"),
+    researchRun("backtest-research-b", "allocation-b"),
+    researchRun("backtest-research-c", "allocation-c"),
+    researchRun("backtest-research-d", "allocation-d"),
+    researchRun("backtest-research-e", "allocation-e"),
+    researchRun("backtest-research-f", "allocation-f"),
+    researchRun("backtest-research-g", "allocation-g"),
+  ];
+  return { items, total: items.length, limit: 50, offset: 0, sort_by: "created_at", order: "desc" };
+}
+
 function mockBacktestApi() {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
+    if (url.includes("/research/backtests")) return new Response(JSON.stringify(researchHistory()), { status: 200 });
+    if (url.endsWith("/research/comparisons") && init?.method === "POST") return new Response(JSON.stringify(researchPayload()), { status: 200 });
     if (url.endsWith("/backtests") && init?.method === "POST") return new Response(JSON.stringify(runPayload()), { status: 201 });
     return new Response("{}", { status: 404 });
   });
@@ -116,5 +187,27 @@ describe("Backtest Lab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
     await waitFor(() => expect(screen.getByText("requires a positive elapsed calendar period")).toBeInTheDocument());
     expect(screen.getAllByText("N/A").length).toBeGreaterThan(0);
+  });
+
+  it("loads saved history, limits selection to six, and displays a backend comparison", async () => {
+    mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("Saved backtest runs")).toBeInTheDocument());
+    expect(screen.getAllByText("hash-allocation-a").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select research run backtest-research-a" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select research run backtest-research-b" }));
+    fireEvent.click(screen.getByRole("button", { name: "Compare selected" }));
+
+    await waitFor(() => expect(screen.getByText("Strictly comparable")).toBeInTheDocument());
+    expect(screen.getByRole("img", { name: "Equity curve comparison" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Drawdown curve comparison" })).toBeInTheDocument();
+    expect(screen.getByText(/complete immutable market-data snapshot versioning/)).toBeInTheDocument();
+    expect(screen.getAllByText("N/A").length).toBeGreaterThan(0);
+
+    for (const runId of ["backtest-research-c", "backtest-research-d", "backtest-research-e", "backtest-research-f"]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: `Select research run ${runId}` }));
+    }
+    expect(screen.getByRole("checkbox", { name: "Select research run backtest-research-g" })).toBeDisabled();
   });
 });
