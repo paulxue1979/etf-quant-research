@@ -312,6 +312,13 @@ def _indicator_requirements(strategy_version: StrategyVersion) -> tuple[Indicato
     return tuple(sorted(requirements, key=lambda item: (item.symbol, item.kind.value, item.period)))
 
 
+def required_indicators(strategy_version: StrategyVersion) -> tuple[IndicatorKey, ...]:
+    """Return the indicator inputs a caller must prepare before evaluation."""
+    if not isinstance(strategy_version, StrategyVersion):
+        raise StrategyEvaluationInputError("strategy_version must be a StrategyVersion")
+    return _indicator_requirements(strategy_version)
+
+
 def _operands(node: RuleNode) -> tuple[object, ...]:
     if isinstance(node, Condition):
         return (node.left, node.right)
@@ -582,4 +589,5 @@ __all__ = [
     "StrategyEvaluationResult",
     "StrategyEvaluationTimeline",
     "evaluate_strategy",
+    "required_indicators",
 ]

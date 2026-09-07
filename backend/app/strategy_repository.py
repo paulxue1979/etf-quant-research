@@ -195,6 +195,37 @@ class StrategyRepository:
         finally:
             connection.close()
 
+    def catalog(self) -> tuple[dict[str, object], ...]:
+        """Return the minimal Strategy Lab catalog metadata."""
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT strategy_id, name, latest_version_number,
+                       (SELECT COUNT(*) FROM strategy_versions versions
+                        WHERE versions.strategy_id = strategies.strategy_id) AS version_count
+                FROM strategies
+                ORDER BY strategy_id ASC
+                """
+            ).fetchall()
+            return tuple(
+                {
+                    "strategy_id": row["strategy_id"],
+                    "name": row["name"],
+                    "version_count": int(row["version_count"]),
+                    "latest_version": (
+                        int(row["latest_version_number"])
+                        if row["latest_version_number"] is not None
+                        else None
+                    ),
+                }
+                for row in rows
+            )
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not list strategy catalog") from exc
+        finally:
+            connection.close()
+
     def get(self, strategy_id: str, version_id: str) -> StrategyVersion | None:
         """Return one immutable version, or ``None`` when it does not exist."""
         connection = self._connect()

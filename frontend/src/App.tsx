@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useReducer, useState } from "react";
 
+import { BacktestLab } from "./backtest/BacktestLab";
 import { strategyApi, StrategyApiError } from "./strategy/api";
 import {
   allocationTotalPercent,
@@ -473,6 +474,7 @@ function Preview({ state }: { state: EditorState }) {
 }
 
 export function App() {
+  const [view, setView] = useState<"strategy" | "backtest">("strategy");
   const [state, dispatch] = useReducer(editorReducer, undefined, () => {
     return createDefaultEditorState();
   });
@@ -569,6 +571,7 @@ export function App() {
   };
 
   return (
+    view === "backtest" ? <BacktestLab onBack={() => setView("strategy")} /> :
     <main className="app-shell">
       <header className="topbar">
         <div>
@@ -577,6 +580,7 @@ export function App() {
           <p>Configure, validate and version research strategies.</p>
         </div>
         <div className="topbar-status">
+          <button className="button button-secondary" type="button" onClick={() => setView("backtest")}>Open Backtest Lab</button>
           <span className={`status-pill ${validation.is_valid ? "is-valid" : "is-draft"}`}>
             {validation.is_valid ? "Validated" : "Draft"}
           </span>

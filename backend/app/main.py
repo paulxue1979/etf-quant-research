@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.backtest_lab import router as backtest_lab_router
 from backend.app.strategy_lab import router as strategy_lab_router
 
 app = FastAPI(
@@ -19,6 +20,7 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(strategy_lab_router)
+app.include_router(backtest_lab_router)
 
 
 @app.get("/health", tags=["system"])

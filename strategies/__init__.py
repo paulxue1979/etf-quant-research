@@ -42,6 +42,7 @@ from strategies.strategy_evaluation import (
     StrategyEvaluationResult,
     StrategyEvaluationTimeline,
     evaluate_strategy,
+    required_indicators,
 )
 from strategies.validation import (
     StrategyValidator,
@@ -95,4 +96,5 @@ __all__ = [
     "build_signal",
     "resolve_allocations",
     "evaluate_strategy",
+    "required_indicators",
 ]

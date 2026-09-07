@@ -123,6 +123,28 @@ class TradeMetrics:
 
 
 @dataclass(frozen=True)
+class DrawdownPoint:
+    """One backend-computed portfolio drawdown observation."""
+
+    date: date
+    value: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.date, date):
+            raise TypeError("drawdown date must be a date")
+        if (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, (int, float))
+            or not math.isfinite(float(self.value))
+        ):
+            raise ValueError("drawdown value must be finite")
+        object.__setattr__(self, "value", float(self.value))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"date": self.date.isoformat(), "value": self.value}
+
+
+@dataclass(frozen=True)
 class PerformanceAnalysisResult:
     """Immutable analytics over one completed PHASE 3 backtest result."""
 
@@ -149,6 +171,7 @@ class PerformanceAnalysisResult:
     calmar_ratio: MetricValue
     trade_metrics: TradeMetrics
     provenance: Mapping[str, Any]
+    drawdown_curve: tuple[DrawdownPoint, ...] = ()
 
     def __post_init__(self) -> None:
         for label in ("backtest_run_id", "strategy_id"):
@@ -212,6 +235,14 @@ class PerformanceAnalysisResult:
             raise TypeError("trade_metrics must be TradeMetrics")
         if not isinstance(self.provenance, Mapping):
             raise TypeError("provenance must be a mapping")
+        drawdown_curve = tuple(self.drawdown_curve)
+        if not all(isinstance(item, DrawdownPoint) for item in drawdown_curve):
+            raise TypeError("drawdown_curve must contain DrawdownPoint values")
+        drawdown_dates = tuple(item.date for item in drawdown_curve)
+        if drawdown_dates != tuple(sorted(drawdown_dates)) or len(drawdown_dates) != len(
+            set(drawdown_dates)
+        ):
+            raise ValueError("drawdown_curve dates must be sorted and unique")
         object.__setattr__(self, "strategy_version_id", self.strategy_version_id.strip())
         object.__setattr__(self, "price_field_used", price_field)
         object.__setattr__(self, "rebalance_frequency", self.rebalance_frequency.strip())
@@ -220,6 +251,7 @@ class PerformanceAnalysisResult:
         object.__setattr__(self, "initial_capital", float(self.initial_capital))
         object.__setattr__(self, "final_equity", float(self.final_equity))
         object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+        object.__setattr__(self, "drawdown_curve", drawdown_curve)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a deterministic JSON-compatible result."""
@@ -247,7 +279,14 @@ class PerformanceAnalysisResult:
             "calmar_ratio": self.calmar_ratio.to_dict(),
             "trade_metrics": self.trade_metrics.to_dict(),
             "provenance": dict(self.provenance),
+            "drawdown_curve": [item.to_dict() for item in self.drawdown_curve],
         }
 
 
-__all__ = ["MetricStatus", "MetricValue", "PerformanceAnalysisResult", "TradeMetrics"]
+__all__ = [
+    "DrawdownPoint",
+    "MetricStatus",
+    "MetricValue",
+    "PerformanceAnalysisResult",
+    "TradeMetrics",
+]

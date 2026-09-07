@@ -9,7 +9,7 @@ from datetime import date
 from typing import Any
 
 from analytics.exceptions import AnalyticsInputError
-from analytics.models import MetricValue, PerformanceAnalysisResult, TradeMetrics
+from analytics.models import DrawdownPoint, MetricValue, PerformanceAnalysisResult, TradeMetrics
 from backtest.models import BacktestResult, EquityPoint, Trade
 from data.models import PriceField
 
@@ -127,6 +127,10 @@ def analyze_backtest(
         calmar_ratio=calmar,
         trade_metrics=trades,
         provenance=provenance,
+        drawdown_curve=tuple(
+            DrawdownPoint(point_date, value)
+            for point_date, value in zip(dates, _drawdown_curve(equities), strict=True)
+        ),
     )
 
 
@@ -341,6 +345,15 @@ def _drawdown_metrics(equities: Sequence[float]) -> dict[str, Any]:
         ),
         "max_drawdown_recovered": recovery_index is not None,
     }
+
+
+def _drawdown_curve(equities: Sequence[float]) -> tuple[float, ...]:
+    peak = equities[0]
+    values: list[float] = []
+    for equity in equities:
+        peak = max(peak, equity)
+        values.append(equity / peak - 1.0)
+    return tuple(values)
 
 
 def _calmar(cagr: MetricValue, max_drawdown: MetricValue) -> MetricValue:
