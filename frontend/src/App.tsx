@@ -426,7 +426,7 @@ function VersionHistory({
         {loading && <span className="status-dot">Loading</span>}
       </div>
       {versions.length === 0 ? (
-        <p className="muted">No saved versions in this process.</p>
+        <p className="muted">No saved versions yet.</p>
       ) : (
         <div className="version-list">
           {versions.map((version) => (
@@ -572,7 +572,7 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <span className="eyebrow">ETF QUANT RESEARCH SYSTEM · PHASE 5A</span>
+          <span className="eyebrow">ETF QUANT RESEARCH SYSTEM · STRATEGY LAB</span>
           <h1>Strategy Lab</h1>
           <p>Configure, validate and version research strategies.</p>
         </div>
@@ -696,7 +696,7 @@ export function App() {
 
           <section className="action-panel">
             <div>
-              <span className="eyebrow">PHASE 5A WORKFLOW</span>
+              <span className="eyebrow">VERSIONED WORKFLOW</span>
               <p>{notice?.text ?? "Validation is required before an immutable version can be saved."}</p>
             </div>
             <div className="action-buttons">

@@ -20,6 +20,7 @@ frontend/dist/
 
 # Local data and logs
 data/cache/
+data/*.db
 *.log
 
 # OS and editor files
