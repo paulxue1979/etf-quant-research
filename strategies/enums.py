@@ -51,3 +51,10 @@ class StrategyStatus(StrEnum):
     DRAFT = "draft"
     ACTIVE = "active"
     ARCHIVED = "archived"
+
+
+class AllocationSource(StrEnum):
+    """Provenance of the allocation carried by a strategy signal."""
+
+    RULE_MATCH = "rule_match"
+    FALLBACK = "fallback"

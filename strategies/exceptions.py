@@ -135,3 +135,31 @@ class RuleEvaluationPropagationError(AllocationResolutionError):
         super().__init__(message)
         self.rule_id = rule_id
         self.cause = cause
+
+
+class SignalEngineError(EvaluationError):
+    """Base error for strategy signal assembly failures."""
+
+    code = "SIGNAL_ENGINE_ERROR"
+
+
+class InvalidSignalInputError(SignalEngineError):
+    """Raised when signal inputs are missing or malformed."""
+
+    code = "INVALID_SIGNAL_INPUT"
+
+
+class SignalInputConsistencyError(SignalEngineError):
+    """Raised when signal input dates, price fields, or provenance disagree."""
+
+    code = "SIGNAL_INPUT_INCONSISTENCY"
+
+
+class SignalEvaluationPropagationError(SignalEngineError):
+    """Raised when an upstream evaluation error reaches signal assembly."""
+
+    code = "SIGNAL_EVALUATION_ERROR"
+
+    def __init__(self, message: str, *, cause: EvaluationError) -> None:
+        super().__init__(message)
+        self.cause = cause

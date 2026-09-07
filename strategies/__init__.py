@@ -3,6 +3,7 @@
 from strategies.allocation_resolver import resolve_allocations
 from strategies.condition_evaluator import evaluate_condition
 from strategies.enums import (
+    AllocationSource,
     ComparisonOperator,
     LogicalOperator,
     OperandType,
@@ -34,6 +35,7 @@ from strategies.models import (
 )
 from strategies.operand_evaluator import evaluate_operand
 from strategies.rule_group_evaluator import evaluate_rule_group
+from strategies.signal_engine import StrategySignal, build_signal
 from strategies.validation import (
     StrategyValidator,
     ValidationCode,
@@ -45,6 +47,7 @@ from strategies.validation import (
 
 __all__ = [
     "Allocation",
+    "AllocationSource",
     "AllocationRule",
     "AssetReference",
     "ComparisonOperator",
@@ -77,5 +80,7 @@ __all__ = [
     "evaluate_condition",
     "evaluate_operand",
     "evaluate_rule_group",
+    "StrategySignal",
+    "build_signal",
     "resolve_allocations",
 ]
