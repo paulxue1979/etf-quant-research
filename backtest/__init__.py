@@ -1,6 +1,12 @@
 """Deterministic target-allocation backtest engine."""
 
 from backtest.engine import BacktestEngine
+from backtest.integration import (
+    StrategyBacktestAllocation,
+    StrategyBacktestResult,
+    run_strategy_backtest,
+    target_allocations_from_timeline,
+)
 from backtest.models import (
     AllocationPoint,
     BacktestConfig,
@@ -36,4 +42,8 @@ __all__ = [
     "TargetAllocation",
     "TargetWeight",
     "Trade",
+    "StrategyBacktestAllocation",
+    "StrategyBacktestResult",
+    "run_strategy_backtest",
+    "target_allocations_from_timeline",
 ]

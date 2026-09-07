@@ -31,3 +31,7 @@ class ExecutionError(BacktestError):
 
 class InsufficientCashError(BacktestError):
     """Raised when a planned order cannot be funded without borrowing."""
+
+
+class StrategyBacktestIntegrationError(BacktestError):
+    """Raised when strategy evaluation cannot be safely connected to backtest."""
