@@ -31,7 +31,7 @@ class StrategySignal:
     strategy_version_id: str
     matched_rule_id: str | None
     allocation_source: AllocationSource
-    condition_results: RuleGroupResult
+    condition_results: RuleGroupResult | None
     target_allocation: TargetAllocationResult
     price_field_used: PriceField
     explanation: str
@@ -53,8 +53,10 @@ class StrategySignal:
                 )
             except (TypeError, ValueError) as exc:
                 raise InvalidSignalInputError("allocation_source is invalid") from exc
-        if not isinstance(self.condition_results, RuleGroupResult):
-            raise InvalidSignalInputError("condition_results must be a RuleGroupResult")
+        if self.condition_results is not None and not isinstance(
+            self.condition_results, RuleGroupResult
+        ):
+            raise InvalidSignalInputError("condition_results must be a RuleGroupResult or None")
         if not isinstance(self.target_allocation, TargetAllocationResult):
             raise InvalidSignalInputError("target_allocation must be a TargetAllocationResult")
         if not isinstance(self.price_field_used, PriceField):
@@ -71,23 +73,17 @@ class StrategySignal:
             raise InvalidSignalInputError(
                 "source_data_reference must be a non-empty string or None"
             )
-        if self.condition_results.date != self.date:
-            raise SignalInputConsistencyError(
-                "signal date must match condition_results.date"
-            )
+        if self.condition_results is not None and self.condition_results.date != self.date:
+            raise SignalInputConsistencyError("signal date must match condition_results.date")
         if self.target_allocation.date != self.date:
-            raise SignalInputConsistencyError(
-                "signal date must match target_allocation.date"
-            )
+            raise SignalInputConsistencyError("signal date must match target_allocation.date")
         if self.allocation_source is AllocationSource.FALLBACK:
             if self.matched_rule_id is not None:
                 raise SignalInputConsistencyError(
                     "fallback signals must not have a matched_rule_id"
                 )
         elif not self.matched_rule_id:
-            raise SignalInputConsistencyError(
-                "rule-match signals require a matched_rule_id"
-            )
+            raise SignalInputConsistencyError("rule-match signals require a matched_rule_id")
         object.__setattr__(self, "strategy_version_id", self.strategy_version_id.strip())
         object.__setattr__(
             self,
@@ -98,7 +94,7 @@ class StrategySignal:
             object.__setattr__(self, "source_data_reference", self.source_data_reference.strip())
 
     @property
-    def rule_group_result(self) -> RuleGroupResult:
+    def rule_group_result(self) -> RuleGroupResult | None:
         """Alias naming the complete condition evaluation tree."""
         return self.condition_results
 
@@ -109,7 +105,11 @@ class StrategySignal:
             "strategy_version_id": self.strategy_version_id,
             "matched_rule_id": self.matched_rule_id,
             "allocation_source": self.allocation_source.value,
-            "condition_results": _rule_group_to_dict(self.condition_results),
+            "condition_results": (
+                _rule_group_to_dict(self.condition_results)
+                if self.condition_results is not None
+                else None
+            ),
             "target_allocation": {
                 "date": self.target_allocation.date.isoformat(),
                 "matched_rule_id": self.target_allocation.matched_rule_id,
@@ -127,7 +127,7 @@ class StrategySignal:
 
 def build_signal(
     strategy_version: StrategyVersion,
-    rule_group_result: RuleGroupResult | EvaluationError,
+    rule_group_result: RuleGroupResult | EvaluationError | None,
     target_allocation: TargetAllocationResult | EvaluationError,
     *,
     source_data_reference: str | None = None,
@@ -139,8 +139,14 @@ def build_signal(
         raise SignalEvaluationPropagationError(
             "rule-group evaluation failed before signal assembly", cause=rule_group_result
         ) from rule_group_result
-    if rule_group_result is None or not isinstance(rule_group_result, RuleGroupResult):
-        raise InvalidSignalInputError("rule_group_result must be a RuleGroupResult")
+    if rule_group_result is None and any(
+        rule.condition is not None for rule in strategy_version.configuration.rules
+    ):
+        raise InvalidSignalInputError(
+            "rule_group_result is required when a strategy has conditional rules"
+        )
+    if rule_group_result is not None and not isinstance(rule_group_result, RuleGroupResult):
+        raise InvalidSignalInputError("rule_group_result must be a RuleGroupResult or None")
     if isinstance(target_allocation, EvaluationError):
         raise SignalEvaluationPropagationError(
             "allocation resolution failed before signal assembly", cause=target_allocation
@@ -150,15 +156,14 @@ def build_signal(
     if source_data_reference is not None and (
         not isinstance(source_data_reference, str) or not source_data_reference.strip()
     ):
-        raise InvalidSignalInputError(
-            "source_data_reference must be a non-empty string or None"
-        )
-    if rule_group_result.date != target_allocation.date:
+        raise InvalidSignalInputError("source_data_reference must be a non-empty string or None")
+    if rule_group_result is not None and rule_group_result.date != target_allocation.date:
         raise SignalInputConsistencyError(
             "rule_group_result.date must match target_allocation.date"
         )
 
-    _validate_price_fields(rule_group_result, strategy_version.configuration.price_field)
+    if rule_group_result is not None:
+        _validate_price_fields(rule_group_result, strategy_version.configuration.price_field)
     matched_rule_id, allocation_source = _resolve_provenance(
         strategy_version, rule_group_result, target_allocation
     )
@@ -170,7 +175,7 @@ def build_signal(
         matched_rule_id,
     )
     return StrategySignal(
-        date=rule_group_result.date,
+        date=target_allocation.date,
         strategy_version_id=strategy_version.version_id,
         matched_rule_id=matched_rule_id,
         allocation_source=allocation_source,
@@ -184,7 +189,7 @@ def build_signal(
 
 def _resolve_provenance(
     strategy_version: StrategyVersion,
-    rule_group_result: RuleGroupResult,
+    rule_group_result: RuleGroupResult | None,
     target_allocation: TargetAllocationResult,
 ) -> tuple[str | None, AllocationSource]:
     if target_allocation.used_fallback:
@@ -205,7 +210,7 @@ def _resolve_provenance(
         raise SignalInputConsistencyError(
             f"target allocation references unknown rule {matched_rule_id}"
         )
-    if rule.condition is not None and not rule_group_result.passed:
+    if rule.condition is not None and (rule_group_result is None or not rule_group_result.passed):
         raise SignalInputConsistencyError(
             f"matched conditional rule {matched_rule_id} has a non-passing result"
         )
@@ -234,7 +239,7 @@ def _collect_price_fields(result: RuleGroupResult, fields: set[PriceField]) -> N
 
 def _build_explanation(
     strategy_version: StrategyVersion,
-    rule_group_result: RuleGroupResult,
+    rule_group_result: RuleGroupResult | None,
     target_allocation: TargetAllocationResult,
     allocation_source: AllocationSource,
     matched_rule_id: str | None,
@@ -245,10 +250,10 @@ def _build_explanation(
         else "fallback"
     )
     return (
-        f"StrategySignal(date={rule_group_result.date.isoformat()}, "
+        f"StrategySignal(date={target_allocation.date.isoformat()}, "
         f"strategy_version_id={strategy_version.version_id}, selected={selected}, "
         f"price_field={strategy_version.configuration.price_field.value}); "
-        f"rule_group={rule_group_result.explanation}; "
+        f"rule_group={rule_group_result.explanation if rule_group_result else 'none'}; "
         f"target_allocation={target_allocation.explanation}"
     )
 

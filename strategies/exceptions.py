@@ -163,3 +163,7 @@ class SignalEvaluationPropagationError(SignalEngineError):
     def __init__(self, message: str, *, cause: EvaluationError) -> None:
         super().__init__(message)
         self.cause = cause
+
+
+class StrategyEvaluationInputError(ValueError):
+    """Raised when PHASE 4G receives invalid static evaluation inputs."""

@@ -8,6 +8,7 @@ from strategies.enums import (
     LogicalOperator,
     OperandType,
     RebalanceFrequency,
+    StrategyEvaluationStatus,
     StrategyStatus,
     ThresholdType,
 )
@@ -36,6 +37,12 @@ from strategies.models import (
 from strategies.operand_evaluator import evaluate_operand
 from strategies.rule_group_evaluator import evaluate_rule_group
 from strategies.signal_engine import StrategySignal, build_signal
+from strategies.strategy_evaluation import (
+    EvaluationFailure,
+    StrategyEvaluationResult,
+    StrategyEvaluationTimeline,
+    evaluate_strategy,
+)
 from strategies.validation import (
     StrategyValidator,
     ValidationCode,
@@ -54,6 +61,7 @@ __all__ = [
     "Condition",
     "ConditionResult",
     "EvaluationContext",
+    "EvaluationFailure",
     "FallbackAllocation",
     "LogicalOperator",
     "Operand",
@@ -67,6 +75,9 @@ __all__ = [
     "RemainingAllocation",
     "RuleGroup",
     "StrategyDefinition",
+    "StrategyEvaluationResult",
+    "StrategyEvaluationStatus",
+    "StrategyEvaluationTimeline",
     "StrategyStatus",
     "StrategyVersion",
     "Threshold",
@@ -83,4 +94,5 @@ __all__ = [
     "StrategySignal",
     "build_signal",
     "resolve_allocations",
+    "evaluate_strategy",
 ]

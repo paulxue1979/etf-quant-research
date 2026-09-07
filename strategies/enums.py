@@ -58,3 +58,11 @@ class AllocationSource(StrEnum):
 
     RULE_MATCH = "rule_match"
     FALLBACK = "fallback"
+
+
+class StrategyEvaluationStatus(StrEnum):
+    """Outcome of one point-in-time strategy evaluation."""
+
+    EVALUATED = "evaluated"
+    NOT_EVALUABLE = "not_evaluable"
+    ERROR = "error"
