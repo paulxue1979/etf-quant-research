@@ -1,5 +1,6 @@
-"""Strategy Engine V1.0 domain models and PHASE 4C evaluators."""
+"""Strategy Engine V1.0 domain models and evaluation layers."""
 
+from strategies.allocation_resolver import resolve_allocations
 from strategies.condition_evaluator import evaluate_condition
 from strategies.enums import (
     ComparisonOperator,
@@ -15,6 +16,7 @@ from strategies.evaluation import (
     IndicatorKey,
     OperandValue,
     RuleGroupResult,
+    TargetAllocationResult,
 )
 from strategies.models import (
     Allocation,
@@ -56,6 +58,7 @@ __all__ = [
     "OperandValue",
     "IndicatorKey",
     "RuleGroupResult",
+    "TargetAllocationResult",
     "RebalanceFrequency",
     "RebalancePolicy",
     "RemainingAllocation",
@@ -74,4 +77,5 @@ __all__ = [
     "evaluate_condition",
     "evaluate_operand",
     "evaluate_rule_group",
+    "resolve_allocations",
 ]

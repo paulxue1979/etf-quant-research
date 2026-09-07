@@ -106,3 +106,32 @@ class RuleGroupEvaluationError(EvaluationError):
         self.evaluation_date = evaluation_date
         self.child_errors = child_errors
         self.evaluated_children = evaluated_children
+
+
+class AllocationResolutionError(EvaluationError):
+    """Base error for deterministic target-allocation resolution failures."""
+
+    code = "ALLOCATION_RESOLUTION_ERROR"
+
+
+class InvalidAllocationConfigurationError(AllocationResolutionError):
+    """Raised when allocation configuration violates resolver constraints."""
+
+    code = "INVALID_ALLOCATION_CONFIGURATION"
+
+
+class MissingRuleEvaluationError(AllocationResolutionError):
+    """Raised when a conditional allocation rule has no supplied result."""
+
+    code = "MISSING_RULE_EVALUATION"
+
+
+class RuleEvaluationPropagationError(AllocationResolutionError):
+    """Raised when an allocation rule's condition evaluation failed."""
+
+    code = "RULE_EVALUATION_ERROR"
+
+    def __init__(self, message: str, *, rule_id: str, cause: EvaluationError) -> None:
+        super().__init__(message)
+        self.rule_id = rule_id
+        self.cause = cause

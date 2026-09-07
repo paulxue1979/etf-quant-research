@@ -12,7 +12,7 @@ from data.models import HistoricalDataSet, PriceField
 from indicators.models import IndicatorKind, IndicatorSeries
 from strategies.enums import ComparisonOperator, LogicalOperator, OperandType
 from strategies.exceptions import InvalidEvaluationValueError
-from strategies.models import AssetReference, Threshold
+from strategies.models import Allocation, AssetReference, Threshold
 
 
 @dataclass(frozen=True)
@@ -188,10 +188,67 @@ class RuleGroupResult:
         object.__setattr__(self, "child_results", results)
 
 
+@dataclass(frozen=True)
+class TargetAllocationResult:
+    """Immutable target weights resolved from one matched allocation rule."""
+
+    date: date
+    matched_rule_id: str | None
+    used_fallback: bool
+    allocations: tuple[Allocation, ...]
+    remaining_weight: float
+    cash_buffer: float
+    explanation: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.date, date):
+            raise TypeError("target allocation result date must be a date")
+        if self.matched_rule_id is not None and (
+            not isinstance(self.matched_rule_id, str) or not self.matched_rule_id.strip()
+        ):
+            raise ValueError("matched_rule_id must be a non-empty string or None")
+        if not isinstance(self.used_fallback, bool):
+            raise TypeError("used_fallback must be boolean")
+        if isinstance(self.allocations, (str, bytes)):
+            raise TypeError("allocations must be a sequence")
+        allocations = tuple(self.allocations)
+        if not allocations or not all(isinstance(item, Allocation) for item in allocations):
+            raise ValueError("allocations must contain Allocation values")
+        symbols = [item.symbol.symbol for item in allocations]
+        if len(symbols) != len(set(symbols)):
+            raise ValueError("target allocation symbols must be unique")
+        for label, value in (
+            ("remaining_weight", self.remaining_weight),
+            ("cash_buffer", self.cash_buffer),
+        ):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise TypeError(f"{label} must be numeric")
+            if not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
+                raise ValueError(f"{label} must be finite and in [0, 1]")
+        if not isinstance(self.explanation, str) or not self.explanation.strip():
+            raise ValueError("target allocation explanation must not be empty")
+        object.__setattr__(
+            self,
+            "matched_rule_id",
+            self.matched_rule_id.strip() if self.matched_rule_id else None,
+        )
+        object.__setattr__(self, "allocations", allocations)
+        object.__setattr__(self, "remaining_weight", float(self.remaining_weight))
+        object.__setattr__(self, "cash_buffer", float(self.cash_buffer))
+
+    @property
+    def weights(self) -> Mapping[str, float]:
+        """Return deterministic symbol-to-weight values without exposing mutable state."""
+        return MappingProxyType(
+            {allocation.symbol.symbol: allocation.target_weight for allocation in self.allocations}
+        )
+
+
 __all__ = [
     "ConditionResult",
     "EvaluationContext",
     "IndicatorKey",
     "OperandValue",
     "RuleGroupResult",
+    "TargetAllocationResult",
 ]
