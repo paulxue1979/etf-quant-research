@@ -30,6 +30,7 @@ include = [
   "backtest*",
   "portfolio*",
   "strategies*",
+  "research*",
 ]
 
 [tool.pytest.ini_options]
