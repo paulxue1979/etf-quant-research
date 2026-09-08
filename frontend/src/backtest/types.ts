@@ -239,6 +239,20 @@ export type ResearchProtocolStatus =
   | "oos_evaluated"
   | "closed";
 
+export interface ResearchEvaluationConfig {
+  price_field_used: PriceField;
+  initial_capital: number;
+  commission: CommissionRequest;
+  slippage: number;
+  execution_rule: "next_trading_day_open";
+  fractional_shares: boolean;
+  rebalance_policy: {
+    frequency: "daily" | "weekly" | "monthly" | "on_signal_change";
+    threshold: number | null;
+  };
+  engine_version: string;
+}
+
 export interface ResearchProtocol {
   protocol_id: string;
   protocol_version: number;
@@ -259,6 +273,7 @@ export interface ResearchProtocol {
   data_policy: Record<string, unknown>;
   execution_policy: Record<string, unknown>;
   evaluation_policy: Record<string, unknown>;
+  evaluation_config: ResearchEvaluationConfig | null;
   provenance: Record<string, unknown>;
   status: ResearchProtocolStatus;
 }
@@ -267,6 +282,7 @@ export interface CandidateSet {
   candidate_set_id: string;
   protocol_id: string;
   strategy_version_ids: string[];
+  strategy_version_content_hashes: Record<string, string>;
   created_at: string;
   status: "open" | "locked";
 }
@@ -325,6 +341,7 @@ export interface ResearchProtocolCreateRequest {
   embargo_days: number;
   selection_rules: string[];
   allowed_metrics: string[];
+  evaluation_config: ResearchEvaluationConfig;
 }
 
 export type BacktestVersion = StrategyVersionSummary;

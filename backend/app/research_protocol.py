@@ -7,6 +7,7 @@ run backtests, calculate metrics, or choose a strategy automatically.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -17,11 +18,24 @@ from typing import Any
 from uuid import uuid4
 
 from backend.app.backtest_models import BacktestRun
+from backtest.models import ExecutionRule, RebalanceFrequency
+from data.models import PriceField
 from strategies.models import StrategyVersion
 
 
 class ResearchProtocolError(ValueError):
     """Raised when a research record violates the protocol contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = MappingProxyType(dict(details or {}))
 
 
 class ResearchPersistenceError(RuntimeError):
@@ -99,6 +113,144 @@ def _mapping(value: object, label: str) -> Mapping[str, Any]:
     return MappingProxyType(dict(value))
 
 
+def _finite_number(value: object, label: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ResearchProtocolError(f"{label} must be a finite number")
+    numeric = float(value)
+    if not math.isfinite(numeric) or (positive and numeric <= 0):
+        qualifier = "positive finite" if positive else "finite"
+        raise ResearchProtocolError(f"{label} must be a {qualifier} number")
+    return numeric
+
+
+def _canonical_json(payload: Mapping[str, Any] | object) -> str:
+    return json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+
+
+@dataclass(frozen=True, eq=False)
+class ResearchEvaluationConfig:
+    """Frozen projection of result-affecting BacktestConfig snapshot fields."""
+
+    price_field_used: str
+    initial_capital: float
+    commission: Mapping[str, float]
+    slippage: float
+    execution_rule: str
+    fractional_shares: bool
+    rebalance_policy: Mapping[str, Any]
+    engine_version: str
+
+    def __post_init__(self) -> None:
+        try:
+            PriceField(self.price_field_used)
+        except (TypeError, ValueError) as exc:
+            raise ResearchProtocolError("price_field_used is invalid") from exc
+        object.__setattr__(
+            self,
+            "initial_capital",
+            _finite_number(self.initial_capital, "initial_capital", positive=True),
+        )
+        if not isinstance(self.commission, Mapping) or set(self.commission) != {
+            "rate",
+            "per_order",
+        }:
+            raise ResearchProtocolError("commission must contain rate and per_order")
+        commission = {
+            "rate": _finite_number(self.commission["rate"], "commission rate"),
+            "per_order": _finite_number(
+                self.commission["per_order"], "commission per_order"
+            ),
+        }
+        if commission["rate"] < 0 or commission["per_order"] < 0:
+            raise ResearchProtocolError("commission values must be non-negative")
+        object.__setattr__(self, "commission", MappingProxyType(commission))
+        slippage = _finite_number(self.slippage, "slippage")
+        if not 0 <= slippage < 1:
+            raise ResearchProtocolError("slippage must be in [0, 1)")
+        object.__setattr__(self, "slippage", slippage)
+        try:
+            ExecutionRule(self.execution_rule)
+        except (TypeError, ValueError) as exc:
+            raise ResearchProtocolError("execution_rule is invalid") from exc
+        if not isinstance(self.fractional_shares, bool):
+            raise ResearchProtocolError("fractional_shares must be a boolean")
+        if not isinstance(self.rebalance_policy, Mapping) or set(self.rebalance_policy) != {
+            "frequency",
+            "threshold",
+        }:
+            raise ResearchProtocolError(
+                "rebalance_policy must contain frequency and threshold"
+            )
+        try:
+            frequency = RebalanceFrequency(self.rebalance_policy["frequency"]).value
+        except (TypeError, ValueError) as exc:
+            raise ResearchProtocolError("rebalance frequency is invalid") from exc
+        threshold = self.rebalance_policy["threshold"]
+        if threshold is not None:
+            threshold = _finite_number(threshold, "rebalance threshold")
+            if threshold < 0:
+                raise ResearchProtocolError("rebalance threshold must be non-negative")
+        object.__setattr__(
+            self,
+            "rebalance_policy",
+            MappingProxyType({"frequency": frequency, "threshold": threshold}),
+        )
+        object.__setattr__(
+            self, "engine_version", _require_text(self.engine_version, "engine_version")
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "price_field_used": self.price_field_used,
+            "initial_capital": self.initial_capital,
+            "commission": dict(self.commission),
+            "slippage": self.slippage,
+            "execution_rule": self.execution_rule,
+            "fractional_shares": self.fractional_shares,
+            "rebalance_policy": dict(self.rebalance_policy),
+            "engine_version": self.engine_version,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> ResearchEvaluationConfig:
+        if not isinstance(payload, Mapping):
+            raise ResearchProtocolError("evaluation configuration must be an object")
+        return cls(
+            price_field_used=str(payload.get("price_field_used", "")),
+            initial_capital=payload.get("initial_capital"),
+            commission=payload.get("commission", {}),
+            slippage=payload.get("slippage"),
+            execution_rule=str(payload.get("execution_rule", "")),
+            fractional_shares=payload.get("fractional_shares"),
+            rebalance_policy=payload.get("rebalance_policy", {}),
+            engine_version=str(payload.get("engine_version", "")),
+        )
+
+    @classmethod
+    def from_backtest_run(cls, run: BacktestRun) -> ResearchEvaluationConfig:
+        snapshot = run.backtest_result.configuration_snapshot
+        if not isinstance(snapshot, Mapping):
+            raise ResearchProtocolError("backtest configuration snapshot is invalid")
+        config = cls.from_dict(snapshot)
+        if config.engine_version != run.backtest_result.engine_version:
+            raise ResearchProtocolError("backtest engine version does not match its snapshot")
+        return config
+
+    def canonical_json(self) -> str:
+        return _canonical_json(self.to_dict())
+
+    def mismatch_fields(self, actual: ResearchEvaluationConfig) -> tuple[str, ...]:
+        expected = self.to_dict()
+        observed = actual.to_dict()
+        return tuple(
+            field
+            for field in expected
+            if _canonical_json(expected[field]) != _canonical_json(observed[field])
+        )
+
+
 @dataclass(frozen=True)
 class ResearchProtocol:
     """Immutable holdout research rules and date boundaries."""
@@ -122,6 +274,7 @@ class ResearchProtocol:
     data_policy: Mapping[str, Any] = MappingProxyType({})
     execution_policy: Mapping[str, Any] = MappingProxyType({})
     evaluation_policy: Mapping[str, Any] = MappingProxyType({})
+    evaluation_config: ResearchEvaluationConfig | None = None
     provenance: Mapping[str, Any] = MappingProxyType({})
     status: str = ProtocolStatus.DRAFT
 
@@ -180,6 +333,10 @@ class ResearchProtocol:
         )
         for label in ("data_policy", "execution_policy", "evaluation_policy", "provenance"):
             object.__setattr__(self, label, _mapping(getattr(self, label), label))
+        if self.evaluation_config is not None and not isinstance(
+            self.evaluation_config, ResearchEvaluationConfig
+        ):
+            raise ResearchProtocolError("evaluation_config must be a ResearchEvaluationConfig")
 
     def with_status(self, status: str) -> ResearchProtocol:
         if status not in ProtocolStatus.values():
@@ -214,6 +371,7 @@ class ResearchProtocol:
             data_policy=self.data_policy,
             execution_policy=self.execution_policy,
             evaluation_policy=self.evaluation_policy,
+            evaluation_config=self.evaluation_config,
             provenance=self.provenance,
             status=status,
         )
@@ -239,6 +397,9 @@ class ResearchProtocol:
             "data_policy": dict(self.data_policy),
             "execution_policy": dict(self.execution_policy),
             "evaluation_policy": dict(self.evaluation_policy),
+            "evaluation_config": (
+                self.evaluation_config.to_dict() if self.evaluation_config is not None else None
+            ),
             "provenance": dict(self.provenance),
             "status": self.status,
         }
@@ -267,6 +428,11 @@ class ResearchProtocol:
             data_policy=payload.get("data_policy", {}),
             execution_policy=payload.get("execution_policy", {}),
             evaluation_policy=payload.get("evaluation_policy", {}),
+            evaluation_config=(
+                ResearchEvaluationConfig.from_dict(payload["evaluation_config"])
+                if payload.get("evaluation_config") is not None
+                else None
+            ),
             provenance=payload.get("provenance", {}),
             status=payload.get("status", ProtocolStatus.DRAFT),
         )
@@ -278,6 +444,7 @@ class CandidateSet:
     protocol_id: str
     strategy_version_ids: tuple[str, ...]
     created_at: datetime
+    strategy_version_content_hashes: Mapping[str, str] = MappingProxyType({})
     status: str = CandidateSetStatus.OPEN
 
     def __post_init__(self) -> None:
@@ -289,6 +456,18 @@ class CandidateSet:
         if not ids:
             raise ResearchProtocolError("candidate set must contain at least one strategy version")
         object.__setattr__(self, "strategy_version_ids", ids)
+        if not isinstance(self.strategy_version_content_hashes, Mapping):
+            raise ResearchProtocolError("candidate strategy hashes must be an object")
+        hashes: dict[str, str] = {}
+        for version_id, content_hash in self.strategy_version_content_hashes.items():
+            if not isinstance(version_id, str) or version_id not in ids:
+                raise ResearchProtocolError("candidate hash references an unknown strategy version")
+            hashes[version_id] = _require_text(content_hash, "candidate content hash")
+        if hashes and set(hashes) != set(ids):
+            raise ResearchProtocolError("candidate hashes must cover every strategy version")
+        object.__setattr__(
+            self, "strategy_version_content_hashes", MappingProxyType(dict(sorted(hashes.items())))
+        )
         if not isinstance(self.created_at, datetime):
             raise ResearchProtocolError("created_at must be a datetime")
         if self.status not in CandidateSetStatus.values():
@@ -299,9 +478,14 @@ class CandidateSet:
             "candidate_set_id": self.candidate_set_id,
             "protocol_id": self.protocol_id,
             "strategy_version_ids": list(self.strategy_version_ids),
+            "strategy_version_content_hashes": dict(self.strategy_version_content_hashes),
             "created_at": self.created_at.isoformat(),
             "status": self.status,
         }
+
+    @property
+    def has_complete_hash_binding(self) -> bool:
+        return set(self.strategy_version_content_hashes) == set(self.strategy_version_ids)
 
 
 @dataclass(frozen=True)
@@ -449,7 +633,8 @@ class OOSEvaluationRecord:
 class ResearchProtocolRepository:
     """SQLite append-only repository for protocol governance records."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
+    _SCHEMA_KEY = "research_protocol_repository"
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = (
@@ -477,6 +662,10 @@ class ResearchProtocolRepository:
         connection = self._connect()
         try:
             connection.executescript("""
+                CREATE TABLE IF NOT EXISTS schema_metadata (
+                    schema_key TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS research_protocols (
                     protocol_id TEXT PRIMARY KEY,
                     created_at TEXT NOT NULL,
@@ -523,10 +712,65 @@ class ResearchProtocolRepository:
                 CREATE INDEX IF NOT EXISTS idx_research_events_protocol
                     ON research_protocol_events(protocol_id, created_at);
             """)
+            row = connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                (self._SCHEMA_KEY,),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
+                    (self._SCHEMA_KEY, 1),
+                )
+                schema_version = 1
+            else:
+                schema_version = int(row["schema_version"])
+            self._migrate(connection, schema_version)
         except sqlite3.Error as exc:
             raise ResearchPersistenceError("could not initialize research database") from exc
         finally:
             connection.close()
+
+    def _migrate(self, connection: sqlite3.Connection, schema_version: int) -> None:
+        if schema_version > self.SCHEMA_VERSION:
+            raise ResearchPersistenceError("unsupported research database schema version")
+        if schema_version == 1:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                duplicates = connection.execute(
+                    """
+                    SELECT protocol_id, COUNT(*) AS count
+                    FROM research_oos_evaluations
+                    GROUP BY protocol_id
+                    HAVING COUNT(*) > 1
+                    """
+                ).fetchall()
+                if duplicates:
+                    connection.execute("ROLLBACK")
+                    raise ResearchPersistenceError(
+                        "research schema migration blocked by duplicate OOS observations"
+                    )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_research_oos_protocol "
+                    "ON research_oos_evaluations(protocol_id)"
+                )
+                connection.execute(
+                    "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
+                    (2, self._SCHEMA_KEY),
+                )
+                connection.execute("COMMIT")
+                schema_version = 2
+            except sqlite3.Error as exc:
+                self._rollback(connection)
+                raise ResearchPersistenceError("could not migrate research database") from exc
+        if schema_version != self.SCHEMA_VERSION:
+            raise ResearchPersistenceError("unsupported research database schema version")
+
+    @staticmethod
+    def _rollback(connection: sqlite3.Connection) -> None:
+        try:
+            connection.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
 
     def create_protocol(self, protocol: ResearchProtocol) -> ResearchProtocol:
         if not isinstance(protocol, ResearchProtocol):
@@ -603,6 +847,8 @@ class ResearchProtocolRepository:
             raise ResearchProtocolError("research protocol was not found")
         if status == ProtocolStatus.FROZEN and not self._has_locked_candidate_set(protocol_id):
             raise ResearchProtocolError("freezing a protocol requires a locked candidate set")
+        if status == ProtocolStatus.FROZEN and protocol.evaluation_config is None:
+            raise ResearchProtocolError("freezing a protocol requires an evaluation configuration")
         if status == ProtocolStatus.SELECTION_RECORDED and self._selection_count(protocol_id) != 1:
             raise ResearchProtocolError(
                 "selection transition requires exactly one selection decision"
@@ -612,6 +858,18 @@ class ResearchProtocolRepository:
         updated = protocol.with_status(status)
         connection = self._connect()
         try:
+            connection.execute("BEGIN IMMEDIATE")
+            if status == ProtocolStatus.FROZEN:
+                connection.execute(
+                    "INSERT INTO research_protocol_events VALUES (?, ?, ?, ?, ?)",
+                    (
+                        f"event-{uuid4().hex}",
+                        protocol_id,
+                        "evaluation_config_frozen",
+                        datetime.now(UTC).isoformat(),
+                        _dump(protocol.evaluation_config.to_dict()),
+                    ),
+                )
             connection.execute(
                 "INSERT INTO research_protocol_events VALUES (?, ?, ?, ?, ?)",
                 (
@@ -622,8 +880,10 @@ class ResearchProtocolRepository:
                     _dump({"status": status}),
                 ),
             )
+            connection.execute("COMMIT")
             return updated
         except sqlite3.Error as exc:
+            self._rollback(connection)
             raise ResearchPersistenceError("could not persist protocol transition") from exc
         finally:
             connection.close()
@@ -631,6 +891,11 @@ class ResearchProtocolRepository:
     def create_candidate_set(self, candidate_set: CandidateSet) -> CandidateSet:
         if not isinstance(candidate_set, CandidateSet):
             raise ResearchPersistenceError("candidate set is invalid")
+        if not candidate_set.has_complete_hash_binding:
+            raise ResearchProtocolError(
+                "candidate set requires a content hash for every strategy version",
+                code="CANDIDATE_CONTENT_HASH_MISMATCH",
+            )
         self._require_protocol_status(candidate_set.protocol_id, ProtocolStatus.DRAFT)
         if self.list_candidate_sets(candidate_set.protocol_id):
             raise ResearchProtocolError("research protocol already has a candidate set")
@@ -680,6 +945,7 @@ class ResearchProtocolRepository:
                     protocol_id=item.protocol_id,
                     strategy_version_ids=item.strategy_version_ids,
                     created_at=item.created_at,
+                    strategy_version_content_hashes=item.strategy_version_content_hashes,
                     status=CandidateSetStatus.LOCKED,
                 )
             )
@@ -700,6 +966,11 @@ class ResearchProtocolRepository:
             raise ResearchProtocolError("candidate set was not found")
         if item.status != CandidateSetStatus.OPEN:
             raise ResearchProtocolError("candidate set is already locked")
+        if not item.has_complete_hash_binding:
+            raise ResearchProtocolError(
+                "candidate set cannot be locked without content hashes",
+                code="CANDIDATE_CONTENT_HASH_MISMATCH",
+            )
         self._require_protocol_status(item.protocol_id, ProtocolStatus.DRAFT)
         connection = self._connect()
         try:
@@ -718,6 +989,7 @@ class ResearchProtocolRepository:
                 protocol_id=item.protocol_id,
                 strategy_version_ids=item.strategy_version_ids,
                 created_at=item.created_at,
+                strategy_version_content_hashes=item.strategy_version_content_hashes,
                 status=CandidateSetStatus.LOCKED,
             )
         except sqlite3.Error as exc:
@@ -731,6 +1003,7 @@ class ResearchProtocolRepository:
         *,
         candidate_set: CandidateSet,
         runs: Sequence[BacktestRun],
+        version: StrategyVersion,
     ) -> SelectionDecision:
         self._require_protocol_status(decision.protocol_id, ProtocolStatus.IS_EVALUATED)
         stored_candidate_set = self.get_candidate_set(decision.candidate_set_id)
@@ -743,6 +1016,9 @@ class ResearchProtocolRepository:
             raise ResearchProtocolError("selection requires a locked candidate set")
         if decision.selected_strategy_version_id not in stored_candidate_set.strategy_version_ids:
             raise ResearchProtocolError("selected strategy version is not in the candidate set")
+        if version.version_id != decision.selected_strategy_version_id:
+            raise ResearchProtocolError("selected strategy version does not match supplied version")
+        self._require_candidate_hash_match(stored_candidate_set, version)
         if self._selection_count(decision.protocol_id):
             raise ResearchProtocolError("research protocol already has a selection decision")
         protocol = self.get_protocol(decision.protocol_id)
@@ -758,6 +1034,15 @@ class ResearchProtocolRepository:
             for run in runs
         ):
             raise ResearchProtocolError("selection may reference IS backtest runs only")
+        if not any(
+            run.strategy_version_id == decision.selected_strategy_version_id
+            and run.strategy_version_content_hash == version.content_hash
+            for run in runs
+        ):
+            raise ResearchProtocolError(
+                "selection requires complete IS evidence for the selected strategy version",
+                code="SELECTION_MISSING_SELECTED_VERSION_IS_RUN",
+            )
         connection = self._connect()
         try:
             connection.execute(
@@ -801,6 +1086,10 @@ class ResearchProtocolRepository:
             raise ResearchProtocolError("freeze must match the recorded selection decision")
         if version.version_id != freeze.strategy_version_id:
             raise ResearchProtocolError("strategy version does not match freeze")
+        candidate_set = self.get_candidate_set(stored_decision.candidate_set_id)
+        if candidate_set is None:
+            raise ResearchProtocolError("recorded selection candidate set was not found")
+        self._require_candidate_hash_match(candidate_set, version)
         if freeze.strategy_version_content_hash != version.content_hash:
             raise ResearchProtocolError("strategy version content hash does not match freeze")
         if self.list_freezes(freeze.protocol_id):
@@ -837,12 +1126,19 @@ class ResearchProtocolRepository:
     def create_oos_evaluation(
         self, evaluation: OOSEvaluationRecord, *, freeze: StrategyFreezeRecord, run: BacktestRun
     ) -> OOSEvaluationRecord:
-        if self._observed_oos(evaluation.protocol_id):
-            raise ResearchProtocolError("OOS has already been observed for this protocol")
-        self._require_protocol_status(evaluation.protocol_id, ProtocolStatus.SELECTION_RECORDED)
         protocol = self.get_protocol(evaluation.protocol_id)
         if protocol is None:
             raise ResearchProtocolError("research protocol was not found")
+        # A duplicate request must keep its stable integrity error even after the
+        # caller advances the protocol to OOS_EVALUATED.  This also makes retry
+        # behavior deterministic without weakening the state-machine check for
+        # protocols that have not recorded an observation.
+        if self._observed_oos(evaluation.protocol_id):
+            raise ResearchProtocolError(
+                "OOS has already been observed for this protocol",
+                code="OOS_OBSERVATION_ALREADY_RECORDED",
+            )
+        self._require_protocol_status(evaluation.protocol_id, ProtocolStatus.SELECTION_RECORDED)
         stored_freeze = self.get_freeze(evaluation.freeze_id)
         if (
             stored_freeze is None
@@ -864,10 +1160,29 @@ class ResearchProtocolRepository:
             raise ResearchProtocolError("OOS run strategy hash does not match the frozen strategy")
         if result.start_date != protocol.oos_start_date or result.end_date != protocol.oos_end_date:
             raise ResearchProtocolError("OOS backtest must exactly match the protocol OOS period")
-        if self.list_oos_evaluations(evaluation.protocol_id):
-            raise ResearchProtocolError("research protocol already has an OOS evaluation record")
+        expected_config = self.get_frozen_evaluation_config(evaluation.protocol_id)
+        if expected_config is None:
+            raise ResearchProtocolError(
+                "OOS evaluation requires a frozen evaluation configuration",
+                code="OOS_CONFIGURATION_MISMATCH",
+            )
+        try:
+            actual_config = ResearchEvaluationConfig.from_backtest_run(run)
+        except ResearchProtocolError as exc:
+            raise ResearchProtocolError(
+                "OOS backtest configuration is invalid or incomplete",
+                code="OOS_CONFIGURATION_MISMATCH",
+            ) from exc
+        mismatch_fields = expected_config.mismatch_fields(actual_config)
+        if mismatch_fields:
+            raise ResearchProtocolError(
+                "OOS backtest configuration does not match the frozen protocol contract",
+                code="OOS_CONFIGURATION_MISMATCH",
+                details={"fields": list(mismatch_fields)},
+            )
         connection = self._connect()
         try:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "INSERT INTO research_oos_evaluations VALUES (?, ?, ?, ?)",
                 (
@@ -877,10 +1192,16 @@ class ResearchProtocolRepository:
                     _dump(evaluation.to_dict()),
                 ),
             )
+            connection.execute("COMMIT")
             return evaluation
         except sqlite3.IntegrityError as exc:
-            raise ResearchPersistenceError("OOS evaluation already exists") from exc
+            self._rollback(connection)
+            raise ResearchProtocolError(
+                "OOS has already been observed for this protocol",
+                code="OOS_OBSERVATION_ALREADY_RECORDED",
+            ) from exc
         except sqlite3.Error as exc:
+            self._rollback(connection)
             raise ResearchPersistenceError("could not persist OOS evaluation") from exc
         finally:
             connection.close()
@@ -959,6 +1280,36 @@ class ResearchProtocolRepository:
         finally:
             connection.close()
 
+    def get_frozen_evaluation_config(
+        self, protocol_id: str
+    ) -> ResearchEvaluationConfig | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT payload_json FROM research_protocol_events
+                WHERE protocol_id = ? AND event_type = ?
+                ORDER BY created_at ASC, event_id ASC
+                LIMIT 1
+                """,
+                (protocol_id, "evaluation_config_frozen"),
+            ).fetchone()
+            if row is None:
+                return None
+            return ResearchEvaluationConfig.from_dict(_load(row["payload_json"]))
+        except (
+            sqlite3.Error,
+            ResearchProtocolError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ResearchPersistenceError(
+                "stored frozen evaluation configuration failed integrity checks"
+            ) from exc
+        finally:
+            connection.close()
+
     def _has_locked_candidate_set(self, protocol_id: str) -> bool:
         candidate_sets = self.list_candidate_sets(protocol_id)
         return len(candidate_sets) == 1 and candidate_sets[0].status == CandidateSetStatus.LOCKED
@@ -973,6 +1324,21 @@ class ResearchProtocolRepository:
             return int(row["count"])
         finally:
             connection.close()
+
+    @staticmethod
+    def _require_candidate_hash_match(
+        candidate_set: CandidateSet, version: StrategyVersion
+    ) -> None:
+        expected = candidate_set.strategy_version_content_hashes.get(version.version_id)
+        if (
+            not candidate_set.has_complete_hash_binding
+            or expected is None
+            or expected != version.content_hash
+        ):
+            raise ResearchProtocolError(
+                "candidate strategy content hash does not match the immutable strategy version",
+                code="CANDIDATE_CONTENT_HASH_MISMATCH",
+            )
 
     def _get_record(
         self,
@@ -1040,9 +1406,7 @@ class ResearchProtocolRepository:
 
 
 def _dump(payload: Mapping[str, Any]) -> str:
-    return json.dumps(
-        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
+    return _canonical_json(payload)
 
 
 def _load(payload: object) -> Any:
@@ -1059,6 +1423,7 @@ def _candidate_kwargs(payload: Mapping[str, Any]) -> dict[str, Any]:
         "protocol_id": payload["protocol_id"],
         "strategy_version_ids": tuple(payload["strategy_version_ids"]),
         "created_at": datetime.fromisoformat(str(payload["created_at"])),
+        "strategy_version_content_hashes": payload.get("strategy_version_content_hashes", {}),
         "status": payload.get("status", CandidateSetStatus.OPEN),
     }
 
@@ -1113,6 +1478,7 @@ __all__ = [
     "OOSEvaluationRecord",
     "ProtocolStatus",
     "ResearchPersistenceError",
+    "ResearchEvaluationConfig",
     "ResearchProtocol",
     "ResearchProtocolError",
     "ResearchProtocolRepository",

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BacktestLab } from "./BacktestLab";
+import { backtestApi } from "./api";
 
 afterEach(() => {
   cleanup();
@@ -171,6 +172,16 @@ function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
       data_policy: {},
       execution_policy: { execution_rule: "next_trading_day_open" },
       evaluation_policy: { oos_selection_allowed: false },
+      evaluation_config: {
+        price_field_used: "adjusted_close",
+        initial_capital: 100000,
+        commission: { rate: 0, per_order: 0 },
+        slippage: 0,
+        execution_rule: "next_trading_day_open",
+        fractional_shares: false,
+        rebalance_policy: { frequency: "daily", threshold: null },
+        engine_version: "phase-3.0",
+      },
       provenance: {},
       status,
     },
@@ -178,6 +189,7 @@ function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
       candidate_set_id: "candidate-demo",
       protocol_id: "protocol-demo",
       strategy_version_ids: ["demo-v1"],
+      strategy_version_content_hashes: { "demo-v1": "hash-demo" },
       created_at: "2026-09-08T00:00:00Z",
       status: candidateStatus,
     }] : [],
@@ -271,5 +283,27 @@ describe("Backtest Lab", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/research/protocols"), expect.objectContaining({ method: "POST" }));
     expect(screen.getByText("Signal(T) to T+1 trading day open")).toBeInTheDocument();
+    expect(screen.getByText("adjusted_close · $100,000 · next_trading_day_open")).toBeInTheDocument();
+    expect(screen.getByText("Commission 0 / 0 · Slippage 0")).toBeInTheDocument();
+  });
+
+  it("preserves structured OOS rejection messages from the backend", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: "OOS_CONFIGURATION_MISMATCH",
+            message: "OOS backtest configuration does not match the frozen protocol contract",
+          },
+        }),
+        { status: 422 },
+      ),
+    );
+
+    await expect(backtestApi.observeOos("protocol-demo", "freeze-demo", "run-demo"))
+      .rejects.toMatchObject({
+        kind: "server",
+        message: "OOS backtest configuration does not match the frozen protocol contract",
+      });
   });
 });

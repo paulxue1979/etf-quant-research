@@ -66,6 +66,16 @@ def _protocol_request() -> dict[str, object]:
         "oos_end_date": "2026-01-08",
         "selection_rules": ["human review of IS evidence"],
         "allowed_metrics": ["cagr", "max_drawdown"],
+        "evaluation_config": {
+            "price_field_used": "adjusted_close",
+            "initial_capital": 10000,
+            "commission": {"rate": 0, "per_order": 0},
+            "slippage": 0,
+            "execution_rule": "next_trading_day_open",
+            "fractional_shares": False,
+            "rebalance_policy": {"frequency": "daily", "threshold": None},
+            "engine_version": "phase-3.0",
+        },
     }
 
 
@@ -139,7 +149,10 @@ def test_protocol_api_records_append_only_is_selection_and_oos_lifecycle(client)
         json={"freeze_id": freeze_id, "backtest_run_id": oos_run.backtest_run_id},
     )
     assert duplicate.status_code == 422
-    assert duplicate.json()["detail"] == "OOS has already been observed for this protocol"
+    assert duplicate.json()["detail"] == {
+        "code": "OOS_OBSERVATION_ALREADY_RECORDED",
+        "message": "OOS has already been observed for this protocol",
+    }
 
 
 def test_protocol_api_rejects_oos_back_selection_and_unknown_versions(client) -> None:

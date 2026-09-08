@@ -22,6 +22,16 @@ const EMPTY_PROTOCOL: ResearchProtocolCreateRequest = {
   embargo_days: 0,
   selection_rules: ["Human review of IS evidence only"],
   allowed_metrics: ["cagr", "max_drawdown"],
+  evaluation_config: {
+    price_field_used: "adjusted_close",
+    initial_capital: 100000,
+    commission: { rate: 0, per_order: 0 },
+    slippage: 0,
+    execution_rule: "next_trading_day_open",
+    fractional_shares: false,
+    rebalance_policy: { frequency: "daily", threshold: null },
+    engine_version: "phase-3.0",
+  },
 };
 
 function idList(value: string): string[] {
@@ -175,6 +185,10 @@ export function ResearchProtocolPanel({
             <dt>OOS period</dt><dd>{protocol.oos_start_date} to {protocol.oos_end_date}</dd>
             <dt>Execution</dt><dd>Signal(T) to T+1 trading day open</dd>
             <dt>Data</dt><dd>Immutable run provenance only</dd>
+            {protocol.evaluation_config && <>
+              <dt>Evaluation contract</dt><dd>{protocol.evaluation_config.price_field_used} · ${protocol.evaluation_config.initial_capital.toLocaleString()} · {protocol.evaluation_config.execution_rule}</dd>
+              <dt>Frozen costs</dt><dd>Commission {protocol.evaluation_config.commission.rate} / {protocol.evaluation_config.commission.per_order} · Slippage {protocol.evaluation_config.slippage}</dd>
+            </>}
           </dl>
 
           {protocol.status === "draft" && !candidateSet && (

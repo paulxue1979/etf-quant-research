@@ -42,9 +42,14 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const detail = typeof payload === "object" && payload !== null && "detail" in payload
-      ? String(payload.detail)
-      : `Backtest Lab request failed (${response.status}).`;
+    const detailValue = typeof payload === "object" && payload !== null && "detail" in payload
+      ? payload.detail
+      : null;
+    const detail = typeof detailValue === "object" && detailValue !== null && "message" in detailValue
+      ? String(detailValue.message)
+      : typeof detailValue === "string"
+        ? detailValue
+        : `Backtest Lab request failed (${response.status}).`;
     throw new BacktestApiError("server", detail);
   }
   return payload as T;

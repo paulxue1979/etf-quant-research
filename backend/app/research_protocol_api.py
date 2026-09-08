@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -14,6 +15,7 @@ from backend.app.research_protocol import (
     CandidateSet,
     OOSEvaluationRecord,
     OOSObservationStatus,
+    ResearchEvaluationConfig,
     ResearchPersistenceError,
     ResearchProtocol,
     ResearchProtocolError,
@@ -23,6 +25,56 @@ from backend.app.research_protocol import (
 )
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
 from strategies import StrategyVersion
+
+
+class ProtocolCommissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rate: float = Field(ge=0.0)
+    per_order: float = Field(ge=0.0)
+
+    @field_validator("rate", "per_order")
+    @classmethod
+    def finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("commission values must be finite")
+        return value
+
+
+class ProtocolRebalancePolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frequency: Literal["daily", "weekly", "monthly", "on_signal_change"]
+    threshold: float | None = None
+
+    @field_validator("threshold")
+    @classmethod
+    def finite_non_negative(cls, value: float | None) -> float | None:
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValueError("rebalance threshold must be finite and non-negative")
+        return value
+
+
+class EvaluationConfigRequest(BaseModel):
+    """Result-affecting configuration frozen with the protocol."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    price_field_used: Literal["raw_close", "adjusted_close"]
+    initial_capital: float = Field(gt=0)
+    commission: ProtocolCommissionRequest
+    slippage: float = Field(ge=0.0, lt=1.0)
+    execution_rule: Literal["next_trading_day_open"]
+    fractional_shares: bool
+    rebalance_policy: ProtocolRebalancePolicyRequest
+    engine_version: str = Field(min_length=1)
+
+    @field_validator("initial_capital", "slippage")
+    @classmethod
+    def finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("numeric values must be finite")
+        return value
 
 
 class ProtocolCreateRequest(BaseModel):
@@ -48,6 +100,7 @@ class ProtocolCreateRequest(BaseModel):
     evaluation_policy: dict[str, Any] = Field(
         default_factory=lambda: {"oos_selection_allowed": False}
     )
+    evaluation_config: EvaluationConfigRequest
     provenance: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("selection_rules", "allowed_metrics", "forbidden_actions")
@@ -191,6 +244,11 @@ def _require_run(run_id: str):
 
 def _domain_error(exc: Exception) -> HTTPException:
     if isinstance(exc, ResearchProtocolError):
+        if exc.code is not None:
+            detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+            if exc.details:
+                detail["details"] = dict(exc.details)
+            return HTTPException(status_code=422, detail=detail)
         return HTTPException(status_code=422, detail=str(exc))
     if isinstance(
         exc, (ResearchPersistenceError, StrategyPersistenceError, BacktestPersistenceError)
@@ -222,6 +280,9 @@ def create_protocol(request: ProtocolCreateRequest) -> ResearchProtocolDetailRes
             data_policy=request.data_policy,
             execution_policy=request.execution_policy,
             evaluation_policy=request.evaluation_policy,
+            evaluation_config=ResearchEvaluationConfig.from_dict(
+                request.evaluation_config.model_dump()
+            ),
             provenance=request.provenance,
         )
         research_protocol_repository.create_protocol(protocol)
@@ -259,13 +320,17 @@ def create_candidate_set(
     try:
         if research_protocol_repository.get_protocol(protocol_id) is None:
             raise HTTPException(status_code=404, detail="research protocol was not found")
-        for version_id in request.strategy_version_ids:
-            _require_version(version_id)
+        versions = tuple(
+            _require_version(version_id) for version_id in request.strategy_version_ids
+        )
         candidate_set = CandidateSet(
             candidate_set_id=f"candidate-set-{uuid4().hex}",
             protocol_id=protocol_id,
             strategy_version_ids=tuple(request.strategy_version_ids),
             created_at=datetime.now(UTC),
+            strategy_version_content_hashes={
+                version.version_id: version.content_hash or "" for version in versions
+            },
         )
         research_protocol_repository.create_candidate_set(candidate_set)
         return _protocol_detail(protocol_id)
@@ -309,7 +374,7 @@ def create_selection(
         candidate_set = research_protocol_repository.get_candidate_set(request.candidate_set_id)
         if candidate_set is None or candidate_set.protocol_id != protocol_id:
             raise HTTPException(status_code=404, detail="candidate set was not found")
-        _require_version(request.selected_strategy_version_id)
+        version = _require_version(request.selected_strategy_version_id)
         runs = tuple(_require_run(run_id) for run_id in request.is_backtest_run_ids)
         decision = SelectionDecision(
             decision_id=f"selection-{uuid4().hex}",
@@ -323,7 +388,7 @@ def create_selection(
             data_provenance={"split": "is", **request.data_provenance},
         )
         research_protocol_repository.create_selection(
-            decision, candidate_set=candidate_set, runs=runs
+            decision, candidate_set=candidate_set, runs=runs, version=version
         )
         return _protocol_detail(protocol_id)
     except HTTPException:
