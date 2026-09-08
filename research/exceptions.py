@@ -31,3 +31,21 @@ class InvalidExperimentProvenanceError(ExperimentDomainError):
 
 class InvalidExperimentError(ExperimentDomainError):
     """Raised when an experiment binding or lifecycle transition is invalid."""
+
+
+class CandidateGenerationError(ExperimentDomainError):
+    """Base error for deterministic PHASE 8B candidate generation."""
+
+    code = "CANDIDATE_GENERATION_ERROR"
+
+
+class ExperimentNotFrozenError(CandidateGenerationError):
+    """Raised when candidate generation is requested before space freeze."""
+
+    code = "EXPERIMENT_NOT_SPACE_FROZEN"
+
+
+class ParameterSpaceTooLargeError(CandidateGenerationError):
+    """Raised when the theoretical Cartesian product exceeds its declared limit."""
+
+    code = "PARAMETER_SPACE_TOO_LARGE"
