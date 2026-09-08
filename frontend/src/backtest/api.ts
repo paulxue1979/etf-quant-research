@@ -4,6 +4,9 @@ import type {
   BacktestRun,
   ResearchBacktestList,
   ResearchComparison,
+  ResearchProtocolCreateRequest,
+  ResearchProtocolDetail,
+  ResearchProtocolStatus,
   ResearchSortBy,
   StrategyCatalogItem,
 } from "./types";
@@ -78,6 +81,74 @@ export const backtestApi = {
     return requestJson<ResearchComparison>("/research/comparisons", {
       method: "POST",
       body: JSON.stringify({ backtest_run_ids: runIds }),
+    });
+  },
+
+  listResearchProtocols(): Promise<ResearchProtocolDetail["protocol"][]> {
+    return requestJson<ResearchProtocolDetail["protocol"][]>("/research/protocols");
+  },
+
+  getResearchProtocol(protocolId: string): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}`);
+  },
+
+  createResearchProtocol(request: ResearchProtocolCreateRequest): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>("/research/protocols", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+
+  createCandidateSet(protocolId: string, strategyVersionIds: string[]): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/candidate-sets`, {
+      method: "POST",
+      body: JSON.stringify({ strategy_version_ids: strategyVersionIds }),
+    });
+  },
+
+  lockCandidateSet(candidateSetId: string): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/candidate-sets/${encodeURIComponent(candidateSetId)}/lock`, {
+      method: "POST",
+    });
+  },
+
+  transitionResearchProtocol(protocolId: string, status: ResearchProtocolStatus): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/transitions`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    });
+  },
+
+  createSelectionDecision(
+    protocolId: string,
+    request: {
+      candidate_set_id: string;
+      selected_strategy_version_id: string;
+      is_backtest_run_ids: string[];
+      rationale: string;
+    },
+  ): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/selection-decisions`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+
+  freezeResearchStrategy(protocolId: string, selectionDecisionId: string, reason: string): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/freeze`, {
+      method: "POST",
+      body: JSON.stringify({ selection_decision_id: selectionDecisionId, reason }),
+    });
+  },
+
+  observeOos(
+    protocolId: string,
+    freezeId: string,
+    backtestRunId: string,
+  ): Promise<ResearchProtocolDetail> {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/oos-evaluations`, {
+      method: "POST",
+      body: JSON.stringify({ freeze_id: freezeId, backtest_run_id: backtestRunId }),
     });
   },
 };

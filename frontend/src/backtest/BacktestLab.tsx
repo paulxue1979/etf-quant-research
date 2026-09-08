@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { BacktestApiError, backtestApi } from "./api";
+import { ResearchProtocolPanel } from "./ResearchProtocolPanel";
 import type {
   BacktestRequest,
   BacktestRun,
@@ -416,6 +417,11 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       {run && <Results run={run} />}
       <section className="research-workspace">
         {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
+        <ResearchProtocolPanel
+          availableVersionIds={versions.map((version) => version.version_id)}
+          availableRunIds={researchRuns.map((item) => item.backtest_run_id)}
+          preferredVersionId={versionId}
+        />
         <ResearchHistory
           runs={researchRuns}
           selectedRunIds={selectedRunIds}

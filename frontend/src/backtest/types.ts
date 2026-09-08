@@ -231,4 +231,100 @@ export interface ResearchComparison {
   provenance_notice: string;
 }
 
+export type ResearchProtocolStatus =
+  | "draft"
+  | "frozen"
+  | "is_evaluated"
+  | "selection_recorded"
+  | "oos_evaluated"
+  | "closed";
+
+export interface ResearchProtocol {
+  protocol_id: string;
+  protocol_version: number;
+  created_at: string;
+  is_start_date: string;
+  is_end_date: string;
+  oos_start_date: string;
+  oos_end_date: string;
+  split_type: "holdout";
+  split_policy: string;
+  timezone: string;
+  gap_days: number;
+  embargo_days: number;
+  selection_rules: string[];
+  allowed_metrics: string[];
+  forbidden_actions: string[];
+  strategy_freeze_required: true;
+  data_policy: Record<string, unknown>;
+  execution_policy: Record<string, unknown>;
+  evaluation_policy: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+  status: ResearchProtocolStatus;
+}
+
+export interface CandidateSet {
+  candidate_set_id: string;
+  protocol_id: string;
+  strategy_version_ids: string[];
+  created_at: string;
+  status: "open" | "locked";
+}
+
+export interface SelectionDecision {
+  decision_id: string;
+  protocol_id: string;
+  candidate_set_id: string;
+  selected_strategy_version_id: string;
+  is_backtest_run_ids: string[];
+  selected_metrics: Record<string, unknown>;
+  rationale: string;
+  created_at: string;
+  data_provenance: Record<string, unknown>;
+  source: "human";
+}
+
+export interface StrategyFreezeRecord {
+  freeze_id: string;
+  protocol_id: string;
+  strategy_version_id: string;
+  strategy_version_content_hash: string;
+  selection_decision_id: string;
+  frozen_at: string;
+  reason: string;
+}
+
+export interface OOSEvaluationRecord {
+  evaluation_id: string;
+  protocol_id: string;
+  freeze_id: string;
+  strategy_version_id: string;
+  backtest_run_id: string;
+  status: "planned" | "observed" | "sealed";
+  observed_at: string | null;
+  created_at: string;
+  provenance: Record<string, unknown>;
+  untouched_oos: boolean;
+}
+
+export interface ResearchProtocolDetail {
+  protocol: ResearchProtocol;
+  candidate_sets: CandidateSet[];
+  selections: SelectionDecision[];
+  freezes: StrategyFreezeRecord[];
+  oos_evaluations: OOSEvaluationRecord[];
+  data_provenance_notice: string;
+}
+
+export interface ResearchProtocolCreateRequest {
+  is_start_date: string;
+  is_end_date: string;
+  oos_start_date: string;
+  oos_end_date: string;
+  gap_days: number;
+  embargo_days: number;
+  selection_rules: string[];
+  allowed_metrics: string[];
+}
+
 export type BacktestVersion = StrategyVersionSummary;

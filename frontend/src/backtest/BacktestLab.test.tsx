@@ -149,12 +149,56 @@ function researchHistory() {
   return { items, total: items.length, limit: 50, offset: 0, sort_by: "created_at", order: "desc" };
 }
 
+function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
+  return {
+    protocol: {
+      protocol_id: "protocol-demo",
+      protocol_version: 1,
+      created_at: "2026-09-08T00:00:00Z",
+      is_start_date: "2020-01-01",
+      is_end_date: "2023-12-29",
+      oos_start_date: "2024-01-02",
+      oos_end_date: "2025-12-31",
+      split_type: "holdout",
+      split_policy: "calendar_date_non_overlapping",
+      timezone: "America/New_York",
+      gap_days: 0,
+      embargo_days: 0,
+      selection_rules: ["Human review of IS evidence only"],
+      allowed_metrics: ["cagr"],
+      forbidden_actions: ["oos_back_selection"],
+      strategy_freeze_required: true,
+      data_policy: {},
+      execution_policy: { execution_rule: "next_trading_day_open" },
+      evaluation_policy: { oos_selection_allowed: false },
+      provenance: {},
+      status,
+    },
+    candidate_sets: candidateStatus ? [{
+      candidate_set_id: "candidate-demo",
+      protocol_id: "protocol-demo",
+      strategy_version_ids: ["demo-v1"],
+      created_at: "2026-09-08T00:00:00Z",
+      status: candidateStatus,
+    }] : [],
+    selections: [],
+    freezes: [],
+    oos_evaluations: [],
+    data_provenance_notice: "Data provenance is recorded from immutable backtest runs.",
+  };
+}
+
 function mockBacktestApi() {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
     if (url.includes("/research/backtests")) return new Response(JSON.stringify(researchHistory()), { status: 200 });
+    if (url.endsWith("/research/protocols") && (!init || !init.method)) return new Response(JSON.stringify([]), { status: 200 });
+    if (url.endsWith("/research/protocols") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail()), { status: 201 });
+    if (url.endsWith("/candidate-sets") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail("draft", "open")), { status: 201 });
+    if (url.includes("/candidate-sets/candidate-demo/lock") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail("draft", "locked")), { status: 200 });
+    if (url.includes("/transitions") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail("frozen", "locked")), { status: 200 });
     if (url.endsWith("/research/comparisons") && init?.method === "POST") return new Response(JSON.stringify(researchPayload()), { status: 200 });
     if (url.endsWith("/backtests") && init?.method === "POST") return new Response(JSON.stringify(runPayload()), { status: 201 });
     return new Response("{}", { status: 404 });
@@ -209,5 +253,23 @@ describe("Backtest Lab", () => {
       fireEvent.click(screen.getByRole("checkbox", { name: `Select research run ${runId}` }));
     }
     expect(screen.getByRole("checkbox", { name: "Select research run backtest-research-g" })).toBeDisabled();
+  });
+
+  it("creates and locks an OOS research protocol before IS evaluation", async () => {
+    const fetchMock = mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create protocol" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Create protocol" }));
+    await waitFor(() => expect(screen.getByText("DRAFT")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Record candidate set" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Lock candidate set" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Lock candidate set" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Freeze research protocol" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Freeze research protocol" }));
+    await waitFor(() => expect(screen.getByText("FROZEN")).toBeInTheDocument());
+
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/research/protocols"), expect.objectContaining({ method: "POST" }));
+    expect(screen.getByText("Signal(T) to T+1 trading day open")).toBeInTheDocument();
   });
 });
