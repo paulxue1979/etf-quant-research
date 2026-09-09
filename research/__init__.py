@@ -1,5 +1,9 @@
 """PHASE 8A research domain contracts."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from research.candidates import ParameterCandidateSet, generate_candidates
 from research.canonical import canonical_json, sha256_hash
 from research.enums import (
@@ -38,6 +42,10 @@ from research.execution import (
     candidate_id_for,
     execution_id_for,
 )
+from research.execution_outcome import (
+    ExperimentExecutionOutcome,
+    ExperimentExecutionOutcomeStatus,
+)
 from research.experiments import (
     Experiment,
     ExperimentProvenance,
@@ -54,6 +62,9 @@ from research.materialization import (
     materialize_strategy_version,
 )
 
+if TYPE_CHECKING:
+    from research.execution_service import ENGINE_SERVICE_VERSION, ExperimentExecutionService
+
 __all__ = [
     "ConstraintOperator",
     "CandidateGenerationError",
@@ -62,6 +73,10 @@ __all__ = [
     "CandidateExecutionError",
     "CandidateExecutionPersistenceError",
     "CandidateExecutionStatus",
+    "ExperimentExecutionOutcome",
+    "ExperimentExecutionOutcomeStatus",
+    "ExperimentExecutionService",
+    "ENGINE_SERVICE_VERSION",
     "canonical_json",
     "Experiment",
     "ExperimentDomainError",
@@ -101,3 +116,15 @@ __all__ = [
     "candidate_id_for",
     "execution_id_for",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose the service without importing persistence during package setup."""
+    if name in {"ENGINE_SERVICE_VERSION", "ExperimentExecutionService"}:
+        from research.execution_service import ENGINE_SERVICE_VERSION, ExperimentExecutionService
+
+        return {
+            "ENGINE_SERVICE_VERSION": ENGINE_SERVICE_VERSION,
+            "ExperimentExecutionService": ExperimentExecutionService,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
