@@ -548,6 +548,7 @@ class ExperimentProvenance:
     engine_version: str
     analysis_version: str
     data_snapshot_reference: Mapping[str, Any]
+    parameter_bindings: tuple[Mapping[str, Any], ...] | None = None
 
     def __post_init__(self) -> None:
         for label in (
@@ -656,9 +657,31 @@ class ExperimentProvenance:
                 )
             ),
         )
+        if self.parameter_bindings is not None:
+            if isinstance(self.parameter_bindings, (str, bytes)) or not isinstance(
+                self.parameter_bindings, Sequence
+            ):
+                raise InvalidExperimentProvenanceError(
+                    "parameter_bindings must be a sequence or None"
+                )
+            try:
+                from research.materialization import ParameterBindingSet
+
+                binding_set = ParameterBindingSet.from_dict(
+                    {"bindings": list(self.parameter_bindings)}
+                )
+            except Exception as exc:
+                raise InvalidExperimentProvenanceError(
+                    "parameter_bindings contains an invalid frozen binding set"
+                ) from exc
+            object.__setattr__(
+                self,
+                "parameter_bindings",
+                tuple(dict(binding.to_dict()) for binding in binding_set.bindings),
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "protocol_id": self.protocol_id,
             "strategy_definition_id": self.strategy_definition_id,
             "base_strategy_version_id": self.base_strategy_version_id,
@@ -678,6 +701,9 @@ class ExperimentProvenance:
             "analysis_version": self.analysis_version,
             "data_snapshot_reference": dict(self.data_snapshot_reference),
         }
+        if self.parameter_bindings is not None:
+            payload["parameter_bindings"] = [dict(item) for item in self.parameter_bindings]
+        return payload
 
     @classmethod
     def from_dict(cls, payload: object) -> ExperimentProvenance:
@@ -701,6 +727,7 @@ class ExperimentProvenance:
             engine_version=data.get("engine_version", ""),
             analysis_version=data.get("analysis_version", ""),
             data_snapshot_reference=data.get("data_snapshot_reference", {}),
+            parameter_bindings=data.get("parameter_bindings"),
         )
 
 
