@@ -49,3 +49,37 @@ class ParameterSpaceTooLargeError(CandidateGenerationError):
     """Raised when the theoretical Cartesian product exceeds its declared limit."""
 
     code = "PARAMETER_SPACE_TOO_LARGE"
+
+
+class ParameterBindingError(ExperimentDomainError):
+    """Base error for safe, explicit parameter-to-strategy bindings."""
+
+    code = "PARAMETER_BINDING_ERROR"
+
+
+class InvalidParameterBindingError(ParameterBindingError):
+    """Raised when a binding contract is malformed or duplicated."""
+
+    code = "INVALID_PARAMETER_BINDING"
+
+
+class UnsupportedParameterBindingTargetError(ParameterBindingError):
+    """Raised when a target path is outside the PHASE 8D-1 whitelist."""
+
+    code = "PARAMETER_BINDING_TARGET_UNSUPPORTED"
+
+
+class ParameterBindingTypeMismatchError(ParameterBindingError):
+    """Raised when a candidate value cannot be applied to its declared target."""
+
+    code = "PARAMETER_BINDING_TYPE_MISMATCH"
+
+
+class StrategyMaterializationError(ParameterBindingError):
+    """Raised when immutable strategy materialization cannot complete atomically."""
+
+    code = "STRATEGY_MATERIALIZATION_ERROR"
+
+    def __init__(self, message: str, *, validation_result: object | None = None) -> None:
+        super().__init__(message)
+        self.validation_result = validation_result

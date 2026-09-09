@@ -39,6 +39,7 @@ from strategies.exceptions import (
 )
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,15}$")
+_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _require_mapping(payload: object, label: str) -> Mapping[str, Any]:
@@ -587,6 +588,57 @@ class StrategyDefinition:
 
 
 @dataclass(frozen=True)
+class StrategyMaterializationProvenance:
+    """Immutable provenance for a parameter-materialized strategy version."""
+
+    base_strategy_version_id: str
+    base_strategy_version_hash: str
+    parameter_set_hash: str
+    binding_hash: str
+    materialization_spec_hash: str
+    derived_strategy_version_hash: str
+
+    def __post_init__(self) -> None:
+        value = self.base_strategy_version_id
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidStrategyVersionError("base_strategy_version_id must be a non-empty string")
+        object.__setattr__(self, "base_strategy_version_id", value.strip())
+        for label in (
+            "base_strategy_version_hash",
+            "parameter_set_hash",
+            "binding_hash",
+            "materialization_spec_hash",
+            "derived_strategy_version_hash",
+        ):
+            value = getattr(self, label)
+            if not isinstance(value, str) or not _HASH_PATTERN.fullmatch(value):
+                raise InvalidStrategyVersionError(f"{label} must be a SHA-256 hex digest")
+            object.__setattr__(self, label, value)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "base_strategy_version_id": self.base_strategy_version_id,
+            "base_strategy_version_hash": self.base_strategy_version_hash,
+            "parameter_set_hash": self.parameter_set_hash,
+            "binding_hash": self.binding_hash,
+            "materialization_spec_hash": self.materialization_spec_hash,
+            "derived_strategy_version_hash": self.derived_strategy_version_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> StrategyMaterializationProvenance:
+        data = _require_mapping(payload, "materialization provenance")
+        return cls(
+            base_strategy_version_id=data.get("base_strategy_version_id", ""),
+            base_strategy_version_hash=data.get("base_strategy_version_hash", ""),
+            parameter_set_hash=data.get("parameter_set_hash", ""),
+            binding_hash=data.get("binding_hash", ""),
+            materialization_spec_hash=data.get("materialization_spec_hash", ""),
+            derived_strategy_version_hash=data.get("derived_strategy_version_hash", ""),
+        )
+
+
+@dataclass(frozen=True)
 class StrategyVersion:
     """Immutable strategy configuration snapshot with a deterministic hash."""
 
@@ -597,6 +649,7 @@ class StrategyVersion:
     configuration: StrategyDefinition
     content_hash: str | None = None
     status: StrategyStatus = StrategyStatus.DRAFT
+    materialization_provenance: StrategyMaterializationProvenance | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
@@ -618,6 +671,12 @@ class StrategyVersion:
                 "configuration strategy_id must match version strategy_id"
             )
         status = _validate_enum(self.status, StrategyStatus, InvalidStrategyVersionError, "status")
+        if self.materialization_provenance is not None and not isinstance(
+            self.materialization_provenance, StrategyMaterializationProvenance
+        ):
+            raise InvalidStrategyVersionError(
+                "materialization_provenance must be StrategyMaterializationProvenance"
+            )
         expected_hash = _content_hash(self.configuration)
         if self.content_hash is not None and self.content_hash != expected_hash:
             raise InvalidStrategyVersionError("content_hash does not match configuration")
@@ -627,7 +686,7 @@ class StrategyVersion:
         object.__setattr__(self, "status", status)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "strategy_id": self.strategy_id,
             "version_id": self.version_id,
             "version_number": self.version_number,
@@ -636,6 +695,9 @@ class StrategyVersion:
             "content_hash": self.content_hash,
             "status": self.status.value,
         }
+        if self.materialization_provenance is not None:
+            payload["materialization_provenance"] = self.materialization_provenance.to_dict()
+        return payload
 
     def to_json(self) -> str:
         return _canonical_json(self.to_dict())
@@ -651,6 +713,11 @@ class StrategyVersion:
             configuration=StrategyDefinition.from_dict(data.get("configuration")),
             content_hash=data.get("content_hash"),
             status=data.get("status", StrategyStatus.DRAFT.value),
+            materialization_provenance=(
+                StrategyMaterializationProvenance.from_dict(data["materialization_provenance"])
+                if data.get("materialization_provenance") is not None
+                else None
+            ),
         )
 
     @classmethod

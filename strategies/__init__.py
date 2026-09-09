@@ -31,6 +31,7 @@ from strategies.models import (
     RemainingAllocation,
     RuleGroup,
     StrategyDefinition,
+    StrategyMaterializationProvenance,
     StrategyVersion,
     Threshold,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "RemainingAllocation",
     "RuleGroup",
     "StrategyDefinition",
+    "StrategyMaterializationProvenance",
     "StrategyEvaluationResult",
     "StrategyEvaluationStatus",
     "StrategyEvaluationTimeline",

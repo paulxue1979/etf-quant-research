@@ -16,11 +16,16 @@ from research.exceptions import (
     InvalidExperimentError,
     InvalidExperimentProvenanceError,
     InvalidObjectiveSpecificationError,
+    InvalidParameterBindingError,
     InvalidParameterConstraintError,
     InvalidParameterDefinitionError,
     InvalidParameterSetError,
     InvalidParameterSpaceError,
+    ParameterBindingError,
+    ParameterBindingTypeMismatchError,
     ParameterSpaceTooLargeError,
+    StrategyMaterializationError,
+    UnsupportedParameterBindingTargetError,
 )
 from research.experiments import (
     Experiment,
@@ -30,6 +35,12 @@ from research.experiments import (
     ParameterDefinition,
     ParameterSet,
     ParameterSpace,
+)
+from research.materialization import (
+    BindingValueType,
+    ParameterBinding,
+    ParameterBindingSet,
+    materialize_strategy_version,
 )
 
 __all__ = [
@@ -58,6 +69,15 @@ __all__ = [
     "ParameterSpace",
     "ParameterSpaceTooLargeError",
     "ParameterType",
+    "BindingValueType",
+    "InvalidParameterBindingError",
+    "ParameterBinding",
+    "ParameterBindingError",
+    "ParameterBindingSet",
+    "ParameterBindingTypeMismatchError",
+    "StrategyMaterializationError",
+    "UnsupportedParameterBindingTargetError",
+    "materialize_strategy_version",
     "sha256_hash",
     "generate_candidates",
 ]
