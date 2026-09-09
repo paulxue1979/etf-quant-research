@@ -20,7 +20,11 @@ from research.exceptions import (
     CandidateGenerationError,
     ExecutionStateTransitionError,
     ExperimentDomainError,
+    ExperimentFinalizationError,
     ExperimentNotFrozenError,
+    ExperimentResultConflictError,
+    ExperimentResultError,
+    ExperimentResultPersistenceError,
     InvalidExperimentError,
     InvalidExperimentProvenanceError,
     InvalidObjectiveSpecificationError,
@@ -46,6 +50,7 @@ from research.execution_outcome import (
     ExperimentExecutionOutcome,
     ExperimentExecutionOutcomeStatus,
 )
+from research.experiment_result import ExperimentResult
 from research.experiments import (
     Experiment,
     ExperimentProvenance,
@@ -61,6 +66,10 @@ from research.materialization import (
     ParameterBindingSet,
     materialize_strategy_version,
 )
+from research.result_finalization_service import (
+    ExperimentResultFinalizationService,
+    ResultFinalizationService,
+)
 
 if TYPE_CHECKING:
     from research.execution_service import ENGINE_SERVICE_VERSION, ExperimentExecutionService
@@ -75,6 +84,13 @@ __all__ = [
     "CandidateExecutionStatus",
     "ExperimentExecutionOutcome",
     "ExperimentExecutionOutcomeStatus",
+    "ExperimentResult",
+    "ExperimentResultFinalizationService",
+    "ExperimentResultError",
+    "ExperimentResultConflictError",
+    "ExperimentResultPersistenceError",
+    "ExperimentFinalizationError",
+    "ResultFinalizationService",
     "ExperimentExecutionService",
     "ENGINE_SERVICE_VERSION",
     "canonical_json",

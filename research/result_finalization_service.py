@@ -1,0 +1,359 @@
+"""PHASE 8D-4 finalization of an IS-only execution outcome."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from analytics.models import PerformanceAnalysisResult
+from backend.app.backtest_models import BacktestRun, serialize_backtest_result
+from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
+from backtest.integration import StrategyBacktestResult
+from data.models import PriceField
+from research.canonical import canonical_json, sha256_hash
+from research.exceptions import ExperimentFinalizationError, ExperimentResultConflictError
+from research.execution import CandidateExecutionStatus
+from research.execution_outcome import (
+    ExperimentExecutionOutcome,
+    ExperimentExecutionOutcomeStatus,
+)
+from research.experiment_result import ExperimentResult
+
+if TYPE_CHECKING:
+    from backend.app.candidate_execution_repository import CandidateExecutionRepository
+    from backend.app.experiment_result_repository import ExperimentResultRepository
+
+
+class ExperimentResultFinalizationService:
+    """Persist one completed candidate execution as an immutable result.
+
+    The service is deliberately an adapter around existing persistence and
+    execution products.  It does not evaluate strategies, run backtests, or
+    calculate analytics.  The repositories currently use independent SQLite
+    connections, so recovery is achieved with deterministic run identity,
+    append-only result identity, and the candidate unique constraint rather
+    than by claiming a cross-repository transaction.
+    """
+
+    ACTOR = "phase-8d-4-finalizer"
+
+    def __init__(
+        self,
+        *,
+        backtest_repository: BacktestRepository,
+        experiment_result_repository: ExperimentResultRepository,
+        candidate_execution_repository: CandidateExecutionRepository,
+        clock: Callable[[], datetime] | None = None,
+        actor: str = ACTOR,
+    ) -> None:
+        self._backtests = backtest_repository
+        self._results = experiment_result_repository
+        self._executions = candidate_execution_repository
+        self._clock = clock or (lambda: datetime.now(UTC))
+        if not isinstance(actor, str) or not actor.strip():
+            raise ValueError("actor must be a non-empty string")
+        self._actor = actor.strip()
+
+    def finalize(self, outcome: ExperimentExecutionOutcome) -> ExperimentResult:
+        """Finalize a successful outcome, safely supporting retries."""
+        self._validate_outcome(outcome)
+        execution = self._load_and_validate_execution(outcome)
+
+        existing = self._results.get_by_candidate(outcome.experiment_id, outcome.candidate_id)
+        if existing is not None:
+            self._validate_existing_result(existing, outcome)
+            self._validate_backtest_reference(existing, outcome)
+            self._complete_execution_if_needed(execution, outcome)
+            return existing
+
+        run = self._build_backtest_run(outcome)
+        run = self._persist_or_reuse_backtest_run(run, outcome)
+        result = ExperimentResult.from_outcome(
+            outcome,
+            backtest_run_id=run.backtest_run_id,
+            created_at=self._now(),
+        )
+        try:
+            stored = self._results.create(result)
+        except ExperimentResultConflictError:
+            # Another finalizer won the candidate's unique result race.  The
+            # winner is authoritative; a retry must return it after checking
+            # that it represents the same immutable outcome.
+            stored = self._results.get_by_candidate(
+                outcome.experiment_id, outcome.candidate_id
+            )
+            if stored is None:
+                raise ExperimentFinalizationError(
+                    "DUPLICATE_EXPERIMENT_RESULT: conflicting result could not be recovered"
+                )
+            self._validate_existing_result(stored, outcome)
+            self._validate_backtest_reference(stored, outcome)
+
+        self._complete_execution_if_needed(execution, outcome)
+        return stored
+
+    def _validate_outcome(self, outcome: ExperimentExecutionOutcome) -> None:
+        if not isinstance(outcome, ExperimentExecutionOutcome):
+            raise ExperimentFinalizationError("INVALID_OUTCOME: outcome is invalid")
+        if outcome.status is not ExperimentExecutionOutcomeStatus.COMPLETED:
+            raise ExperimentFinalizationError(
+                "INVALID_OUTCOME: only completed outcomes may be finalized"
+            )
+        if not outcome.succeeded:
+            raise ExperimentFinalizationError("INVALID_OUTCOME: outcome did not succeed")
+        if outcome.candidate_execution_id is None:
+            raise ExperimentFinalizationError(
+                "CANDIDATE_EXECUTION_ERROR: completed outcome has no execution identity"
+            )
+        if outcome.derived_strategy_version_id is None or (
+            outcome.derived_strategy_version_hash is None
+        ):
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: completed outcome has no derived strategy identity"
+            )
+        if outcome.backtest_result is None or outcome.performance_analysis_result is None:
+            raise ExperimentFinalizationError(
+                "INVALID_OUTCOME: completed outcome is missing execution products"
+            )
+        integration = outcome.backtest_result
+        analysis = outcome.performance_analysis_result
+        if not isinstance(integration, StrategyBacktestResult):
+            raise ExperimentFinalizationError("INVALID_OUTCOME: backtest product is invalid")
+        if not isinstance(analysis, PerformanceAnalysisResult):
+            raise ExperimentFinalizationError("INVALID_OUTCOME: analytics product is invalid")
+        backtest = integration.backtest_result
+        if integration.strategy_version_id != outcome.derived_strategy_version_id:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: derived strategy version id does not match backtest"
+            )
+        if backtest.strategy_version_id != outcome.derived_strategy_version_id:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: backtest strategy version does not match outcome"
+            )
+        if backtest.start_date != outcome.is_start or backtest.end_date != outcome.is_end:
+            raise ExperimentFinalizationError(
+                "IS_RANGE_VIOLATION: backtest result is outside the IS range"
+            )
+        if analysis.start_date != outcome.is_start or analysis.end_date != outcome.is_end:
+            raise ExperimentFinalizationError(
+                "IS_RANGE_VIOLATION: analytics result is outside the IS range"
+            )
+        if analysis.strategy_version_id != outcome.derived_strategy_version_id:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: analytics strategy version does not match outcome"
+            )
+        if analysis.price_field_used is not outcome.price_field_used:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: analytics price field does not match outcome"
+            )
+        try:
+            snapshot = backtest.configuration_snapshot
+            snapshot_price_field = PriceField(snapshot["price_field_used"])
+            snapshot_start = snapshot["start_date"]
+            snapshot_end = snapshot["end_date"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: backtest configuration snapshot is invalid"
+            ) from exc
+        if snapshot_price_field is not outcome.price_field_used:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: backtest price field does not match outcome"
+            )
+        if (
+            snapshot_start != outcome.is_start.isoformat()
+            or snapshot_end != outcome.is_end.isoformat()
+        ):
+            raise ExperimentFinalizationError(
+                "IS_RANGE_VIOLATION: backtest configuration is outside the IS range"
+            )
+        if backtest.data_snapshot_reference != backtest.configuration_snapshot.get(
+            "data_snapshot_reference", backtest.data_snapshot_reference
+        ):
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: backtest data snapshot is inconsistent"
+            )
+
+    def _load_and_validate_execution(self, outcome: ExperimentExecutionOutcome) -> Any:
+        execution = self._executions.get_execution(outcome.candidate_execution_id or "")
+        if execution is None:
+            raise ExperimentFinalizationError(
+                "CANDIDATE_EXECUTION_NOT_FOUND: candidate execution does not exist"
+            )
+        expected = {
+            "experiment_id": outcome.experiment_id,
+            "candidate_id": outcome.candidate_id,
+            "candidate_index": outcome.candidate_index,
+            "parameter_set_hash": outcome.parameter_set_hash,
+            "base_strategy_version_id": outcome.base_strategy_version_id,
+            "base_strategy_version_hash": outcome.base_strategy_version_hash,
+            "derived_strategy_version_id": outcome.derived_strategy_version_id,
+            "derived_strategy_version_hash": outcome.derived_strategy_version_hash,
+            "parameter_binding_hash": outcome.binding_hash,
+        }
+        actual = {
+            "experiment_id": execution.experiment_id,
+            "candidate_id": execution.candidate_id,
+            "candidate_index": execution.candidate_index,
+            "parameter_set_hash": execution.parameter_set_hash,
+            "base_strategy_version_id": execution.base_strategy_version_id,
+            "base_strategy_version_hash": execution.base_strategy_version_hash,
+            "derived_strategy_version_id": execution.derived_strategy_version_id,
+            "derived_strategy_version_hash": execution.derived_strategy_version_hash,
+            "parameter_binding_hash": execution.parameter_binding_hash,
+        }
+        if actual != expected:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: candidate execution identity does not match outcome"
+            )
+        if execution.status is CandidateExecutionStatus.FAILED:
+            raise ExperimentFinalizationError(
+                "CANDIDATE_FINALIZATION_ERROR: FAILED candidate cannot produce a result"
+            )
+        if execution.status is CandidateExecutionStatus.PENDING:
+            raise ExperimentFinalizationError(
+                "CANDIDATE_FINALIZATION_ERROR: candidate must be RUNNING or COMPLETED"
+            )
+        return execution
+
+    def _build_backtest_run(self, outcome: ExperimentExecutionOutcome) -> BacktestRun:
+        integration = outcome.backtest_result
+        analysis = outcome.performance_analysis_result
+        assert integration is not None and analysis is not None
+        backtest = integration.backtest_result
+        strategy_id = integration.strategy_id
+        run_id = "backtest-experiment-" + sha256_hash(
+            {
+                "experiment_id": outcome.experiment_id,
+                "candidate_id": outcome.candidate_id,
+                "parameter_set_hash": outcome.parameter_set_hash,
+                "binding_hash": outcome.binding_hash,
+                "derived_strategy_version_id": outcome.derived_strategy_version_id,
+                "derived_strategy_version_hash": outcome.derived_strategy_version_hash,
+                "backtest_result": serialize_backtest_result(backtest),
+                "performance_analysis": analysis.to_dict(),
+            }
+        )
+        bound_analysis = replace(
+            analysis,
+            backtest_run_id=run_id,
+            strategy_id=strategy_id,
+        )
+        provenance_payload = {
+            "source": "ExperimentExecutionOutcome",
+            "experiment_id": outcome.experiment_id,
+            "candidate_id": outcome.candidate_id,
+            "candidate_execution_id": outcome.candidate_execution_id,
+            "data_snapshot_reference": outcome.provenance.get(
+                "data_snapshot_reference", {}
+            ),
+            "execution_provenance": outcome.provenance,
+        }
+        provenance = json.loads(canonical_json(provenance_payload))
+        return BacktestRun(
+            backtest_run_id=run_id,
+            strategy_id=strategy_id,
+            strategy_version_id=outcome.derived_strategy_version_id or "",
+            created_at=self._now(),
+            strategy_version_content_hash=outcome.derived_strategy_version_hash or "",
+            backtest_result=backtest,
+            performance_analysis=bound_analysis,
+            provenance=provenance,
+        )
+
+    def _persist_or_reuse_backtest_run(
+        self, run: BacktestRun, outcome: ExperimentExecutionOutcome
+    ) -> BacktestRun:
+        existing = self._backtests.get(run.backtest_run_id)
+        if existing is not None:
+            self._validate_backtest_run(existing, outcome)
+            return existing
+        try:
+            return self._backtests.create(run)
+        except BacktestPersistenceError:
+            existing = self._backtests.get(run.backtest_run_id)
+            if existing is None:
+                raise ExperimentFinalizationError(
+                    "TRANSIENT_PERSISTENCE_ERROR: backtest run could not be persisted"
+                )
+            self._validate_backtest_run(existing, outcome)
+            return existing
+
+    def _validate_backtest_run(self, run: BacktestRun, outcome: ExperimentExecutionOutcome) -> None:
+        if run.strategy_version_id != outcome.derived_strategy_version_id:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: persisted backtest strategy version mismatch"
+            )
+        if run.strategy_version_content_hash != outcome.derived_strategy_version_hash:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: persisted derived strategy hash mismatch"
+            )
+        integration = outcome.backtest_result
+        analysis = outcome.performance_analysis_result
+        assert integration is not None and analysis is not None
+        if run.backtest_result != integration.backtest_result:
+            raise ExperimentFinalizationError(
+                "BACKTEST_RUN_CONFLICT: persisted backtest run differs from outcome"
+            )
+        if run.performance_analysis.to_dict() != replace(
+            analysis, backtest_run_id=run.backtest_run_id, strategy_id=integration.strategy_id
+        ).to_dict():
+            raise ExperimentFinalizationError(
+                "BACKTEST_RUN_CONFLICT: persisted analytics differs from outcome"
+            )
+
+    def _validate_existing_result(
+        self, result: ExperimentResult, outcome: ExperimentExecutionOutcome
+    ) -> None:
+        expected = ExperimentResult.from_outcome(
+            outcome,
+            backtest_run_id=result.backtest_run_id,
+            created_at=result.created_at,
+        )
+        if result.hash_payload() != expected.hash_payload():
+            raise ExperimentFinalizationError(
+                "DUPLICATE_EXPERIMENT_RESULT: existing result conflicts with outcome"
+            )
+
+    def _validate_backtest_reference(
+        self, result: ExperimentResult, outcome: ExperimentExecutionOutcome
+    ) -> None:
+        run = self._backtests.get(result.backtest_run_id)
+        if run is None:
+            raise ExperimentFinalizationError(
+                "BACKTEST_RUN_MISSING: experiment result references a missing backtest run"
+            )
+        self._validate_backtest_run(run, outcome)
+
+    def _complete_execution_if_needed(
+        self, execution: Any, outcome: ExperimentExecutionOutcome
+    ) -> None:
+        if execution.status is CandidateExecutionStatus.COMPLETED:
+            return
+        try:
+            now = self._now()
+            self._executions.mark_completed(
+                execution.execution_id,
+                self._actor,
+                now,
+                now,
+            )
+        except Exception as exc:
+            raise ExperimentFinalizationError(
+                "CANDIDATE_FINALIZATION_ERROR: result exists but candidate completion failed"
+            ) from exc
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ExperimentFinalizationError(
+                "INVALID_CLOCK: finalizer clock must be timezone-aware"
+            )
+        return value
+
+
+ResultFinalizationService = ExperimentResultFinalizationService
+
+__all__ = ["ExperimentResultFinalizationService", "ResultFinalizationService"]

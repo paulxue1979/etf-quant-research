@@ -112,4 +112,20 @@ class CandidateExecutionConflictError(CandidateExecutionError):
 class CandidateExecutionPersistenceError(CandidateExecutionError):
     """Raised when an execution record cannot be safely persisted or restored."""
 
+
+class ExperimentResultError(ExperimentDomainError):
+    """Base error for immutable PHASE 8D-4 experiment results."""
+
+
+class ExperimentResultConflictError(ExperimentResultError):
+    """Raised when one candidate is assigned conflicting official results."""
+
+
+class ExperimentResultPersistenceError(ExperimentResultError):
+    """Raised when an experiment result cannot be safely stored or restored."""
+
+
+class ExperimentFinalizationError(ExperimentResultError):
+    """Raised when a completed candidate outcome cannot be finalized safely."""
+
     code = "CANDIDATE_EXECUTION_PERSISTENCE_ERROR"
