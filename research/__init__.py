@@ -10,7 +10,11 @@ from research.enums import (
     ParameterType,
 )
 from research.exceptions import (
+    CandidateExecutionConflictError,
+    CandidateExecutionError,
+    CandidateExecutionPersistenceError,
     CandidateGenerationError,
+    ExecutionStateTransitionError,
     ExperimentDomainError,
     ExperimentNotFrozenError,
     InvalidExperimentError,
@@ -26,6 +30,13 @@ from research.exceptions import (
     ParameterSpaceTooLargeError,
     StrategyMaterializationError,
     UnsupportedParameterBindingTargetError,
+)
+from research.execution import (
+    CandidateExecution,
+    CandidateExecutionStatus,
+    ExecutionEvent,
+    candidate_id_for,
+    execution_id_for,
 )
 from research.experiments import (
     Experiment,
@@ -46,6 +57,11 @@ from research.materialization import (
 __all__ = [
     "ConstraintOperator",
     "CandidateGenerationError",
+    "CandidateExecution",
+    "CandidateExecutionConflictError",
+    "CandidateExecutionError",
+    "CandidateExecutionPersistenceError",
+    "CandidateExecutionStatus",
     "canonical_json",
     "Experiment",
     "ExperimentDomainError",
@@ -53,6 +69,8 @@ __all__ = [
     "ExperimentNotFrozenError",
     "ExperimentProvenance",
     "ExperimentStatus",
+    "ExecutionEvent",
+    "ExecutionStateTransitionError",
     "InvalidExperimentError",
     "InvalidExperimentProvenanceError",
     "InvalidObjectiveSpecificationError",
@@ -80,4 +98,6 @@ __all__ = [
     "materialize_strategy_version",
     "sha256_hash",
     "generate_candidates",
+    "candidate_id_for",
+    "execution_id_for",
 ]

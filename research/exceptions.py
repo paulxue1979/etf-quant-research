@@ -83,3 +83,33 @@ class StrategyMaterializationError(ParameterBindingError):
     def __init__(self, message: str, *, validation_result: object | None = None) -> None:
         super().__init__(message)
         self.validation_result = validation_result
+
+
+class CandidateExecutionError(ExperimentDomainError):
+    """Base error for PHASE 8D-2 candidate execution records."""
+
+    code = "CANDIDATE_EXECUTION_ERROR"
+
+
+class InvalidCandidateExecutionError(CandidateExecutionError):
+    """Raised when an execution identity or serialized record is malformed."""
+
+    code = "INVALID_CANDIDATE_EXECUTION"
+
+
+class ExecutionStateTransitionError(CandidateExecutionError):
+    """Raised when a candidate execution attempts an illegal state transition."""
+
+    code = "EXECUTION_STATE_TRANSITION_INVALID"
+
+
+class CandidateExecutionConflictError(CandidateExecutionError):
+    """Raised when an execution claim or identity conflicts with another owner."""
+
+    code = "CANDIDATE_EXECUTION_CONFLICT"
+
+
+class CandidateExecutionPersistenceError(CandidateExecutionError):
+    """Raised when an execution record cannot be safely persisted or restored."""
+
+    code = "CANDIDATE_EXECUTION_PERSISTENCE_ERROR"
