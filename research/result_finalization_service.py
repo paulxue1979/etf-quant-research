@@ -11,11 +11,12 @@ from typing import TYPE_CHECKING, Any
 from analytics.models import PerformanceAnalysisResult
 from backend.app.backtest_models import BacktestRun, serialize_backtest_result
 from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
+from backend.app.experiment_repository import ExperimentRepository
 from backtest.integration import StrategyBacktestResult
 from data.models import PriceField
 from research.canonical import canonical_json, sha256_hash
 from research.exceptions import ExperimentFinalizationError, ExperimentResultConflictError
-from research.execution import CandidateExecutionStatus
+from research.execution import CandidateExecutionStatus, candidate_id_for
 from research.execution_outcome import (
     ExperimentExecutionOutcome,
     ExperimentExecutionOutcomeStatus,
@@ -46,12 +47,14 @@ class ExperimentResultFinalizationService:
         backtest_repository: BacktestRepository,
         experiment_result_repository: ExperimentResultRepository,
         candidate_execution_repository: CandidateExecutionRepository,
+        experiment_repository: ExperimentRepository | None = None,
         clock: Callable[[], datetime] | None = None,
         actor: str = ACTOR,
     ) -> None:
         self._backtests = backtest_repository
         self._results = experiment_result_repository
         self._executions = candidate_execution_repository
+        self._experiments = experiment_repository or ExperimentRepository(self._executions.db_path)
         self._clock = clock or (lambda: datetime.now(UTC))
         if not isinstance(actor, str) or not actor.strip():
             raise ValueError("actor must be a non-empty string")
@@ -202,11 +205,61 @@ class ExperimentResultFinalizationService:
             "base_strategy_version_hash": execution.base_strategy_version_hash,
             "derived_strategy_version_id": execution.derived_strategy_version_id,
             "derived_strategy_version_hash": execution.derived_strategy_version_hash,
-            "parameter_binding_hash": execution.parameter_binding_hash,
-        }
+                "parameter_binding_hash": execution.parameter_binding_hash,
+            }
         if actual != expected:
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: candidate execution identity does not match outcome"
+            )
+        experiment = self._experiments.get(outcome.experiment_id)
+        if experiment is None:
+            raise ExperimentFinalizationError(
+                "EXPERIMENT_NOT_FOUND: experiment does not exist"
+            )
+        if execution.experiment_hash != experiment.content_hash:
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: candidate execution experiment hash is stale"
+            )
+        if any(
+            (
+                experiment.base_strategy_version_id != outcome.base_strategy_version_id,
+                experiment.base_strategy_version_hash != outcome.base_strategy_version_hash,
+                experiment.parameter_space_hash != outcome.parameter_space_hash,
+                experiment.is_start_date != outcome.is_start,
+                experiment.is_end_date != outcome.is_end,
+                experiment.engine_version != outcome.engine_version,
+                experiment.analysis_version != outcome.analysis_version,
+                sha256_hash(experiment.backtest_configuration.snapshot({}))
+                != outcome.backtest_configuration_hash,
+            )
+        ):
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: outcome does not match frozen experiment"
+            )
+        candidates = self._experiments.list_candidates(outcome.experiment_id)
+        candidate = next(
+            (item for item in candidates if item.candidate_index == outcome.candidate_index),
+            None,
+        )
+        if candidate is None:
+            raise ExperimentFinalizationError(
+                "CANDIDATE_NOT_FOUND: candidate does not exist in the frozen candidate set"
+            )
+        expected_candidate_id = candidate_id_for(
+            outcome.experiment_id,
+            candidate.candidate_index,
+            candidate.parameter_set_hash,
+        )
+        if any(
+            (
+                candidate.experiment_id != outcome.experiment_id,
+                expected_candidate_id != outcome.candidate_id,
+                candidate.parameter_set_hash != outcome.parameter_set_hash,
+                candidate.candidate_set_hash != outcome.candidate_set_hash,
+            )
+        ):
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: outcome does not match frozen candidate"
             )
         if execution.status is CandidateExecutionStatus.FAILED:
             raise ExperimentFinalizationError(

@@ -282,6 +282,7 @@ def create_default_experiment_execution_orchestrator() -> ExperimentExecutionOrc
         backtest_repository=backtests,
         experiment_result_repository=results,
         candidate_execution_repository=executions,
+        experiment_repository=experiments,
     )
     return ExperimentExecutionOrchestrator(
         experiment_repository=experiments,
