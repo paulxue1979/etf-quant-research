@@ -12,8 +12,8 @@ import json
 import re
 import sqlite3
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -23,11 +23,19 @@ from backend.app.strategy_repository import StrategyRepository
 from research.candidates import ParameterCandidateSet
 from research.canonical import canonical_json, sha256_hash
 from research.enums import ExperimentStatus
+from research.exceptions import InvalidExperimentError
 from research.experiments import Experiment, ParameterSet, ParameterSpace
 
 
 class ExperimentPersistenceError(RuntimeError):
     """Raised when an experiment cannot be safely persisted or restored."""
+
+    code = "EXPERIMENT_PERSISTENCE_ERROR"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 @dataclass(frozen=True)
@@ -51,12 +59,16 @@ class ExperimentEventRecord:
     event_type: str
     created_at: datetime
     payload: Mapping[str, Any]
+    transition_key: str | None = None
+    from_status: ExperimentStatus | None = None
+    to_status: ExperimentStatus | None = None
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
 class ExperimentRepository:
     """Durable storage for PHASE 8C experiment definitions and candidates."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
     _SCHEMA_KEY = "experiment_repository"
     _SENSITIVE_KEY = re.compile(
         r"(?:api[_-]?key|access[_-]?token|auth(?:orization)?|credential|password|secret)",
@@ -164,6 +176,10 @@ class ExperimentRepository:
                     event_type TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
+                    transition_key TEXT,
+                    from_status TEXT,
+                    to_status TEXT,
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
                     FOREIGN KEY(experiment_id) REFERENCES experiments(experiment_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_experiment_protocol
@@ -171,6 +187,12 @@ class ExperimentRepository:
                 CREATE INDEX IF NOT EXISTS idx_experiment_events
                     ON experiment_events(experiment_id, event_sequence ASC);
                 """
+            )
+            self._migrate_event_columns(connection)
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_experiment_transition_key "
+                "ON experiment_events(experiment_id, transition_key) "
+                "WHERE transition_key IS NOT NULL"
             )
             row = connection.execute(
                 "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
@@ -180,6 +202,11 @@ class ExperimentRepository:
                 connection.execute(
                     "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
                     (self._SCHEMA_KEY, self.SCHEMA_VERSION),
+                )
+            elif int(row["schema_version"]) == 1:
+                connection.execute(
+                    "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
+                    (self.SCHEMA_VERSION, self._SCHEMA_KEY),
                 )
             elif int(row["schema_version"]) != self.SCHEMA_VERSION:
                 raise ExperimentPersistenceError("unsupported experiment database schema version")
@@ -378,6 +405,131 @@ class ExperimentRepository:
             raise
         except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
             raise ExperimentPersistenceError("stored experiment failed integrity checks") from exc
+        finally:
+            connection.close()
+
+    def transition_status(
+        self,
+        experiment_id: str,
+        expected_status: ExperimentStatus | str,
+        target_status: ExperimentStatus | str,
+        event_type: str,
+        transition_key: str,
+        provenance: Mapping[str, Any] | None = None,
+    ) -> Experiment:
+        """Atomically persist one validated lifecycle transition and its event."""
+        expected = self._coerce_status(expected_status, "expected_status")
+        target = self._coerce_status(target_status, "target_status")
+        event_name = self._validate_transition_text(event_type, "event_type")
+        key = self._validate_transition_text(transition_key, "transition_key")
+        provenance_payload = {} if provenance is None else dict(provenance)
+        provenance_json = self._canonical_payload(provenance_payload)
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,)
+            ).fetchone()
+            if row is None:
+                self._rollback(connection)
+                raise ExperimentPersistenceError(
+                    "experiment was not found", code="EXPERIMENT_NOT_FOUND"
+                )
+
+            experiment = self._decode_experiment(row)
+            self._validate_parameter_space_row(connection, experiment.parameter_space)
+            existing = connection.execute(
+                "SELECT * FROM experiment_events WHERE experiment_id = ? "
+                "AND transition_key = ?",
+                (experiment_id, key),
+            ).fetchone()
+            if existing is not None:
+                event = self._decode_event(existing)
+                if not self._event_matches_transition(
+                    event,
+                    expected=expected,
+                    target=target,
+                    event_type=event_name,
+                    transition_key=key,
+                    provenance_json=provenance_json,
+                ):
+                    self._rollback(connection)
+                    raise ExperimentPersistenceError(
+                        "transition key conflicts with an existing lifecycle event",
+                        code="EXPERIMENT_TRANSITION_CONFLICT",
+                    )
+                if experiment.status is not target:
+                    self._rollback(connection)
+                    raise ExperimentPersistenceError(
+                        "stored lifecycle event does not match experiment state",
+                        code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+                    )
+                connection.execute("COMMIT")
+                return experiment
+
+            if experiment.status is not expected:
+                self._rollback(connection)
+                raise ExperimentPersistenceError(
+                    "experiment status no longer matches expected status",
+                    code="EXPERIMENT_STALE_STATE",
+                )
+            try:
+                updated = experiment.with_status(target)
+            except InvalidExperimentError as exc:
+                self._rollback(connection)
+                raise ExperimentPersistenceError(
+                    "experiment lifecycle transition is invalid",
+                    code="INVALID_EXPERIMENT_TRANSITION",
+                ) from exc
+
+            payload = self._canonical_payload(updated.to_dict())
+            self._validate_experiment_integrity(updated, payload)
+            self._update_experiment_row(
+                connection,
+                experiment_id,
+                expected,
+                updated,
+                payload,
+            )
+            self._insert_event(
+                connection,
+                experiment_id,
+                event_name,
+                {
+                    "from_status": expected.value,
+                    "to_status": target.value,
+                    "transition_key": key,
+                },
+                datetime.now(UTC),
+                transition_key=key,
+                from_status=expected,
+                to_status=target,
+                provenance=provenance_payload,
+            )
+            connection.execute("COMMIT")
+            return updated
+        except ExperimentPersistenceError:
+            self._rollback(connection)
+            raise
+        except sqlite3.IntegrityError as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "experiment lifecycle transition conflicts with persisted data",
+                code="EXPERIMENT_TRANSITION_CONFLICT",
+            ) from exc
+        except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "could not persist experiment lifecycle transition atomically",
+                code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+            ) from exc
+        except Exception as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "could not persist experiment lifecycle transition atomically",
+                code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+            ) from exc
         finally:
             connection.close()
 
@@ -727,12 +879,18 @@ class ExperimentRepository:
         event_type: str,
         payload: Mapping[str, Any],
         created_at: datetime,
+        *,
+        transition_key: str | None = None,
+        from_status: ExperimentStatus | None = None,
+        to_status: ExperimentStatus | None = None,
+        provenance: Mapping[str, Any] | None = None,
     ) -> None:
         connection.execute(
             """
             INSERT INTO experiment_events(
-                event_id, experiment_id, event_type, created_at, payload_json
-            ) VALUES (?, ?, ?, ?, ?)
+                event_id, experiment_id, event_type, created_at, payload_json,
+                transition_key, from_status, to_status, provenance_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uuid4().hex,
@@ -740,8 +898,37 @@ class ExperimentRepository:
                 event_type,
                 created_at.isoformat(),
                 self._canonical_payload(payload),
+                transition_key,
+                from_status.value if from_status is not None else None,
+                to_status.value if to_status is not None else None,
+                self._canonical_payload({} if provenance is None else provenance),
             ),
         )
+
+    @staticmethod
+    def _update_experiment_row(
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        expected_status: ExperimentStatus,
+        updated: Experiment,
+        payload: str,
+    ) -> None:
+        cursor = connection.execute(
+            "UPDATE experiments SET status = ?, content_hash = ?, experiment_json = ? "
+            "WHERE experiment_id = ? AND status = ?",
+            (
+                updated.status.value,
+                updated.content_hash,
+                payload,
+                experiment_id,
+                expected_status.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ExperimentPersistenceError(
+                "experiment status changed during transition",
+                code="EXPERIMENT_STALE_STATE",
+            )
 
     @classmethod
     def _candidate_set_payload(cls, candidates: ParameterCandidateSet) -> str:
@@ -849,13 +1036,90 @@ class ExperimentRepository:
             raise ExperimentPersistenceError("stored experiment event is not canonical JSON")
         if not isinstance(payload, Mapping):
             raise ExperimentPersistenceError("stored experiment event payload is invalid")
+        provenance_raw = row["provenance_json"] if "provenance_json" in row.keys() else "{}"
+        provenance = json.loads(provenance_raw, parse_constant=_reject_nonfinite)
+        if provenance_raw != cls._canonical_payload(provenance) or not isinstance(
+            provenance, Mapping
+        ):
+            raise ExperimentPersistenceError("stored experiment event provenance is invalid")
+        from_status = cls._decode_optional_status(row["from_status"])
+        to_status = cls._decode_optional_status(row["to_status"])
         return ExperimentEventRecord(
             event_id=str(row["event_id"]),
             experiment_id=str(row["experiment_id"]),
             event_type=str(row["event_type"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
             payload=dict(payload),
+            transition_key=(str(row["transition_key"]) if row["transition_key"] else None),
+            from_status=from_status,
+            to_status=to_status,
+            provenance=dict(provenance),
         )
+
+    @staticmethod
+    def _coerce_status(value: ExperimentStatus | str, label: str) -> ExperimentStatus:
+        try:
+            return value if isinstance(value, ExperimentStatus) else ExperimentStatus(value)
+        except (TypeError, ValueError) as exc:
+            raise ExperimentPersistenceError(
+                f"{label} is invalid", code="INVALID_EXPERIMENT_TRANSITION"
+            ) from exc
+
+    @staticmethod
+    def _validate_transition_text(value: str, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ExperimentPersistenceError(
+                f"{label} must be non-empty", code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR"
+            )
+        return value.strip()
+
+    @staticmethod
+    def _decode_optional_status(value: object) -> ExperimentStatus | None:
+        if value is None:
+            return None
+        try:
+            return ExperimentStatus(str(value))
+        except ValueError as exc:
+            raise ExperimentPersistenceError(
+                "stored experiment event status is invalid",
+                code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+            ) from exc
+
+    @staticmethod
+    def _event_matches_transition(
+        event: ExperimentEventRecord,
+        *,
+        expected: ExperimentStatus,
+        target: ExperimentStatus,
+        event_type: str,
+        transition_key: str,
+        provenance_json: str,
+    ) -> bool:
+        return (
+            event.transition_key == transition_key
+            and event.from_status == expected
+            and event.to_status == target
+            and event.event_type == event_type
+            and canonical_json(event.provenance) == provenance_json
+        )
+
+    @staticmethod
+    def _migrate_event_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(experiment_events)").fetchall()
+        }
+        additions = (
+            ("transition_key", "TEXT"),
+            ("from_status", "TEXT"),
+            ("to_status", "TEXT"),
+            ("provenance_json", "TEXT NOT NULL DEFAULT '{}'"),
+        )
+        for name, definition in additions:
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE experiment_events ADD COLUMN {name} {definition}"
+                )
 
     def _validate_parameter_space_row(
         self, connection: sqlite3.Connection, parameter_space: ParameterSpace
