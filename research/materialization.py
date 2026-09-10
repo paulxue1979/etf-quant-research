@@ -46,6 +46,43 @@ _FALLBACK_ALLOCATION_TARGET = re.compile(
 MATERIALIZATION_SPEC_VERSION = "phase-8d-1-v1"
 
 
+def materialization_spec_hash(parameter_bindings: ParameterBindingSet) -> str:
+    """Return the canonical hash of the binding specification."""
+    return sha256_hash(
+        {
+            "materialization_spec_version": MATERIALIZATION_SPEC_VERSION,
+            "bindings": [binding.to_dict() for binding in parameter_bindings.bindings],
+        }
+    )
+
+
+def derived_strategy_version_hash(
+    configuration: StrategyDefinition,
+    *,
+    base_strategy_version_id: str,
+    base_strategy_version_hash: str,
+    parameter_set_hash: str,
+    binding_hash: str,
+    materialization_spec_hash: str,
+) -> str:
+    """Return the deterministic semantic identity for a materialized version."""
+    return sha256_hash(
+        {
+            "configuration": configuration.to_dict(),
+            "base_strategy_version_id": base_strategy_version_id,
+            "base_strategy_version_hash": base_strategy_version_hash,
+            "parameter_set_hash": parameter_set_hash,
+            "binding_hash": binding_hash,
+            "materialization_spec_hash": materialization_spec_hash,
+        }
+    )
+
+
+def derived_strategy_version_id(base_version_id: str, derived_hash: str) -> str:
+    """Return the stable version id used by PHASE 8D-1 materialization."""
+    return f"{base_version_id}--derived-{derived_hash[:16]}"
+
+
 class BindingValueType(StrEnum):
     """Explicit value semantics supported by the V1 binding contract."""
 
@@ -196,33 +233,26 @@ def materialize_strategy_version(
             "materialized strategy failed validation", validation_result=validation
         )
 
-    materialization_spec_hash = sha256_hash(
-        {
-            "materialization_spec_version": MATERIALIZATION_SPEC_VERSION,
-            "bindings": [binding.to_dict() for binding in binding_set.bindings],
-        }
-    )
-    derived_hash = sha256_hash(
-        {
-            "configuration": definition.to_dict(),
-            "base_strategy_version_id": base_strategy_version.version_id,
-            "base_strategy_version_hash": base_strategy_version.content_hash,
-            "parameter_set_hash": parameter_set.content_hash,
-            "binding_hash": binding_set.binding_hash,
-            "materialization_spec_hash": materialization_spec_hash,
-        }
+    materialization_spec_hash_value = materialization_spec_hash(binding_set)
+    derived_hash = derived_strategy_version_hash(
+        definition,
+        base_strategy_version_id=base_strategy_version.version_id,
+        base_strategy_version_hash=base_strategy_version.content_hash or "",
+        parameter_set_hash=parameter_set.content_hash,
+        binding_hash=binding_set.binding_hash,
+        materialization_spec_hash=materialization_spec_hash_value,
     )
     provenance = StrategyMaterializationProvenance(
         base_strategy_version_id=base_strategy_version.version_id,
         base_strategy_version_hash=base_strategy_version.content_hash or "",
         parameter_set_hash=parameter_set.content_hash,
         binding_hash=binding_set.binding_hash,
-        materialization_spec_hash=materialization_spec_hash,
+        materialization_spec_hash=materialization_spec_hash_value,
         derived_strategy_version_hash=derived_hash,
     )
     return StrategyVersion(
         strategy_id=base_strategy_version.strategy_id,
-        version_id=f"{base_strategy_version.version_id}--derived-{derived_hash[:16]}",
+        version_id=derived_strategy_version_id(base_strategy_version.version_id, derived_hash),
         version_number=base_strategy_version.version_number,
         created_at=base_strategy_version.created_at,
         configuration=definition,

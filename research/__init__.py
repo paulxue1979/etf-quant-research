@@ -64,15 +64,18 @@ from research.materialization import (
     BindingValueType,
     ParameterBinding,
     ParameterBindingSet,
+    derived_strategy_version_hash,
+    derived_strategy_version_id,
+    materialization_spec_hash,
     materialize_strategy_version,
-)
-from research.result_finalization_service import (
-    ExperimentResultFinalizationService,
-    ResultFinalizationService,
 )
 
 if TYPE_CHECKING:
     from research.execution_service import ENGINE_SERVICE_VERSION, ExperimentExecutionService
+    from research.result_finalization_service import (
+        ExperimentResultFinalizationService,
+        ResultFinalizationService,
+    )
 
 __all__ = [
     "ConstraintOperator",
@@ -127,6 +130,9 @@ __all__ = [
     "StrategyMaterializationError",
     "UnsupportedParameterBindingTargetError",
     "materialize_strategy_version",
+    "materialization_spec_hash",
+    "derived_strategy_version_hash",
+    "derived_strategy_version_id",
     "sha256_hash",
     "generate_candidates",
     "candidate_id_for",
@@ -142,5 +148,15 @@ def __getattr__(name: str) -> Any:
         return {
             "ENGINE_SERVICE_VERSION": ENGINE_SERVICE_VERSION,
             "ExperimentExecutionService": ExperimentExecutionService,
+        }[name]
+    if name in {"ExperimentResultFinalizationService", "ResultFinalizationService"}:
+        from research.result_finalization_service import (
+            ExperimentResultFinalizationService,
+            ResultFinalizationService,
+        )
+
+        return {
+            "ExperimentResultFinalizationService": ExperimentResultFinalizationService,
+            "ResultFinalizationService": ResultFinalizationService,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

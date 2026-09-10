@@ -315,6 +315,13 @@ def test_executes_one_candidate_with_is_only_warmup_and_complete_provenance(tmp_
     assert outcome.backtest_result.signal_records[-1].signal.date == IS_END
     assert outcome.backtest_result.signal_records[-1].submitted_to_backtest is False
     assert outcome.provenance["is_evaluation_range"]["end_date"] == IS_END.isoformat()
+    persisted = StrategyRepository(tmp_path / "research.db").get_any_version(
+        outcome.derived_strategy_version_id or ""
+    )
+    assert persisted is not None
+    assert outcome.derived_strategy_version_id == persisted.version_id
+    assert outcome.derived_strategy_version_hash == persisted.content_hash
+    assert persisted.materialization_provenance is not None
     assert (
         outcome.provenance["warmup_range"]["end_date"] == (IS_START - timedelta(days=1)).isoformat()
     )
@@ -478,9 +485,7 @@ def test_recovers_expired_candidate_lease_before_running_the_candidate(tmp_path)
         base_strategy_version_id=base.version_id,
         base_strategy_version_hash=base.content_hash or "",
         derived_strategy_version_id=derived.version_id,
-        derived_strategy_version_hash=(
-            derived.materialization_provenance.derived_strategy_version_hash
-        ),
+        derived_strategy_version_hash=derived.content_hash,
         created_at=NOW - timedelta(minutes=10),
     )
     executions.create_execution(stale)

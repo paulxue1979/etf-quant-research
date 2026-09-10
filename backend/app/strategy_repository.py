@@ -10,11 +10,26 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from strategies import StrategyDefinition, StrategyStatus, StrategyVersion
+from research.materialization import (
+    derived_strategy_version_hash,
+    derived_strategy_version_id,
+)
+from strategies import (
+    StrategyDefinition,
+    StrategyStatus,
+    StrategyVersion,
+)
 
 
 class StrategyPersistenceError(RuntimeError):
     """Raised when strategy persistence or integrity checks fail."""
+
+    code = "STRATEGY_PERSISTENCE_ERROR"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 class StrategyRepository:
@@ -25,7 +40,7 @@ class StrategyRepository:
     so separate application threads cannot allocate the same version number.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = (
@@ -83,21 +98,57 @@ class StrategyRepository:
                     UNIQUE (strategy_id, version_number),
                     FOREIGN KEY (strategy_id) REFERENCES strategies(strategy_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS materialized_strategy_versions (
+                    strategy_id TEXT NOT NULL,
+                    version_id TEXT NOT NULL UNIQUE,
+                    version_number INTEGER NOT NULL CHECK (version_number > 0),
+                    created_at TEXT NOT NULL,
+                    configuration_json TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    materialization_provenance_json TEXT NOT NULL,
+                    version_json TEXT NOT NULL,
+                    PRIMARY KEY (strategy_id, version_id)
+                );
                 """
             )
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO schema_metadata(schema_key, schema_version)
-                VALUES (?, ?)
-                """,
-                ("strategy_repository", self.SCHEMA_VERSION),
-            )
+            row = connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                ("strategy_repository",),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
+                    ("strategy_repository", self.SCHEMA_VERSION),
+                )
+            elif int(row["schema_version"]) == 1:
+                connection.execute(
+                    "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
+                    (self.SCHEMA_VERSION, "strategy_repository"),
+                )
+            elif int(row["schema_version"]) != self.SCHEMA_VERSION:
+                raise StrategyPersistenceError("unsupported strategy database schema version")
             row = connection.execute(
                 "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
                 ("strategy_repository",),
             ).fetchone()
             if row is None or row["schema_version"] != self.SCHEMA_VERSION:
                 raise StrategyPersistenceError("unsupported strategy database schema version")
+            collision = connection.execute(
+                """
+                SELECT ordinary.version_id
+                FROM strategy_versions AS ordinary
+                INNER JOIN materialized_strategy_versions AS derived
+                    ON derived.version_id = ordinary.version_id
+                LIMIT 1
+                """
+            ).fetchone()
+            if collision is not None:
+                raise StrategyPersistenceError(
+                    "strategy version identity is present in multiple stores",
+                    code="STRATEGY_VERSION_IDENTITY_COLLISION",
+                )
         except sqlite3.Error as exc:
             raise StrategyPersistenceError("could not initialize strategy database") from exc
         finally:
@@ -128,6 +179,11 @@ class StrategyRepository:
                 configuration=definition,
                 status=StrategyStatus.DRAFT,
             )
+            if self._version_id_exists(connection, version.version_id):
+                raise StrategyPersistenceError(
+                    "strategy version identity collides with an existing version",
+                    code="STRATEGY_VERSION_IDENTITY_COLLISION",
+                )
             created_at = version.created_at.isoformat()
             connection.execute(
                 """
@@ -172,6 +228,101 @@ class StrategyRepository:
         except ValueError as exc:
             self._rollback(connection)
             raise StrategyPersistenceError("could not create strategy version") from exc
+        finally:
+            connection.close()
+
+    def persist_exact_strategy_version(self, version: StrategyVersion) -> StrategyVersion:
+        """Persist one already-materialized version without changing its identity.
+
+        This is an internal persistence boundary for PHASE 8D execution.  It
+        intentionally never calls materialization or allocates an ordinary
+        sequential version number.
+        """
+        try:
+            self._validate_exact_materialized_version(version)
+        except StrategyPersistenceError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise StrategyPersistenceError(
+                "materialized strategy version failed integrity validation",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            ) from exc
+
+        provenance = version.materialization_provenance
+        assert provenance is not None
+        version_json = self._safe_version_json(version)
+        provenance_json = self._safe_json(provenance.to_dict())
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            base_rows = self._version_id_rows(connection, provenance.base_strategy_version_id)
+            if len(base_rows) != 1:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "base strategy version identity is missing or ambiguous",
+                    code="BASE_STRATEGY_VERSION_INTEGRITY_ERROR",
+                )
+            base_content_hash = base_rows[0]["row"]["content_hash"]
+            if base_content_hash != provenance.base_strategy_version_hash:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "base strategy version hash does not match provenance",
+                    code="BASE_STRATEGY_VERSION_INTEGRITY_ERROR",
+                )
+            existing_rows = self._version_id_rows(connection, version.version_id)
+            if existing_rows:
+                if len(existing_rows) != 1 or existing_rows[0]["source"] != "derived":
+                    self._rollback(connection)
+                    raise StrategyPersistenceError(
+                        "strategy version identity collides with an existing version",
+                        code="STRATEGY_VERSION_IDENTITY_COLLISION",
+                    )
+                restored = self._row_to_materialized_version(existing_rows[0]["row"])
+                if restored == version:
+                    connection.execute("COMMIT")
+                    return restored
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "materialized strategy version identity already has different content",
+                    code="STRATEGY_VERSION_IMMUTABILITY_CONFLICT",
+                )
+
+            connection.execute(
+                """
+                INSERT INTO materialized_strategy_versions(
+                    strategy_id, version_id, version_number, created_at,
+                    configuration_json, content_hash, status,
+                    materialization_provenance_json, version_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version.strategy_id,
+                    version.version_id,
+                    version.version_number,
+                    version.created_at.isoformat(),
+                    version.configuration.to_json(),
+                    version.content_hash,
+                    version.status.value,
+                    provenance_json,
+                    version_json,
+                ),
+            )
+            connection.execute("COMMIT")
+            return version
+        except StrategyPersistenceError:
+            self._rollback(connection)
+            raise
+        except sqlite3.IntegrityError as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError(
+                "materialized strategy version identity conflicts with existing data",
+                code="STRATEGY_VERSION_IDENTITY_COLLISION",
+            ) from exc
+        except sqlite3.Error as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError(
+                "could not persist materialized strategy version"
+            ) from exc
         finally:
             connection.close()
 
@@ -230,16 +381,45 @@ class StrategyRepository:
         """Return one immutable version, or ``None`` when it does not exist."""
         connection = self._connect()
         try:
-            row = connection.execute(
-                """
-                SELECT strategy_id, version_id, version_number, created_at,
-                       configuration_json, content_hash, status
-                FROM strategy_versions
-                WHERE strategy_id = ? AND version_id = ?
-                """,
-                (strategy_id, version_id),
-            ).fetchone()
-            return None if row is None else self._row_to_version(row)
+            rows = self._version_id_rows(connection, version_id)
+            if len(rows) > 1:
+                raise StrategyPersistenceError(
+                    "strategy version identity is present in multiple stores",
+                    code="STRATEGY_VERSION_IDENTITY_COLLISION",
+                )
+            if not rows or rows[0]["row"]["strategy_id"] != strategy_id:
+                return None
+            return (
+                self._row_to_version(rows[0]["row"])
+                if rows[0]["source"] == "ordinary"
+                else self._row_to_materialized_version(rows[0]["row"])
+            )
+        except StrategyPersistenceError:
+            raise
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not load strategy version") from exc
+        finally:
+            connection.close()
+
+    def get_any_version(self, version_id: str) -> StrategyVersion | None:
+        """Load an ordinary or derived version by its globally unique identity."""
+        connection = self._connect()
+        try:
+            rows = self._version_id_rows(connection, version_id)
+            if len(rows) > 1:
+                raise StrategyPersistenceError(
+                    "strategy version identity is present in multiple stores",
+                    code="STRATEGY_VERSION_IDENTITY_COLLISION",
+                )
+            if not rows:
+                return None
+            return (
+                self._row_to_version(rows[0]["row"])
+                if rows[0]["source"] == "ordinary"
+                else self._row_to_materialized_version(rows[0]["row"])
+            )
+        except StrategyPersistenceError:
+            raise
         except sqlite3.Error as exc:
             raise StrategyPersistenceError("could not load strategy version") from exc
         finally:
@@ -251,6 +431,7 @@ class StrategyRepository:
         try:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM strategy_versions")
+            connection.execute("DELETE FROM materialized_strategy_versions")
             connection.execute("DELETE FROM strategies")
             connection.execute("COMMIT")
         except sqlite3.Error as exc:
@@ -308,6 +489,141 @@ class StrategyRepository:
             raise StrategyPersistenceError(
                 "stored strategy version failed integrity checks"
             ) from exc
+
+    @classmethod
+    def _row_to_materialized_version(cls, row: sqlite3.Row) -> StrategyVersion:
+        required_fields = (
+            "strategy_id",
+            "version_id",
+            "version_number",
+            "created_at",
+            "configuration_json",
+            "content_hash",
+            "status",
+            "materialization_provenance_json",
+            "version_json",
+        )
+        if any(row[field] is None for field in required_fields):
+            raise StrategyPersistenceError("stored materialized strategy version is incomplete")
+        try:
+            version_payload = json.loads(
+                row["version_json"], parse_constant=_reject_nonfinite
+            )
+            version = StrategyVersion.from_dict(version_payload)
+            if version.materialization_provenance is None:
+                raise ValueError("materialization provenance is missing")
+            if version.strategy_id != row["strategy_id"] or version.version_id != row["version_id"]:
+                raise ValueError("stored version identity does not match its columns")
+            if version.version_number != row["version_number"]:
+                raise ValueError("stored version number does not match its columns")
+            if version.created_at.isoformat() != row["created_at"]:
+                raise ValueError("stored created_at does not match its columns")
+            if version.configuration.to_json() != row["configuration_json"]:
+                raise ValueError("stored configuration does not match its columns")
+            if version.content_hash != row["content_hash"] or version.status.value != row["status"]:
+                raise ValueError("stored version metadata does not match its columns")
+            provenance = version.materialization_provenance
+            if cls._safe_json(provenance.to_dict()) != row["materialization_provenance_json"]:
+                raise ValueError("stored materialization provenance does not match its columns")
+            cls._validate_exact_materialized_version(version)
+            return version
+        except (TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
+            raise StrategyPersistenceError(
+                "stored materialized strategy version failed integrity checks",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            ) from exc
+
+    @classmethod
+    def _validate_exact_materialized_version(cls, version: StrategyVersion) -> None:
+        if not isinstance(version, StrategyVersion):
+            raise StrategyPersistenceError(
+                "materialized strategy version is invalid",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            )
+        provenance = version.materialization_provenance
+        if provenance is None:
+            raise StrategyPersistenceError(
+                "only materialized strategy versions may use exact persistence",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            )
+        expected_hash = derived_strategy_version_hash(
+            version.configuration,
+            base_strategy_version_id=provenance.base_strategy_version_id,
+            base_strategy_version_hash=provenance.base_strategy_version_hash,
+            parameter_set_hash=provenance.parameter_set_hash,
+            binding_hash=provenance.binding_hash,
+            materialization_spec_hash=provenance.materialization_spec_hash,
+        )
+        if provenance.derived_strategy_version_hash != expected_hash:
+            raise StrategyPersistenceError(
+                "derived strategy version hash does not match provenance",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            )
+        if version.version_id != derived_strategy_version_id(
+            provenance.base_strategy_version_id, expected_hash
+        ):
+            raise StrategyPersistenceError(
+                "derived strategy version id does not match provenance",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            )
+        canonical = StrategyVersion(
+            strategy_id=version.strategy_id,
+            version_id=version.version_id,
+            version_number=version.version_number,
+            created_at=version.created_at,
+            configuration=version.configuration,
+            status=version.status,
+            materialization_provenance=version.materialization_provenance,
+        )
+        if version.content_hash != canonical.content_hash:
+            raise StrategyPersistenceError(
+                "derived strategy content hash does not match configuration",
+                code="STRATEGY_VERSION_INTEGRITY_ERROR",
+            )
+
+    @classmethod
+    def _safe_json(cls, payload: object) -> str:
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @classmethod
+    def _safe_version_json(cls, version: StrategyVersion) -> str:
+        return cls._safe_json(version.to_dict())
+
+    @staticmethod
+    def _version_id_rows(
+        connection: sqlite3.Connection, version_id: str
+    ) -> list[dict[str, object]]:
+        ordinary = connection.execute(
+            "SELECT strategy_id, version_id, version_number, created_at, "
+            "configuration_json, content_hash, status "
+            "FROM strategy_versions WHERE version_id = ?",
+            (version_id,),
+        ).fetchall()
+        derived = connection.execute(
+            "SELECT strategy_id, version_id, version_number, created_at, "
+            "configuration_json, content_hash, status, "
+            "materialization_provenance_json, version_json "
+            "FROM materialized_strategy_versions WHERE version_id = ?",
+            (version_id,),
+        ).fetchall()
+        return [
+            *({"source": "ordinary", "row": row} for row in ordinary),
+            *({"source": "derived", "row": row} for row in derived),
+        ]
+
+    @classmethod
+    def _version_id_count(cls, connection: sqlite3.Connection, version_id: str) -> int:
+        return len(cls._version_id_rows(connection, version_id))
+
+    @classmethod
+    def _version_id_exists(cls, connection: sqlite3.Connection, version_id: str) -> bool:
+        return cls._version_id_count(connection, version_id) > 0
 
 
 def _reject_nonfinite(value: str) -> None:

@@ -218,14 +218,7 @@ def _protocol_detail(protocol_id: str) -> ResearchProtocolDetailResponse:
 
 def _find_version(version_id: str) -> StrategyVersion | None:
     """Resolve an immutable version without assuming a version-id naming convention."""
-    for item in strategy_repository.catalog():
-        strategy_id = item["strategy_id"]
-        if not isinstance(strategy_id, str):
-            continue
-        for version in strategy_repository.list(strategy_id):
-            if version.version_id == version_id:
-                return version
-    return None
+    return strategy_repository.get_any_version(version_id)
 
 
 def _require_version(version_id: str) -> StrategyVersion:

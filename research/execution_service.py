@@ -290,6 +290,9 @@ class ExperimentExecutionService:
             ) from None
         try:
             derived = materialize_strategy_version(base, parameter_set, bindings)
+            # The result and any subsequent PHASE 7 freeze must reference this
+            # exact immutable object, not a later equivalent re-materialization.
+            derived = self._strategies.persist_exact_strategy_version(derived)
         except Exception:
             raise _ExecutionFailure(
                 self._persist_materialization_failure(
@@ -357,9 +360,10 @@ class ExperimentExecutionService:
             base_strategy_version_id=base.version_id,
             base_strategy_version_hash=base.content_hash or "",
             derived_strategy_version_id=derived.version_id,
-            derived_strategy_version_hash=(
-                derived.materialization_provenance.derived_strategy_version_hash
-            ),
+            # This is the exact persisted StrategyVersion content hash.  The
+            # separate deterministic materialization identity remains in the
+            # version's immutable materialization provenance.
+            derived_strategy_version_hash=derived.content_hash,
             created_at=self._now(),
         )
         source = (
@@ -684,11 +688,7 @@ class ExperimentExecutionService:
             base_strategy_version_id=base_id,
             base_strategy_version_hash=base_hash,
             derived_strategy_version_id=derived.version_id if derived else None,
-            derived_strategy_version_hash=(
-                derived.materialization_provenance.derived_strategy_version_hash
-                if derived and derived.materialization_provenance is not None
-                else None
-            ),
+            derived_strategy_version_hash=derived.content_hash if derived else None,
             binding_hash=bindings.binding_hash if bindings else "0" * 64,
             warmup_start=None,
             warmup_end=None,
@@ -735,9 +735,7 @@ class ExperimentExecutionService:
             base_strategy_version_id=experiment.base_strategy_version_id,
             base_strategy_version_hash=experiment.base_strategy_version_hash,
             derived_strategy_version_id=prepared.derived_strategy.version_id,
-            derived_strategy_version_hash=(
-                prepared.derived_strategy.materialization_provenance.derived_strategy_version_hash
-            ),
+            derived_strategy_version_hash=prepared.derived_strategy.content_hash,
             binding_hash=prepared.bindings.binding_hash,
             warmup_start=prepared.warmup_start,
             warmup_end=warmup_end,

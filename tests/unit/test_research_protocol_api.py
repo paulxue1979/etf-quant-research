@@ -12,7 +12,9 @@ from backend.app.backtest_repository import BacktestRepository
 from backend.app.main import app
 from backend.app.research_protocol import ResearchProtocolRepository
 from backend.app.strategy_repository import StrategyRepository
+from research import ParameterDefinition, ParameterSet, ParameterType, materialize_strategy_version
 from tests.unit.test_backtest_repository import _run
+from tests.unit.test_materialization import _period_binding, _space, _version
 from tests.unit.test_strategy_repository import _definition
 
 
@@ -177,6 +179,57 @@ def test_protocol_api_rejects_oos_back_selection_and_unknown_versions(client) ->
     )
     assert unknown.status_code == 404
     assert unknown.json() == {"detail": "strategy version was not found"}
+
+
+def test_protocol_api_selects_and_freezes_exact_persisted_derived_version(client) -> None:
+    http, _, _, _ = client
+    strategies = research_protocol_api.strategy_repository
+    base = strategies.create(_version().configuration)
+    derived = materialize_strategy_version(
+        base,
+        ParameterSet(
+            {"period": 20},
+            _space(
+                ParameterDefinition(
+                    "period", ParameterType.INTEGER, min=1, max=200, step=1
+                )
+            ),
+        ),
+        (_period_binding(),),
+    )
+    persisted = strategies.persist_exact_strategy_version(derived)
+    is_run = _backtest_run(
+        "derived-is-run", persisted, date(2026, 1, 2), date(2026, 1, 4)
+    )
+    research_protocol_api.backtest_repository.create(is_run)
+
+    protocol_id, candidate_set_id = _advance_to_is(http, persisted.version_id)
+    selection = http.post(
+        f"/research/protocols/{protocol_id}/selection-decisions",
+        json={
+            "candidate_set_id": candidate_set_id,
+            "selected_strategy_version_id": persisted.version_id,
+            "is_backtest_run_ids": [is_run.backtest_run_id],
+            "selected_metrics": {"cagr": 0.12},
+            "rationale": "Human review used the persisted IS candidate only.",
+        },
+    )
+    assert selection.status_code == 201
+    decision_id = selection.json()["selections"][0]["decision_id"]
+    assert http.post(
+        f"/research/protocols/{protocol_id}/transitions",
+        json={"status": "selection_recorded"},
+    ).status_code == 200
+
+    freeze = http.post(
+        f"/research/protocols/{protocol_id}/freeze",
+        json={"selection_decision_id": decision_id, "reason": "Freeze exact IS candidate."},
+    )
+
+    assert freeze.status_code == 201
+    record = freeze.json()["freezes"][0]
+    assert record["strategy_version_id"] == persisted.version_id
+    assert record["strategy_version_content_hash"] == persisted.content_hash
 
 
 def test_protocol_api_hides_unexpected_persistence_details(
