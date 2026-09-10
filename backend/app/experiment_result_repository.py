@@ -54,58 +54,7 @@ class ExperimentResultRepository:
     def _initialize(self) -> None:
         connection = self._connect()
         try:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS schema_metadata (
-                    schema_key TEXT PRIMARY KEY,
-                    schema_version INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS research_experiment_results (
-                    experiment_result_id TEXT PRIMARY KEY,
-                    experiment_id TEXT NOT NULL,
-                    candidate_id TEXT NOT NULL,
-                    candidate_index INTEGER NOT NULL CHECK(candidate_index >= 0),
-                    parameter_set_hash TEXT NOT NULL,
-                    parameter_space_hash TEXT NOT NULL,
-                    candidate_set_hash TEXT NOT NULL,
-                    base_strategy_version_id TEXT NOT NULL,
-                    base_strategy_version_hash TEXT NOT NULL,
-                    derived_strategy_version_id TEXT NOT NULL,
-                    derived_strategy_version_hash TEXT NOT NULL,
-                    binding_hash TEXT NOT NULL,
-                    backtest_run_id TEXT NOT NULL,
-                    is_start TEXT NOT NULL,
-                    is_end TEXT NOT NULL,
-                    warmup_start TEXT,
-                    warmup_end TEXT,
-                    price_field_used TEXT NOT NULL,
-                    backtest_configuration_hash TEXT NOT NULL,
-                    engine_version TEXT NOT NULL,
-                    analysis_version TEXT NOT NULL,
-                    data_snapshot_reference_json TEXT NOT NULL,
-                    performance_summary_json TEXT NOT NULL,
-                    result_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    UNIQUE(experiment_id, candidate_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_experiment_results_experiment
-                    ON research_experiment_results(experiment_id, candidate_index);
-                """
-            )
-            row = connection.execute(
-                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
-                (self._SCHEMA_KEY,),
-            ).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
-                    (self._SCHEMA_KEY, self.SCHEMA_VERSION),
-                )
-            elif int(row["schema_version"]) != self.SCHEMA_VERSION:
-                raise ExperimentResultPersistenceError(
-                    "unsupported experiment result database schema version"
-                )
+            self.ensure_schema(connection)
         except ExperimentResultPersistenceError:
             raise
         except sqlite3.Error as exc:
@@ -115,6 +64,70 @@ class ExperimentResultRepository:
         finally:
             connection.close()
 
+    @classmethod
+    def ensure_schema(cls, connection: sqlite3.Connection) -> None:
+        """Ensure the result schema exists on an already-open connection."""
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_metadata (
+                schema_key TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS research_experiment_results (
+                experiment_result_id TEXT PRIMARY KEY,
+                experiment_id TEXT NOT NULL,
+                candidate_id TEXT NOT NULL,
+                candidate_index INTEGER NOT NULL CHECK(candidate_index >= 0),
+                parameter_set_hash TEXT NOT NULL,
+                parameter_space_hash TEXT NOT NULL,
+                candidate_set_hash TEXT NOT NULL,
+                base_strategy_version_id TEXT NOT NULL,
+                base_strategy_version_hash TEXT NOT NULL,
+                derived_strategy_version_id TEXT NOT NULL,
+                derived_strategy_version_hash TEXT NOT NULL,
+                binding_hash TEXT NOT NULL,
+                backtest_run_id TEXT NOT NULL,
+                is_start TEXT NOT NULL,
+                is_end TEXT NOT NULL,
+                warmup_start TEXT,
+                warmup_end TEXT,
+                price_field_used TEXT NOT NULL,
+                backtest_configuration_hash TEXT NOT NULL,
+                engine_version TEXT NOT NULL,
+                analysis_version TEXT NOT NULL,
+                data_snapshot_reference_json TEXT NOT NULL,
+                performance_summary_json TEXT NOT NULL,
+                result_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                UNIQUE(experiment_id, candidate_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_experiment_results_experiment
+                ON research_experiment_results(experiment_id, candidate_index)
+            """
+        )
+        row = connection.execute(
+            "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+            (cls._SCHEMA_KEY,),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
+                (cls._SCHEMA_KEY, cls.SCHEMA_VERSION),
+            )
+        elif int(row["schema_version"]) != cls.SCHEMA_VERSION:
+            raise ExperimentResultPersistenceError(
+                "unsupported experiment result database schema version"
+            )
+
     def create(self, result: ExperimentResult) -> ExperimentResult:
         """Insert an immutable result or return the same result idempotently."""
         if not isinstance(result, ExperimentResult):
@@ -123,19 +136,50 @@ class ExperimentResultRepository:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            existing = connection.execute(
-                "SELECT * FROM research_experiment_results "
-                "WHERE experiment_id = ? AND candidate_id = ?",
-                (result.experiment_id, result.candidate_id),
-            ).fetchone()
-            if existing is not None:
-                restored = self._decode(existing)
-                if restored.hash_payload() == result.hash_payload():
-                    connection.execute("COMMIT")
-                    return restored
-                raise ExperimentResultConflictError(
-                    "candidate already has a different experiment result"
-                )
+            stored = self.persist_in_transaction(connection, result, payload=payload)
+            connection.execute("COMMIT")
+            return stored
+        except (ExperimentResultConflictError, ExperimentResultPersistenceError):
+            self._rollback(connection)
+            raise
+        except sqlite3.IntegrityError as exc:
+            self._rollback(connection)
+            raise ExperimentResultConflictError(
+                "experiment result identity conflicts with an existing result"
+            ) from exc
+        except sqlite3.Error as exc:
+            self._rollback(connection)
+            raise ExperimentResultPersistenceError(
+                "could not persist experiment result"
+            ) from exc
+        finally:
+            connection.close()
+
+    @classmethod
+    def persist_in_transaction(
+        cls,
+        connection: sqlite3.Connection,
+        result: ExperimentResult,
+        *,
+        payload: str | None = None,
+    ) -> ExperimentResult:
+        """Persist one result without beginning or committing a transaction."""
+        if not isinstance(result, ExperimentResult):
+            raise ExperimentResultPersistenceError("experiment result is invalid")
+        serialized = payload if payload is not None else cls._safe_json(result.to_dict())
+        existing = connection.execute(
+            "SELECT * FROM research_experiment_results "
+            "WHERE experiment_id = ? AND candidate_id = ?",
+            (result.experiment_id, result.candidate_id),
+        ).fetchone()
+        if existing is not None:
+            restored = cls._decode(existing)
+            if restored.hash_payload() == result.hash_payload():
+                return restored
+            raise ExperimentResultConflictError(
+                "candidate already has a different experiment result"
+            )
+        try:
             connection.execute(
                 """
                 INSERT INTO research_experiment_results(
@@ -153,25 +197,28 @@ class ExperimentResultRepository:
                     ?, ?, ?, ?, ?, ?
                 )
                 """,
-                self._values(result, payload),
+                cls._values(result, serialized),
             )
-            connection.execute("COMMIT")
-            return result
-        except (ExperimentResultConflictError, ExperimentResultPersistenceError):
-            self._rollback(connection)
-            raise
         except sqlite3.IntegrityError as exc:
-            self._rollback(connection)
             raise ExperimentResultConflictError(
                 "experiment result identity conflicts with an existing result"
             ) from exc
-        except sqlite3.Error as exc:
-            self._rollback(connection)
-            raise ExperimentResultPersistenceError(
-                "could not persist experiment result"
-            ) from exc
-        finally:
-            connection.close()
+        return result
+
+    @classmethod
+    def get_by_candidate_in_transaction(
+        cls,
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        candidate_id: str,
+    ) -> ExperimentResult | None:
+        """Read one result from a caller-owned transaction."""
+        row = connection.execute(
+            "SELECT * FROM research_experiment_results "
+            "WHERE experiment_id = ? AND candidate_id = ?",
+            (experiment_id, candidate_id),
+        ).fetchone()
+        return None if row is None else cls._decode(row)
 
     def get(self, experiment_result_id: str) -> ExperimentResult | None:
         connection = self._connect()

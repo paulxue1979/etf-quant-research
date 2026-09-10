@@ -11,10 +11,11 @@ from typing import TYPE_CHECKING, Any
 from analytics.models import PerformanceAnalysisResult
 from backend.app.backtest_models import BacktestRun, serialize_backtest_result
 from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
-from backend.app.experiment_repository import ExperimentRepository
+from backend.app.experiment_repository import ExperimentPersistenceError, ExperimentRepository
 from backtest.integration import StrategyBacktestResult
 from data.models import PriceField
 from research.canonical import canonical_json, sha256_hash
+from research.enums import ExperimentStatus
 from research.exceptions import ExperimentFinalizationError, ExperimentResultConflictError
 from research.execution import CandidateExecutionStatus, candidate_id_for
 from research.execution_outcome import (
@@ -33,10 +34,10 @@ class ExperimentResultFinalizationService:
 
     The service is deliberately an adapter around existing persistence and
     execution products.  It does not evaluate strategies, run backtests, or
-    calculate analytics.  The repositories currently use independent SQLite
-    connections, so recovery is achieved with deterministic run identity,
-    append-only result identity, and the candidate unique constraint rather
-    than by claiming a cross-repository transaction.
+    calculate analytics.  BacktestRun persistence remains an independent
+    source-of-truth write. When the bound experiment is already RUNNING,
+    result persistence and terminal lifecycle persistence are delegated to one
+    SQLite transaction.
     """
 
     ACTOR = "phase-8d-4-finalizer"
@@ -63,14 +64,20 @@ class ExperimentResultFinalizationService:
     def finalize(self, outcome: ExperimentExecutionOutcome) -> ExperimentResult:
         """Finalize a successful outcome, safely supporting retries."""
         self._validate_outcome(outcome)
-        execution = self._load_and_validate_execution(outcome)
 
         existing = self._results.get_by_candidate(outcome.experiment_id, outcome.candidate_id)
         if existing is not None:
             self._validate_existing_result(existing, outcome)
             self._validate_backtest_reference(existing, outcome)
+            execution = self._executions.get_execution(outcome.candidate_execution_id or "")
+            if execution is None:
+                raise ExperimentFinalizationError(
+                    "CANDIDATE_EXECUTION_NOT_FOUND: candidate execution does not exist"
+                )
             self._complete_execution_if_needed(execution, outcome)
             return existing
+
+        execution = self._load_and_validate_execution(outcome)
 
         run = self._build_backtest_run(outcome)
         run = self._persist_or_reuse_backtest_run(run, outcome)
@@ -79,21 +86,39 @@ class ExperimentResultFinalizationService:
             backtest_run_id=run.backtest_run_id,
             created_at=self._now(),
         )
-        try:
-            stored = self._results.create(result)
-        except ExperimentResultConflictError:
-            # Another finalizer won the candidate's unique result race.  The
-            # winner is authoritative; a retry must return it after checking
-            # that it represents the same immutable outcome.
-            stored = self._results.get_by_candidate(
-                outcome.experiment_id, outcome.candidate_id
-            )
-            if stored is None:
-                raise ExperimentFinalizationError(
-                    "DUPLICATE_EXPERIMENT_RESULT: conflicting result could not be recovered"
+        experiment = self._experiments.get(outcome.experiment_id)
+        if experiment is not None and experiment.status is ExperimentStatus.RUNNING:
+            try:
+                stored = self._experiments.finalize_result(
+                    result,
+                    expected_status=ExperimentStatus.RUNNING,
+                    transition_key=f"experiment-result:{result.experiment_result_id}",
+                    provenance={
+                        "source": self._actor,
+                        "derived_strategy_version_id": result.derived_strategy_version_id,
+                        "derived_strategy_version_hash": result.derived_strategy_version_hash,
+                    },
                 )
-            self._validate_existing_result(stored, outcome)
-            self._validate_backtest_reference(stored, outcome)
+            except ExperimentPersistenceError as exc:
+                raise ExperimentFinalizationError(
+                    f"EXPERIMENT_RESULT_PERSISTENCE_ERROR: {exc}"
+                ) from exc
+        else:
+            try:
+                stored = self._results.create(result)
+            except ExperimentResultConflictError:
+                # Another finalizer won the candidate's unique result race.  The
+                # winner is authoritative; a retry must return it after checking
+                # that it represents the same immutable outcome.
+                stored = self._results.get_by_candidate(
+                    outcome.experiment_id, outcome.candidate_id
+                )
+                if stored is None:
+                    raise ExperimentFinalizationError(
+                        "DUPLICATE_EXPERIMENT_RESULT: conflicting result could not be recovered"
+                    )
+                self._validate_existing_result(stored, outcome)
+                self._validate_backtest_reference(stored, outcome)
 
         self._complete_execution_if_needed(execution, outcome)
         return stored

@@ -18,12 +18,19 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from backend.app.experiment_result_repository import ExperimentResultRepository
 from backend.app.research_protocol import ResearchProtocolRepository
 from backend.app.strategy_repository import StrategyRepository
 from research.candidates import ParameterCandidateSet
 from research.canonical import canonical_json, sha256_hash
 from research.enums import ExperimentStatus
-from research.exceptions import InvalidExperimentError
+from research.exceptions import (
+    ExperimentResultConflictError,
+    ExperimentResultPersistenceError,
+    InvalidExperimentError,
+)
+from research.execution import candidate_id_for
+from research.experiment_result import ExperimentResult
 from research.experiments import Experiment, ParameterSet, ParameterSpace
 
 
@@ -420,6 +427,11 @@ class ExperimentRepository:
         """Atomically persist one validated lifecycle transition and its event."""
         expected = self._coerce_status(expected_status, "expected_status")
         target = self._coerce_status(target_status, "target_status")
+        if target is ExperimentStatus.COMPLETED:
+            raise ExperimentPersistenceError(
+                "completed experiments require an immutable result",
+                code="EXPERIMENT_RESULT_REQUIRED",
+            )
         event_name = self._validate_transition_text(event_type, "event_type")
         key = self._validate_transition_text(transition_key, "transition_key")
         provenance_payload = {} if provenance is None else dict(provenance)
@@ -438,6 +450,7 @@ class ExperimentRepository:
                 )
 
             experiment = self._decode_experiment(row)
+            self._validate_external_bindings(experiment)
             self._validate_parameter_space_row(connection, experiment.parameter_space)
             existing = connection.execute(
                 "SELECT * FROM experiment_events WHERE experiment_id = ? "
@@ -532,6 +545,273 @@ class ExperimentRepository:
             ) from exc
         finally:
             connection.close()
+
+    def finalize_result(
+        self,
+        result: ExperimentResult,
+        expected_status: ExperimentStatus | str = ExperimentStatus.RUNNING,
+        transition_key: str | None = None,
+        provenance: Mapping[str, Any] | None = None,
+        event_type: str = "EXPERIMENT_COMPLETED",
+    ) -> ExperimentResult:
+        """Persist one result and complete its experiment in one SQLite transaction.
+
+        Backtest accounting remains owned by ``BacktestRepository``.  This method
+        only atomically binds the already-created immutable result to the frozen
+        experiment lifecycle and its append-only terminal event.
+        """
+        if not isinstance(result, ExperimentResult):
+            raise ExperimentPersistenceError(
+                "experiment result is invalid", code="EXPERIMENT_RESULT_CONFLICT"
+            )
+        expected = self._coerce_status(expected_status, "expected_status")
+        if expected is not ExperimentStatus.RUNNING:
+            raise ExperimentPersistenceError(
+                "experiment result finalization requires running status",
+                code="INVALID_EXPERIMENT_TRANSITION",
+            )
+        key = self._validate_transition_text(
+            transition_key or f"experiment-result:{result.experiment_result_id}",
+            "transition_key",
+        )
+        event_name = self._validate_transition_text(event_type, "event_type")
+        supplied_provenance = {} if provenance is None else dict(provenance)
+        reserved_provenance = {
+            "result_id": result.experiment_result_id,
+            "result_hash": result.result_hash,
+            "candidate_id": result.candidate_id,
+            "backtest_run_id": result.backtest_run_id,
+        }
+        for provenance_field, expected_value in reserved_provenance.items():
+            if (
+                provenance_field in supplied_provenance
+                and supplied_provenance[provenance_field] != expected_value
+            ):
+                raise ExperimentPersistenceError(
+                    f"result provenance field {provenance_field} does not match result identity",
+                    code="EXPERIMENT_RESULT_CONFLICT",
+                )
+        provenance_payload = {
+            **supplied_provenance,
+            **reserved_provenance,
+        }
+        provenance_json = self._canonical_payload(provenance_payload)
+        event_payload = {
+            "result_id": result.experiment_result_id,
+            "result_hash": result.result_hash,
+            "candidate_id": result.candidate_id,
+            "backtest_run_id": result.backtest_run_id,
+        }
+        event_payload_json = self._canonical_payload(event_payload)
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            ExperimentResultRepository.ensure_schema(connection)
+            row = connection.execute(
+                "SELECT * FROM experiments WHERE experiment_id = ?",
+                (result.experiment_id,),
+            ).fetchone()
+            if row is None:
+                raise ExperimentPersistenceError(
+                    "experiment was not found", code="EXPERIMENT_NOT_FOUND"
+                )
+            experiment = self._decode_experiment(row)
+            self._validate_external_bindings(experiment)
+            self._validate_parameter_space_row(connection, experiment.parameter_space)
+            self._validate_result_binding(connection, experiment, result)
+
+            existing_event_row = connection.execute(
+                "SELECT * FROM experiment_events WHERE experiment_id = ? "
+                "AND transition_key = ?",
+                (result.experiment_id, key),
+            ).fetchone()
+            if existing_event_row is not None:
+                event = self._decode_event(existing_event_row)
+                if not self._event_matches_result(
+                    event,
+                    expected=expected,
+                    event_type=event_name,
+                    transition_key=key,
+                    provenance_json=provenance_json,
+                    payload_json=event_payload_json,
+                ):
+                    raise ExperimentPersistenceError(
+                        "transition key conflicts with an existing result finalization",
+                        code="EXPERIMENT_TRANSITION_CONFLICT",
+                    )
+                stored = ExperimentResultRepository.get_by_candidate_in_transaction(
+                    connection, result.experiment_id, result.candidate_id
+                )
+                if stored is None or stored.hash_payload() != result.hash_payload():
+                    raise ExperimentPersistenceError(
+                        "terminal event has no matching immutable result",
+                        code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+                    )
+                if experiment.status is not ExperimentStatus.COMPLETED:
+                    raise ExperimentPersistenceError(
+                        "terminal event does not match experiment state",
+                        code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+                    )
+                connection.execute("COMMIT")
+                return stored
+
+            existing_result = ExperimentResultRepository.get_by_candidate_in_transaction(
+                connection, result.experiment_id, result.candidate_id
+            )
+            if existing_result is not None:
+                if existing_result.hash_payload() != result.hash_payload():
+                    raise ExperimentResultConflictError(
+                        "candidate already has a different experiment result"
+                    )
+                raise ExperimentPersistenceError(
+                    "result exists without its terminal lifecycle event",
+                    code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+                )
+            if experiment.status is not expected:
+                raise ExperimentPersistenceError(
+                    "experiment status no longer matches expected status",
+                    code="EXPERIMENT_STALE_STATE",
+                )
+            try:
+                updated = experiment.with_status(ExperimentStatus.COMPLETED)
+            except InvalidExperimentError as exc:
+                raise ExperimentPersistenceError(
+                    "experiment lifecycle transition is invalid",
+                    code="INVALID_EXPERIMENT_TRANSITION",
+                ) from exc
+            updated_payload = self._canonical_payload(updated.to_dict())
+            self._validate_experiment_integrity(updated, updated_payload)
+            ExperimentResultRepository.persist_in_transaction(connection, result)
+            self._update_experiment_row(
+                connection,
+                result.experiment_id,
+                expected,
+                updated,
+                updated_payload,
+            )
+            self._insert_event(
+                connection,
+                result.experiment_id,
+                event_name,
+                event_payload,
+                result.created_at,
+                transition_key=key,
+                from_status=expected,
+                to_status=ExperimentStatus.COMPLETED,
+                provenance=provenance_payload,
+            )
+            connection.execute("COMMIT")
+            return result
+        except ExperimentPersistenceError:
+            self._rollback(connection)
+            raise
+        except ExperimentResultConflictError as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                str(exc), code="EXPERIMENT_RESULT_CONFLICT"
+            ) from exc
+        except ExperimentResultPersistenceError as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                str(exc), code="EXPERIMENT_RESULT_PERSISTENCE_ERROR"
+            ) from exc
+        except sqlite3.IntegrityError as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "experiment result finalization conflicts with persisted data",
+                code="EXPERIMENT_RESULT_CONFLICT",
+            ) from exc
+        except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "could not persist experiment result atomically",
+                code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+            ) from exc
+        except Exception as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "could not persist experiment result atomically",
+                code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+            ) from exc
+        finally:
+            connection.close()
+
+    def _validate_result_binding(
+        self,
+        connection: sqlite3.Connection,
+        experiment: Experiment,
+        result: ExperimentResult,
+    ) -> None:
+        """Validate that a result belongs to this exact frozen experiment."""
+        expected_configuration_hash = sha256_hash(
+            experiment.backtest_configuration.snapshot({})
+        )
+        if any(
+            (
+                result.experiment_id != experiment.experiment_id,
+                result.base_strategy_version_id != experiment.base_strategy_version_id,
+                result.base_strategy_version_hash != experiment.base_strategy_version_hash,
+                result.parameter_space_hash != experiment.parameter_space_hash,
+                result.is_start != experiment.is_start_date,
+                result.is_end != experiment.is_end_date,
+                result.price_field_used is not experiment.backtest_configuration.price_field_used,
+                result.backtest_configuration_hash != expected_configuration_hash,
+                result.engine_version != experiment.engine_version,
+                result.analysis_version != experiment.analysis_version,
+            )
+        ):
+            raise ExperimentPersistenceError(
+                "experiment result does not match frozen experiment",
+                code="EXPERIMENT_RESULT_CONFLICT",
+            )
+        derived = self._strategies.get_any_version(result.derived_strategy_version_id)
+        if derived is None or derived.content_hash != result.derived_strategy_version_hash:
+            raise ExperimentPersistenceError(
+                "derived strategy version is missing or has a hash mismatch",
+                code="EXPERIMENT_RESULT_CONFLICT",
+            )
+        candidate_row = connection.execute(
+            "SELECT * FROM experiment_candidates WHERE experiment_id = ? "
+            "AND candidate_index = ?",
+            (experiment.experiment_id, result.candidate_index),
+        ).fetchone()
+        if candidate_row is None:
+            raise ExperimentPersistenceError(
+                "experiment result candidate is missing",
+                code="EXPERIMENT_RESULT_CONFLICT",
+            )
+        expected_candidate_id = candidate_id_for(
+            experiment.experiment_id,
+            result.candidate_index,
+            result.parameter_set_hash,
+        )
+        if any(
+            (
+                result.candidate_id != expected_candidate_id,
+                candidate_row["parameter_set_hash"] != result.parameter_set_hash,
+                candidate_row["candidate_set_hash"] != result.candidate_set_hash,
+            )
+        ):
+            raise ExperimentPersistenceError(
+                "experiment result candidate binding is invalid",
+                code="EXPERIMENT_RESULT_CONFLICT",
+            )
+        candidate_set = connection.execute(
+            "SELECT candidate_set_hash, parameter_space_hash FROM experiment_candidate_sets "
+            "WHERE experiment_id = ?",
+            (experiment.experiment_id,),
+        ).fetchone()
+        if candidate_set is None or any(
+            (
+                candidate_set["candidate_set_hash"] != result.candidate_set_hash,
+                candidate_set["parameter_space_hash"] != result.parameter_space_hash,
+            )
+        ):
+            raise ExperimentPersistenceError(
+                "experiment result candidate set binding is invalid",
+                code="EXPERIMENT_RESULT_CONFLICT",
+            )
 
     def list(self, protocol_id: str | None = None) -> tuple[Experiment, ...]:
         """Return immutable experiments in explicit creation order."""
@@ -1101,6 +1381,25 @@ class ExperimentRepository:
             and event.to_status == target
             and event.event_type == event_type
             and canonical_json(event.provenance) == provenance_json
+        )
+
+    @staticmethod
+    def _event_matches_result(
+        event: ExperimentEventRecord,
+        *,
+        expected: ExperimentStatus,
+        event_type: str,
+        transition_key: str,
+        provenance_json: str,
+        payload_json: str,
+    ) -> bool:
+        return (
+            event.transition_key == transition_key
+            and event.from_status == expected
+            and event.to_status is ExperimentStatus.COMPLETED
+            and event.event_type == event_type
+            and canonical_json(event.provenance) == provenance_json
+            and canonical_json(event.payload) == payload_json
         )
 
     @staticmethod
