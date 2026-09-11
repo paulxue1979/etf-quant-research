@@ -69,6 +69,15 @@ from research.materialization import (
     materialization_spec_hash,
     materialize_strategy_version,
 )
+from research.objective_evaluation import (
+    CandidateObjectiveEvaluation,
+    ConstraintEvaluation,
+    ObjectiveEvaluationError,
+    ObjectiveEvaluationReasonCode,
+    ObjectiveEvaluationState,
+    evaluate_candidate_objective,
+    evaluate_objective,
+)
 
 if TYPE_CHECKING:
     from research.execution_service import ENGINE_SERVICE_VERSION, ExperimentExecutionService
@@ -137,6 +146,13 @@ __all__ = [
     "generate_candidates",
     "candidate_id_for",
     "execution_id_for",
+    "CandidateObjectiveEvaluation",
+    "ConstraintEvaluation",
+    "ObjectiveEvaluationError",
+    "ObjectiveEvaluationReasonCode",
+    "ObjectiveEvaluationState",
+    "evaluate_candidate_objective",
+    "evaluate_objective",
 ]
 
 
