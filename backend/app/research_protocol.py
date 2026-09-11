@@ -41,6 +41,17 @@ class ResearchProtocolError(ValueError):
 class ResearchPersistenceError(RuntimeError):
     """Raised when a research record cannot be safely persisted or restored."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = MappingProxyType(dict(details or {}))
+
 
 class ProtocolStatus:
     DRAFT = "draft"
@@ -633,7 +644,7 @@ class OOSEvaluationRecord:
 class ResearchProtocolRepository:
     """SQLite append-only repository for protocol governance records."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
     _SCHEMA_KEY = "research_protocol_repository"
 
     def __init__(self, db_path: str | Path | None = None) -> None:
@@ -733,9 +744,11 @@ class ResearchProtocolRepository:
     def _migrate(self, connection: sqlite3.Connection, schema_version: int) -> None:
         if schema_version > self.SCHEMA_VERSION:
             raise ResearchPersistenceError("unsupported research database schema version")
-        if schema_version == 1:
-            try:
-                connection.execute("BEGIN IMMEDIATE")
+        if schema_version == self.SCHEMA_VERSION:
+            return
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if schema_version < 2:
                 duplicates = connection.execute(
                     """
                     SELECT protocol_id, COUNT(*) AS count
@@ -745,25 +758,54 @@ class ResearchProtocolRepository:
                     """
                 ).fetchall()
                 if duplicates:
-                    connection.execute("ROLLBACK")
+                    protocol_ids = tuple(sorted(str(row["protocol_id"]) for row in duplicates))
                     raise ResearchPersistenceError(
-                        "research schema migration blocked by duplicate OOS observations"
+                        "research schema migration blocked by duplicate OOS observations",
+                        code="MIGRATION_INTEGRITY_CONFLICT",
+                        details={"record_type": "oos_evaluation", "protocol_ids": protocol_ids},
                     )
+
+            if schema_version < 3:
+                duplicates = connection.execute(
+                    """
+                    SELECT protocol_id, COUNT(*) AS count
+                    FROM research_selection_decisions
+                    GROUP BY protocol_id
+                    HAVING COUNT(*) > 1
+                    """
+                ).fetchall()
+                if duplicates:
+                    protocol_ids = tuple(sorted(str(row["protocol_id"]) for row in duplicates))
+                    raise ResearchPersistenceError(
+                        "research schema migration blocked by duplicate selection decisions",
+                        code="MIGRATION_INTEGRITY_CONFLICT",
+                        details={
+                            "record_type": "selection_decision",
+                            "protocol_ids": protocol_ids,
+                        },
+                    )
+
+            if schema_version < 2:
                 connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_research_oos_protocol "
                     "ON research_oos_evaluations(protocol_id)"
                 )
+            if schema_version < 3:
                 connection.execute(
-                    "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
-                    (2, self._SCHEMA_KEY),
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_research_selection_protocol "
+                    "ON research_selection_decisions(protocol_id)"
                 )
-                connection.execute("COMMIT")
-                schema_version = 2
-            except sqlite3.Error as exc:
-                self._rollback(connection)
-                raise ResearchPersistenceError("could not migrate research database") from exc
-        if schema_version != self.SCHEMA_VERSION:
-            raise ResearchPersistenceError("unsupported research database schema version")
+            connection.execute(
+                "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
+                (self.SCHEMA_VERSION, self._SCHEMA_KEY),
+            )
+            connection.execute("COMMIT")
+        except ResearchPersistenceError:
+            self._rollback(connection)
+            raise
+        except sqlite3.Error as exc:
+            self._rollback(connection)
+            raise ResearchPersistenceError("could not migrate research database") from exc
 
     @staticmethod
     def _rollback(connection: sqlite3.Connection) -> None:
@@ -1019,8 +1061,6 @@ class ResearchProtocolRepository:
         if version.version_id != decision.selected_strategy_version_id:
             raise ResearchProtocolError("selected strategy version does not match supplied version")
         self._require_candidate_hash_match(stored_candidate_set, version)
-        if self._selection_count(decision.protocol_id):
-            raise ResearchProtocolError("research protocol already has a selection decision")
         protocol = self.get_protocol(decision.protocol_id)
         if protocol is None:
             raise ResearchProtocolError("research protocol was not found")
@@ -1045,6 +1085,27 @@ class ResearchProtocolRepository:
             )
         connection = self._connect()
         try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_row = connection.execute(
+                "SELECT payload_json FROM research_selection_decisions "
+                "WHERE protocol_id = ?",
+                (decision.protocol_id,),
+            ).fetchone()
+            if existing_row is not None:
+                try:
+                    existing = _selection_from_dict(_load(existing_row["payload_json"]))
+                except (ResearchProtocolError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ResearchPersistenceError(
+                        "stored selection decision failed integrity checks"
+                    ) from exc
+                if _selection_semantic_identity(existing) == _selection_semantic_identity(decision):
+                    connection.execute("COMMIT")
+                    return existing
+                raise ResearchProtocolError(
+                    "research protocol already has a selection decision; "
+                    "submitted selection conflicts",
+                    code="SELECTION_CONFLICT",
+                )
             connection.execute(
                 "INSERT INTO research_selection_decisions VALUES (?, ?, ?, ?, ?)",
                 (
@@ -1055,11 +1116,30 @@ class ResearchProtocolRepository:
                     _dump(decision.to_dict()),
                 ),
             )
+            connection.execute("COMMIT")
             return decision
         except sqlite3.IntegrityError as exc:
+            self._rollback(connection)
+            if (
+                "uq_research_selection_protocol" in str(exc)
+                or "research_selection_decisions.protocol_id" in str(exc)
+            ):
+                raise ResearchProtocolError(
+                    "research protocol already has a selection decision",
+                    code="SELECTION_ALREADY_EXISTS",
+                ) from exc
+            if "research_selection_decisions.decision_id" in str(exc):
+                raise ResearchPersistenceError(
+                    "selection decision already exists",
+                    code="SELECTION_ALREADY_EXISTS",
+                ) from exc
             raise ResearchPersistenceError("selection decision already exists") from exc
         except sqlite3.Error as exc:
+            self._rollback(connection)
             raise ResearchPersistenceError("could not persist selection decision") from exc
+        except (ResearchProtocolError, ResearchPersistenceError):
+            self._rollback(connection)
+            raise
         finally:
             connection.close()
 
@@ -1441,6 +1521,11 @@ def _selection_from_dict(payload: Mapping[str, Any]) -> SelectionDecision:
         data_provenance=payload.get("data_provenance", {}),
         source=payload.get("source", "human"),
     )
+
+
+def _selection_semantic_identity(decision: SelectionDecision) -> str:
+    """Return the full immutable identity used for retry/conflict detection."""
+    return _canonical_json(decision.to_dict())
 
 
 def _freeze_from_dict(payload: Mapping[str, Any]) -> StrategyFreezeRecord:
