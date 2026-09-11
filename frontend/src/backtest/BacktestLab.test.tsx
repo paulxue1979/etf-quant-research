@@ -274,7 +274,9 @@ describe("Backtest Lab", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Create protocol" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Create protocol" }));
     await waitFor(() => expect(screen.getByText("DRAFT")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Record candidate set" }));
+    const recordCandidateSetButton = screen.getByRole("button", { name: "Record candidate set" });
+    await waitFor(() => expect(recordCandidateSetButton).toBeEnabled());
+    fireEvent.click(recordCandidateSetButton);
     await waitFor(() => expect(screen.getByRole("button", { name: "Lock candidate set" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Lock candidate set" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Freeze research protocol" })).toBeInTheDocument());
