@@ -108,6 +108,7 @@ class ExperimentCandidateView:
     engine_version: str | None = None
     analysis_version: str | None = None
     data_snapshot_reference: Mapping[str, Any] = MappingProxyType({})
+    configuration_snapshot: Mapping[str, Any] = MappingProxyType({})
     performance_summary: Mapping[str, Any] = MappingProxyType({})
     failure_code: str | None = None
     failure_summary: str | None = None
@@ -119,6 +120,7 @@ class ExperimentCandidateView:
             raise ValueError("candidate_index must be non-negative")
         object.__setattr__(self, "parameter_set", _mapping(self.parameter_set))
         object.__setattr__(self, "data_snapshot_reference", _mapping(self.data_snapshot_reference))
+        object.__setattr__(self, "configuration_snapshot", _mapping(self.configuration_snapshot))
         object.__setattr__(self, "performance_summary", _mapping(self.performance_summary))
         if self.price_field_used is not None and not isinstance(self.price_field_used, PriceField):
             object.__setattr__(self, "price_field_used", PriceField(self.price_field_used))

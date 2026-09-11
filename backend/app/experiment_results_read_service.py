@@ -206,6 +206,7 @@ class ExperimentResultsReadService:
             engine_version=result.engine_version,
             analysis_version=result.analysis_version,
             data_snapshot_reference=result.data_snapshot_reference,
+            configuration_snapshot=resolved.backtest.backtest_result.configuration_snapshot,
             performance_summary=result.performance_summary,
             created_at=execution.created_at,
             completed_at=execution.completed_at,
