@@ -20,6 +20,7 @@ from uuid import uuid4
 from backend.app.backtest_models import BacktestRun
 from backtest.models import ExecutionRule, RebalanceFrequency
 from data.models import PriceField
+from research.materialization import derived_strategy_version_hash, derived_strategy_version_id
 from strategies.models import StrategyVersion
 
 
@@ -1143,6 +1144,359 @@ class ResearchProtocolRepository:
         finally:
             connection.close()
 
+    def persist_selection_and_freeze_atomic(
+        self,
+        decision: SelectionDecision,
+        freeze: StrategyFreezeRecord,
+        *,
+        candidate_set: CandidateSet,
+        version: StrategyVersion,
+        run: BacktestRun,
+        provenance: Mapping[str, Any],
+    ) -> tuple[SelectionDecision, StrategyFreezeRecord]:
+        """Persist a controlled experiment handoff in one SQLite transaction.
+
+        This path is intentionally separate from the public PHASE 7 creation
+        methods.  A handoff references an already-persisted derived strategy;
+        the PHASE 7 candidate set remains bound to the experiment's base
+        strategy version.  Selection, lifecycle event, and freeze must commit
+        together or none of them may become visible.
+        """
+        if not isinstance(decision, SelectionDecision):
+            raise ResearchProtocolError("selection decision is invalid")
+        if not isinstance(freeze, StrategyFreezeRecord):
+            raise ResearchProtocolError("strategy freeze is invalid")
+        if not isinstance(candidate_set, CandidateSet):
+            raise ResearchProtocolError("candidate set is invalid")
+        if not isinstance(version, StrategyVersion):
+            raise ResearchProtocolError("strategy version is invalid")
+        if not isinstance(run, BacktestRun):
+            raise ResearchProtocolError("backtest run is invalid")
+        if not isinstance(provenance, Mapping):
+            raise ResearchProtocolError("handoff provenance is invalid")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            protocol = self._get_protocol_in_connection(connection, decision.protocol_id)
+            if protocol is None:
+                raise ResearchProtocolError(
+                    "research protocol was not found", code="PROTOCOL_NOT_FOUND"
+                )
+            if decision.protocol_id != freeze.protocol_id:
+                raise ResearchProtocolError("selection and freeze protocol identities differ")
+            if decision.protocol_id != candidate_set.protocol_id:
+                raise ResearchProtocolError("candidate set does not belong to the protocol")
+            if candidate_set.status != CandidateSetStatus.LOCKED:
+                raise ResearchProtocolError(
+                    "selection handoff requires a locked candidate set",
+                    code="PROTOCOL_INVALID_STATE",
+                )
+            stored_candidate_set = self._get_candidate_set_in_connection(
+                connection, candidate_set.candidate_set_id
+            )
+            if stored_candidate_set is None:
+                raise ResearchProtocolError(
+                    "candidate set was not found",
+                    code="CANDIDATE_SET_NOT_FOUND",
+                )
+            if stored_candidate_set != candidate_set:
+                raise ResearchProtocolError(
+                    "candidate set does not match persisted protocol state",
+                    code="CANDIDATE_SET_HASH_MISMATCH",
+                )
+            if decision.candidate_set_id != candidate_set.candidate_set_id:
+                raise ResearchProtocolError("selection candidate set does not match handoff")
+            if decision.selected_strategy_version_id != version.version_id:
+                raise ResearchProtocolError("selected strategy version does not match handoff")
+            if freeze.strategy_version_id != version.version_id:
+                raise ResearchProtocolError("frozen strategy version does not match handoff")
+            if freeze.selection_decision_id != decision.decision_id:
+                raise ResearchProtocolError("freeze does not reference the handoff selection")
+            if freeze.strategy_version_content_hash != version.content_hash:
+                raise ResearchProtocolError(
+                    "strategy version content hash does not match freeze",
+                    code="DERIVED_STRATEGY_HASH_MISMATCH",
+                )
+            if decision.is_backtest_run_ids != (run.backtest_run_id,):
+                raise ResearchProtocolError(
+                    "handoff must reference exactly its IS backtest run",
+                    code="HANDOFF_INTEGRITY_ERROR",
+                )
+            if run.strategy_version_id != version.version_id:
+                raise ResearchProtocolError("IS backtest strategy version does not match handoff")
+            if run.strategy_version_content_hash != version.content_hash:
+                raise ResearchProtocolError(
+                    "IS backtest strategy hash does not match handoff",
+                    code="DERIVED_STRATEGY_HASH_MISMATCH",
+                )
+            if (
+                run.backtest_result.start_date != protocol.is_start_date
+                or run.backtest_result.end_date != protocol.is_end_date
+            ):
+                raise ResearchProtocolError(
+                    "handoff may reference IS backtest runs only",
+                    code="HANDOFF_INTEGRITY_ERROR",
+                )
+            provenance_payload = _canonical_json(dict(provenance))
+
+            existing_row = connection.execute(
+                "SELECT payload_json FROM research_selection_decisions WHERE protocol_id = ?",
+                (decision.protocol_id,),
+            ).fetchone()
+            existing_freeze_row = connection.execute(
+                "SELECT payload_json FROM research_strategy_freezes WHERE protocol_id = ?",
+                (decision.protocol_id,),
+            ).fetchone()
+            existing_event = self._find_handoff_event(connection, decision.protocol_id)
+
+            if existing_row is not None:
+                existing = _selection_from_dict(_load(existing_row["payload_json"]))
+                if existing != decision:
+                    raise ResearchProtocolError(
+                        "research protocol already has a different selection",
+                        code="PROTOCOL_SELECTION_CONFLICT",
+                    )
+                if existing_freeze_row is None or existing_event is None:
+                    raise ResearchPersistenceError(
+                        "handoff selection is missing its freeze or lifecycle event",
+                        code="HANDOFF_INTEGRITY_ERROR",
+                    )
+                stored_freeze = _freeze_from_dict(_load(existing_freeze_row["payload_json"]))
+                if stored_freeze != freeze or protocol.status != ProtocolStatus.SELECTION_RECORDED:
+                    raise ResearchPersistenceError(
+                        "stored handoff is not internally consistent",
+                        code="HANDOFF_INTEGRITY_ERROR",
+                    )
+                try:
+                    stored_provenance = _canonical_json(_load(existing_event["payload_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ResearchPersistenceError(
+                        "stored handoff provenance is invalid",
+                        code="HANDOFF_INTEGRITY_ERROR",
+                    ) from exc
+                if stored_provenance != provenance_payload:
+                    raise ResearchPersistenceError(
+                        "stored handoff provenance does not match",
+                        code="HANDOFF_INTEGRITY_ERROR",
+                    )
+                connection.execute("COMMIT")
+                return existing, stored_freeze
+
+            if protocol.status != ProtocolStatus.IS_EVALUATED:
+                raise ResearchProtocolError(
+                    "research protocol must be is_evaluated before handoff",
+                    code="PROTOCOL_INVALID_STATE",
+                )
+            self._validate_handoff_strategy_binding(candidate_set, version)
+            self._insert_handoff_selection(connection, decision)
+            self._insert_handoff_event(
+                connection,
+                decision,
+                provenance_payload,
+                selection_hash=_handoff_selection_hash(provenance),
+            )
+            self._insert_handoff_freeze(connection, freeze)
+            connection.execute("COMMIT")
+            return decision, freeze
+        except (ResearchProtocolError, ResearchPersistenceError):
+            self._rollback(connection)
+            raise
+        except sqlite3.IntegrityError as exc:
+            self._rollback(connection)
+            if "research_selection_decisions.protocol_id" in str(exc):
+                raise ResearchProtocolError(
+                    "research protocol already has a selection",
+                    code="PROTOCOL_SELECTION_CONFLICT",
+                ) from exc
+            raise ResearchPersistenceError(
+                "could not persist selection handoff atomically",
+                code="HANDOFF_INTEGRITY_ERROR",
+            ) from exc
+        except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
+            self._rollback(connection)
+            raise ResearchPersistenceError(
+                "could not persist selection handoff atomically",
+                code="HANDOFF_INTEGRITY_ERROR",
+            ) from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _validate_handoff_strategy_binding(
+        candidate_set: CandidateSet, version: StrategyVersion
+    ) -> None:
+        provenance = version.materialization_provenance
+        if provenance is None:
+            raise ResearchProtocolError(
+                "handoff requires an immutable derived strategy version",
+                code="DERIVED_STRATEGY_NOT_FOUND",
+            )
+        expected_hash = candidate_set.strategy_version_content_hashes.get(
+            provenance.base_strategy_version_id
+        )
+        if (
+            provenance.base_strategy_version_id not in candidate_set.strategy_version_ids
+            or expected_hash != provenance.base_strategy_version_hash
+        ):
+            raise ResearchProtocolError(
+                "candidate set does not contain the experiment base strategy",
+                code="PROTOCOL_MISMATCH",
+            )
+        semantic_hash = derived_strategy_version_hash(
+            version.configuration,
+            base_strategy_version_id=provenance.base_strategy_version_id,
+            base_strategy_version_hash=provenance.base_strategy_version_hash,
+            parameter_set_hash=provenance.parameter_set_hash,
+            binding_hash=provenance.binding_hash,
+            materialization_spec_hash=provenance.materialization_spec_hash,
+        )
+        if provenance.derived_strategy_version_hash != semantic_hash:
+            raise ResearchProtocolError(
+                "derived strategy provenance hash is invalid",
+                code="DERIVED_STRATEGY_HASH_MISMATCH",
+            )
+        if version.version_id != derived_strategy_version_id(
+            provenance.base_strategy_version_id, semantic_hash
+        ):
+            raise ResearchProtocolError(
+                "derived strategy version identity is invalid",
+                code="DERIVED_STRATEGY_HASH_MISMATCH",
+            )
+        canonical = StrategyVersion(
+            strategy_id=version.strategy_id,
+            version_id=version.version_id,
+            version_number=version.version_number,
+            created_at=version.created_at,
+            configuration=version.configuration,
+            status=version.status,
+            materialization_provenance=provenance,
+        )
+        if version.content_hash != canonical.content_hash:
+            raise ResearchProtocolError(
+                "derived strategy content hash is invalid",
+                code="DERIVED_STRATEGY_HASH_MISMATCH",
+            )
+
+    @staticmethod
+    def _insert_handoff_selection(
+        connection: sqlite3.Connection, decision: SelectionDecision
+    ) -> None:
+        connection.execute(
+            "INSERT INTO research_selection_decisions VALUES (?, ?, ?, ?, ?)",
+            (
+                decision.decision_id,
+                decision.protocol_id,
+                decision.candidate_set_id,
+                decision.created_at.isoformat(),
+                _dump(decision.to_dict()),
+            ),
+        )
+
+    @staticmethod
+    def _insert_handoff_event(
+        connection: sqlite3.Connection,
+        decision: SelectionDecision,
+        provenance_payload: str,
+        *,
+        selection_hash: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO research_protocol_events VALUES (?, ?, ?, ?, ?)",
+            (
+                f"event-handoff-{selection_hash[:32]}",
+                decision.protocol_id,
+                ProtocolStatus.SELECTION_RECORDED,
+                datetime.now(UTC).isoformat(),
+                provenance_payload,
+            ),
+        )
+
+    @staticmethod
+    def _insert_handoff_freeze(
+        connection: sqlite3.Connection, freeze: StrategyFreezeRecord
+    ) -> None:
+        connection.execute(
+            "INSERT INTO research_strategy_freezes VALUES (?, ?, ?, ?, ?)",
+            (
+                freeze.freeze_id,
+                freeze.protocol_id,
+                freeze.strategy_version_id,
+                freeze.frozen_at.isoformat(),
+                _dump(freeze.to_dict()),
+            ),
+        )
+
+    @staticmethod
+    def _find_handoff_event(
+        connection: sqlite3.Connection, protocol_id: str
+    ) -> sqlite3.Row | None:
+        rows = connection.execute(
+            "SELECT * FROM research_protocol_events "
+            "WHERE protocol_id = ? AND event_type = ? "
+            "ORDER BY created_at ASC, event_id ASC",
+            (protocol_id, ProtocolStatus.SELECTION_RECORDED),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = _load(row["payload_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, Mapping) and payload.get("handoff") is True:
+                return row
+        return None
+
+    def _get_protocol_in_connection(
+        self, connection: sqlite3.Connection, protocol_id: str
+    ) -> ResearchProtocol | None:
+        row = connection.execute(
+            "SELECT payload_json FROM research_protocols WHERE protocol_id = ?",
+            (protocol_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        protocol = ResearchProtocol.from_dict(_load(row["payload_json"]))
+        events = connection.execute(
+            "SELECT event_type FROM research_protocol_events "
+            "WHERE protocol_id = ? ORDER BY created_at ASC, event_id ASC",
+            (protocol_id,),
+        ).fetchall()
+        for event in events:
+            event_type = str(event["event_type"])
+            if event_type in ProtocolStatus.values():
+                protocol = protocol.with_status(event_type)
+        return protocol
+
+    def _get_candidate_set_in_connection(
+        self, connection: sqlite3.Connection, candidate_set_id: str
+    ) -> CandidateSet | None:
+        row = connection.execute(
+            "SELECT payload_json FROM research_candidate_sets WHERE candidate_set_id = ?",
+            (candidate_set_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        item = CandidateSet(**_candidate_kwargs(_load(row["payload_json"])))
+        events = connection.execute(
+            "SELECT payload_json FROM research_protocol_events "
+            "WHERE protocol_id = ? AND event_type = ? ORDER BY created_at ASC, event_id ASC",
+            (item.protocol_id, "candidate_set_locked"),
+        ).fetchall()
+        locked = any(
+            _load(event["payload_json"]).get("candidate_set_id") == candidate_set_id
+            for event in events
+        )
+        if not locked:
+            return item
+        return CandidateSet(
+            candidate_set_id=item.candidate_set_id,
+            protocol_id=item.protocol_id,
+            strategy_version_ids=item.strategy_version_ids,
+            created_at=item.created_at,
+            strategy_version_content_hashes=item.strategy_version_content_hashes,
+            status=CandidateSetStatus.LOCKED,
+        )
+
     def get_selection(self, decision_id: str) -> SelectionDecision | None:
         return self._get_record(
             table="research_selection_decisions",
@@ -1526,6 +1880,23 @@ def _selection_from_dict(payload: Mapping[str, Any]) -> SelectionDecision:
 def _selection_semantic_identity(decision: SelectionDecision) -> str:
     """Return the full immutable identity used for retry/conflict detection."""
     return _canonical_json(decision.to_dict())
+
+
+def _handoff_selection_hash(provenance: Mapping[str, Any]) -> str:
+    value = provenance.get("selection_hash")
+    if not isinstance(value, str) or len(value) != 64:
+        raise ResearchProtocolError(
+            "handoff provenance requires the experiment selection hash",
+            code="HANDOFF_INTEGRITY_ERROR",
+        )
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise ResearchProtocolError(
+            "handoff provenance requires the experiment selection hash",
+            code="HANDOFF_INTEGRITY_ERROR",
+        ) from exc
+    return value
 
 
 def _freeze_from_dict(payload: Mapping[str, Any]) -> StrategyFreezeRecord:
