@@ -32,6 +32,7 @@ from strategies import StrategyVersion
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,255}$")
+_CANDIDATE_ID = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_.:-]{0,255}|[0-9a-f]{64})$")
 _UNSAFE_TEXT = re.compile(
     r"(?:TIINGO_API_KEY|API_KEY|SECRET_SENTINEL|BEGIN\s+PRIVATE\s+KEY|"
     r"authorization\s*:|bearer\s+|traceback|(?:/Users/|/private/|/etc/)|\\)",
@@ -88,6 +89,15 @@ def _hash(value: object, label: str) -> str:
     if not isinstance(value, str) or not _HASH.fullmatch(value):
         raise InvalidExperimentSelectionError(f"{label} must be a SHA-256 hex digest")
     return value
+
+
+def _candidate_id(value: object, label: str = "candidate_id") -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidExperimentSelectionError(f"{label} must be a non-empty string")
+    result = value.strip()
+    if len(result) > 256 or not _CANDIDATE_ID.fullmatch(result):
+        raise InvalidExperimentSelectionError(f"{label} is invalid")
+    return result
 
 
 def _date(value: object, label: str) -> date:
@@ -151,7 +161,7 @@ class SelectionEligibility:
     reason: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_id", _text(self.candidate_id, "candidate_id"))
+        object.__setattr__(self, "candidate_id", _candidate_id(self.candidate_id))
         object.__setattr__(self, "status", SelectionEligibilityStatus(self.status))
         object.__setattr__(self, "reason_code", SelectionEligibilityReasonCode(self.reason_code))
         if bool(self.eligible) != (self.status is SelectionEligibilityStatus.ELIGIBLE):
@@ -219,7 +229,8 @@ class ExperimentSelectionEvidence:
             "engine_version",
             "analysis_version",
         ):
-            object.__setattr__(self, label, _text(getattr(self, label), label))
+            validator = _candidate_id if label == "selected_candidate_id" else _text
+            object.__setattr__(self, label, validator(getattr(self, label), label))
         if (
             isinstance(self.selected_candidate_index, bool)
             or not isinstance(self.selected_candidate_index, int)
@@ -324,7 +335,8 @@ class ExperimentSelectionDecision:
             "selected_experiment_result_id",
             "selected_derived_strategy_version_id",
         ):
-            object.__setattr__(self, label, _text(getattr(self, label), label))
+            validator = _candidate_id if label == "selected_candidate_id" else _text
+            object.__setattr__(self, label, validator(getattr(self, label), label))
         if (
             isinstance(self.selected_candidate_index, bool)
             or not isinstance(self.selected_candidate_index, int)

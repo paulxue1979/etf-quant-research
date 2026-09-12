@@ -195,10 +195,17 @@ def _protocol() -> ResearchProtocol:
     )
 
 
-def _experiment(version, *, status: ExperimentStatus = ExperimentStatus.SPACE_FROZEN) -> Experiment:
+def _experiment(
+    version,
+    *,
+    status: ExperimentStatus = ExperimentStatus.SPACE_FROZEN,
+    parameter_max: int = 3,
+) -> Experiment:
     space = ParameterSpace(
-        parameters=(ParameterDefinition("period", ParameterType.INTEGER, min=2, max=3, step=1),),
-        max_candidates=2,
+        parameters=(
+            ParameterDefinition("period", ParameterType.INTEGER, min=2, max=parameter_max, step=1),
+        ),
+        max_candidates=parameter_max - 1,
     )
     objective = ObjectiveSpecification(
         primary_metric="cagr", metric_directions={"cagr": MetricDirection.MAXIMIZE}
@@ -259,7 +266,12 @@ def _binding() -> ParameterBinding:
     )
 
 
-def _setup(tmp_path: Path, data: _LocalDataService | None = None):
+def _setup(
+    tmp_path: Path,
+    data: _LocalDataService | None = None,
+    *,
+    parameter_max: int = 3,
+):
     database = tmp_path / "research.db"
     protocols = ResearchProtocolRepository(database)
     strategies = StrategyRepository(database)
@@ -278,7 +290,7 @@ def _setup(tmp_path: Path, data: _LocalDataService | None = None):
     protocols.create_candidate_set(candidate_set)
     protocols.lock_candidate_set(candidate_set.candidate_set_id)
     protocols.transition_protocol(protocol.protocol_id, ProtocolStatus.FROZEN)
-    experiment = _experiment(version)
+    experiment = _experiment(version, parameter_max=parameter_max)
     experiments.create(experiment, generate_candidates(experiment))
     service = ExperimentExecutionService(
         experiment_repository=experiments,

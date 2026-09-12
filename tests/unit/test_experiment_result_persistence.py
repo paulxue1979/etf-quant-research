@@ -14,8 +14,11 @@ from research.experiment_result import ExperimentResult
 from tests.unit.test_experiment_execution_service import _binding, _setup
 
 
-def _running_outcome(tmp_path):
-    service, experiments, _, executions, _, experiment = _setup(tmp_path)
+def _running_outcome(tmp_path, *, single_candidate: bool = False):
+    service, experiments, _, executions, _, experiment = _setup(
+        tmp_path,
+        parameter_max=2 if single_candidate else 3,
+    )
     experiments.transition_status(
         experiment.experiment_id,
         ExperimentStatus.SPACE_FROZEN,

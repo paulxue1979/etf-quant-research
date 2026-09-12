@@ -154,3 +154,15 @@ class InvalidExperimentSelectionError(ExperimentSelectionError):
 
 class SelectionEligibilityError(ExperimentSelectionError):
     """Raised when the selected candidate is not eligible for selection."""
+
+
+class ExperimentSelectionPersistenceError(ExperimentSelectionError):
+    """Raised when an immutable experiment selection cannot be stored or restored."""
+
+    code = "EXPERIMENT_SELECTION_PERSISTENCE_ERROR"
+
+
+class ExperimentSelectionConflictError(ExperimentSelectionPersistenceError):
+    """Raised when an experiment already has a different official selection."""
+
+    code = "SELECTION_CONFLICT"
