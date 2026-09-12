@@ -25,8 +25,10 @@ from research.exceptions import (
     ExperimentResultConflictError,
     ExperimentResultError,
     ExperimentResultPersistenceError,
+    ExperimentSelectionError,
     InvalidExperimentError,
     InvalidExperimentProvenanceError,
+    InvalidExperimentSelectionError,
     InvalidObjectiveSpecificationError,
     InvalidParameterBindingError,
     InvalidParameterConstraintError,
@@ -36,6 +38,7 @@ from research.exceptions import (
     ParameterBindingError,
     ParameterBindingTypeMismatchError,
     ParameterSpaceTooLargeError,
+    SelectionEligibilityError,
     StrategyMaterializationError,
     UnsupportedParameterBindingTargetError,
 )
@@ -51,6 +54,17 @@ from research.execution_outcome import (
     ExperimentExecutionOutcomeStatus,
 )
 from research.experiment_result import ExperimentResult
+from research.experiment_selection import (
+    ExperimentSelectionDecision,
+    ExperimentSelectionEvidence,
+    ExperimentSelectionMethod,
+    SelectionEligibility,
+    SelectionEligibilityReasonCode,
+    SelectionEligibilityStatus,
+    assess_selection_eligibility,
+    build_experiment_selection_decision,
+    create_experiment_selection_decision,
+)
 from research.experiments import (
     Experiment,
     ExperimentProvenance,
@@ -102,6 +116,7 @@ __all__ = [
     "ExperimentResultConflictError",
     "ExperimentResultPersistenceError",
     "ExperimentFinalizationError",
+    "ExperimentSelectionError",
     "ResultFinalizationService",
     "ExperimentExecutionService",
     "ENGINE_SERVICE_VERSION",
@@ -115,6 +130,7 @@ __all__ = [
     "ExecutionEvent",
     "ExecutionStateTransitionError",
     "InvalidExperimentError",
+    "InvalidExperimentSelectionError",
     "InvalidExperimentProvenanceError",
     "InvalidObjectiveSpecificationError",
     "InvalidParameterConstraintError",
@@ -137,6 +153,7 @@ __all__ = [
     "ParameterBindingSet",
     "ParameterBindingTypeMismatchError",
     "StrategyMaterializationError",
+    "SelectionEligibilityError",
     "UnsupportedParameterBindingTargetError",
     "materialize_strategy_version",
     "materialization_spec_hash",
@@ -153,6 +170,15 @@ __all__ = [
     "ObjectiveEvaluationState",
     "evaluate_candidate_objective",
     "evaluate_objective",
+    "ExperimentSelectionDecision",
+    "ExperimentSelectionEvidence",
+    "ExperimentSelectionMethod",
+    "SelectionEligibility",
+    "SelectionEligibilityReasonCode",
+    "SelectionEligibilityStatus",
+    "assess_selection_eligibility",
+    "build_experiment_selection_decision",
+    "create_experiment_selection_decision",
 ]
 
 

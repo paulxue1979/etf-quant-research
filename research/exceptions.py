@@ -129,3 +129,28 @@ class ExperimentFinalizationError(ExperimentResultError):
     """Raised when a completed candidate outcome cannot be finalized safely."""
 
     code = "CANDIDATE_EXECUTION_PERSISTENCE_ERROR"
+
+
+class ExperimentSelectionError(ExperimentDomainError):
+    """Base error for the PHASE 8E-1D researcher-selection domain."""
+
+    code = "EXPERIMENT_SELECTION_ERROR"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code or self.code
+        self.details = details
+
+
+class InvalidExperimentSelectionError(ExperimentSelectionError):
+    """Raised when a researcher selection or its evidence is invalid."""
+
+
+class SelectionEligibilityError(ExperimentSelectionError):
+    """Raised when the selected candidate is not eligible for selection."""
