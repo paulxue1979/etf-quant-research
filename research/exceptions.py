@@ -166,3 +166,58 @@ class ExperimentSelectionConflictError(ExperimentSelectionPersistenceError):
     """Raised when an experiment already has a different official selection."""
 
     code = "SELECTION_CONFLICT"
+
+
+class OosDomainError(ExperimentDomainError):
+    """Base error for PHASE 8F pure OOS domain contracts."""
+
+    code = "OOS_DOMAIN_ERROR"
+
+    def __init__(
+        self, message: str, *, code: str | None = None, details: object | None = None
+    ) -> None:
+        super().__init__(message)
+        self.code = code or self.code
+        self.details = details
+
+
+class OosPreconditionError(OosDomainError):
+    """Raised when frozen protocol prerequisites are not satisfied."""
+
+    code = "OOS_PRECONDITION_FAILED"
+
+
+class OosStrategyIdentityMismatchError(OosDomainError):
+    """Raised when OOS identity does not match the exact frozen strategy."""
+
+    code = "OOS_STRATEGY_IDENTITY_MISMATCH"
+
+
+class OosRangeMismatchError(OosDomainError):
+    """Raised when OOS dates or warm-up boundaries violate the frozen split."""
+
+    code = "OOS_RANGE_MISMATCH"
+
+
+class OosConfigurationMismatchError(OosDomainError):
+    """Raised when result-affecting configuration differs from the frozen contract."""
+
+    code = "OOS_CONFIGURATION_MISMATCH"
+
+
+class OosProvenanceError(OosDomainError):
+    """Raised when OOS provenance is unsafe or inconsistent."""
+
+    code = "OOS_PROVENANCE_MISMATCH"
+
+
+class OosResultIntegrityError(OosDomainError):
+    """Raised when an immutable OOS result is malformed or hash-inconsistent."""
+
+    code = "OOS_RESULT_INTEGRITY_ERROR"
+
+
+class OosAlreadyObservedError(OosDomainError):
+    """Raised when an official OOS result would be replaced."""
+
+    code = "OOS_ALREADY_OBSERVED"
