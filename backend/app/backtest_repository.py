@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.app.backtest_models import BacktestRun, dumps
+from backend.app.backtest_models import ANALYSIS_VERSION, BacktestRun, dumps
 
 
 class BacktestPersistenceError(RuntimeError):
@@ -59,38 +59,68 @@ class BacktestRepository:
     def _initialize(self) -> None:
         connection = self._connect()
         try:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS backtest_runs (
-                    backtest_run_id TEXT PRIMARY KEY,
-                    strategy_id TEXT NOT NULL,
-                    strategy_version_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    strategy_version_content_hash TEXT NOT NULL,
-                    start_date TEXT NOT NULL,
-                    end_date TEXT NOT NULL,
-                    price_field_used TEXT NOT NULL,
-                    engine_version TEXT NOT NULL,
-                    analysis_version TEXT NOT NULL,
-                    run_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy
-                    ON backtest_runs(strategy_id, created_at DESC);
-                """
-            )
+            self.ensure_schema(connection)
         except sqlite3.Error as exc:
             raise BacktestPersistenceError("could not initialize backtest database") from exc
         finally:
             connection.close()
+
+    @staticmethod
+    def ensure_schema(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                backtest_run_id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL,
+                strategy_version_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                strategy_version_content_hash TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                price_field_used TEXT NOT NULL,
+                engine_version TEXT NOT NULL,
+                analysis_version TEXT NOT NULL,
+                run_json TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy "
+            "ON backtest_runs(strategy_id, created_at DESC)"
+        )
 
     def create(self, run: BacktestRun) -> BacktestRun:
         """Insert one immutable run; repeated inputs still receive a new id."""
         if not isinstance(run, BacktestRun):
             raise BacktestPersistenceError("backtest run is invalid")
         payload = dumps(run.to_dict())
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self.persist_in_transaction(connection, run, payload=payload)
+            connection.execute("COMMIT")
+            return run
+        except sqlite3.IntegrityError as exc:
+            raise BacktestPersistenceError("backtest run already exists") from exc
+        except sqlite3.Error as exc:
+            raise BacktestPersistenceError("could not persist backtest run") from exc
+        finally:
+            connection.close()
+
+    @classmethod
+    def persist_in_transaction(
+        cls,
+        connection: sqlite3.Connection,
+        run: BacktestRun,
+        *,
+        payload: str | None = None,
+    ) -> BacktestRun:
+        """Insert a run without beginning or committing the caller transaction."""
+        if not isinstance(run, BacktestRun):
+            raise BacktestPersistenceError("backtest run is invalid")
+        serialized = payload if payload is not None else dumps(run.to_dict())
         result = run.backtest_result
         analysis = run.performance_analysis
-        connection = self._connect()
         try:
             connection.execute(
                 """
@@ -110,17 +140,15 @@ class BacktestRepository:
                     result.end_date.isoformat(),
                     analysis.price_field_used.value,
                     result.engine_version,
-                    "phase-4i.0",
-                    payload,
+                    ANALYSIS_VERSION,
+                    serialized,
                 ),
             )
-            return run
         except sqlite3.IntegrityError as exc:
             raise BacktestPersistenceError("backtest run already exists") from exc
         except sqlite3.Error as exc:
             raise BacktestPersistenceError("could not persist backtest run") from exc
-        finally:
-            connection.close()
+        return run
 
     def get(self, backtest_run_id: str) -> BacktestRun | None:
         """Return one run or None when its id is unknown."""

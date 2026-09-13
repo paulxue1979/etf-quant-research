@@ -397,6 +397,23 @@ class OosExecution:
             lease_expires_at=None,
         )
 
+    def complete(self, *, lease_token: str, now: datetime) -> OosExecution:
+        """Complete only from a live lease; finalization owns this transition."""
+        self._require_live_lease(lease_token, now)
+        timestamp = _aware_datetime(now, "now")
+        return replace(
+            self,
+            status=OosExecutionStatus.COMPLETED,
+            updated_at=timestamp,
+            finished_at=timestamp,
+            lease_token=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            failure_code=None,
+            failure_message_safe=None,
+            failure_retryable=None,
+        )
+
     def _require_live_lease(self, lease_token: str, now: datetime) -> None:
         if self.status is not OosExecutionStatus.RUNNING:
             raise OosExecutionNotRunningError("execution is not RUNNING")

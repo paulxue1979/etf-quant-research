@@ -652,7 +652,7 @@ class OosPerformanceSummary:
 
 @dataclass(frozen=True)
 class OosEvaluationResult:
-    """Immutable official OOS observation; persistence belongs to later phases."""
+    """Immutable official OOS observation summary backed by one BacktestRun."""
 
     oos_result_id: str
     protocol_id: str
@@ -672,6 +672,7 @@ class OosEvaluationResult:
     performance_summary: OosPerformanceSummary
     created_at: datetime
     result_hash: str | None = None
+    execution_id: str | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -685,6 +686,8 @@ class OosEvaluationResult:
             "analytics_version",
         ):
             object.__setattr__(self, field, _text(getattr(self, field), field))
+        if self.execution_id is not None:
+            object.__setattr__(self, "execution_id", _text(self.execution_id, "execution_id"))
         object.__setattr__(
             self,
             "strategy_content_hash",
@@ -747,7 +750,7 @@ class OosEvaluationResult:
         object.__setattr__(self, "result_hash", expected)
 
     def semantic_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "oos_result_id": self.oos_result_id,
             "protocol_id": self.protocol_id,
             "selection_decision_id": self.selection_decision_id,
@@ -765,12 +768,21 @@ class OosEvaluationResult:
             "data_provenance": self.data_provenance.to_dict(),
             "performance_summary": self.performance_summary.to_dict(),
         }
+        if self.execution_id is not None:
+            payload["execution_id"] = self.execution_id
+        return payload
+
+    @property
+    def result_id(self) -> str:
+        """Canonical 8F-4 name while retaining the 8F-1 field name."""
+        return self.oos_result_id
 
     def to_dict(self) -> dict[str, Any]:
         return {
             **self.semantic_payload(),
             "created_at": self.created_at.isoformat(),
             "result_hash": self.result_hash,
+            "execution_id": self.execution_id,
         }
 
     @classmethod
@@ -848,6 +860,7 @@ class OosEvaluationResult:
                 performance_summary=OosPerformanceSummary(metrics=metrics),
                 created_at=datetime.fromisoformat(str(payload.get("created_at", ""))),
                 result_hash=payload.get("result_hash"),
+                execution_id=payload.get("execution_id"),
             )
         except OosDomainError:
             raise

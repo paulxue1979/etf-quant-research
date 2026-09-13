@@ -519,6 +519,29 @@ class OosExecutionRepository:
         if cursor.rowcount != 1:
             raise OosExecutionIdentityConflictError("OOS execution changed concurrently")
 
+    def complete_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        execution: OosExecution,
+        *,
+        lease_token: str,
+        now: datetime,
+    ) -> OosExecution:
+        """Persist COMPLETED without owning the surrounding transaction."""
+        updated = execution.complete(lease_token=lease_token, now=now)
+        self._update(connection, updated)
+        self._insert_event(
+            connection,
+            updated,
+            "EXECUTION_COMPLETED",
+            actor=execution.lease_owner or "worker",
+            occurred_at=now,
+            from_state=execution.status,
+            to_state=updated.status,
+            payload={"finalization": "official_oos_observation"},
+        )
+        return updated
+
     def _insert_event(
         self,
         connection: sqlite3.Connection,

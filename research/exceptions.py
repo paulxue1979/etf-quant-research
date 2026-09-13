@@ -299,3 +299,27 @@ class OosOfficialResultExistsError(OosExecutionError):
     """Raised when official OOS observation already exists for the protocol."""
 
     code = "OOS_OFFICIAL_RESULT_EXISTS"
+
+
+class OosFinalizationError(OosExecutionError):
+    """Raised when an internal OOS outcome cannot become an official result."""
+
+    code = "OOS_FINALIZATION_ERROR"
+
+
+class OosFinalizationConflictError(OosFinalizationError):
+    """Raised when a protocol already has a different official result."""
+
+    code = "OOS_FINALIZATION_CONFLICT"
+
+
+class OosFinalizationStaleWriterError(OosFinalizationError):
+    """Raised when a worker finalizes after losing its lease."""
+
+    code = "OOS_FINALIZATION_STALE_WRITER"
+
+
+class OosFinalizationPersistenceError(OosFinalizationError):
+    """Raised when the atomic finalization transaction cannot be persisted."""
+
+    code = "OOS_FINALIZATION_ATOMICITY_ERROR"
