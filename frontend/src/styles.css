@@ -218,6 +218,11 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .provenance-panel dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .provenance-panel code { color: #c7d9df; font-size: 10px; white-space: normal; }
 .comparison-legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+.oos-view { margin-top: 18px; }
+.oos-statement { margin: 0; color: #c9d3d8; font-size: 13px; line-height: 1.55; }
+.oos-provenance-list { grid-template-columns: 180px minmax(0, 1fr); }
+.oos-provenance-list > div { display: contents; }
+.oos-provenance-list dd { white-space: pre-wrap; }
 .comparison-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .comparison-legend i { display: inline-block; width: 12px; height: 3px; }
 @media (max-width: 900px) { .backtest-layout, .chart-grid, .result-tables { grid-template-columns: 1fr; } .backtest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

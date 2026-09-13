@@ -5,6 +5,7 @@ import type {
   ObjectiveEvaluationResponse,
   SelectionDecision,
   SelectionRequest,
+  OosResearchView,
 } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -82,5 +83,8 @@ export const researchApi = {
   },
   getExperimentHandoff(protocolId: string, experimentId: string) {
     return requestJson<HandoffResponse>(path(protocolId, experimentId, "handoff"));
+  },
+  getOfficialOosResearchView(protocolId: string) {
+    return requestJson<OosResearchView>(`/research/protocols/${encodeURIComponent(protocolId)}/oos`);
   },
 };

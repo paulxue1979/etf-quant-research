@@ -157,3 +157,55 @@ export interface HandoffResponse {
   identity: { strategy_version_id: string; strategy_version_content_hash: string };
   provenance?: Record<string, unknown>;
 }
+
+export interface OosResearchView {
+  read_only: boolean;
+  protocol: Record<string, unknown>;
+  selection_decision: Record<string, unknown>;
+  strategy_freeze: Record<string, unknown>;
+  oos_result: {
+    oos_result_id: string;
+    protocol_id: string;
+    execution_id: string | null;
+    selection_decision_id: string;
+    strategy_freeze_id: string;
+    strategy_version_id: string;
+    strategy_content_hash: string;
+    backtest_run_id: string;
+    oos_start: string;
+    oos_end: string;
+    warmup_start: string;
+    price_field_used: string;
+    configuration_hash: string;
+    engine_version: string;
+    analytics_version: string;
+    data_provenance: Record<string, unknown>;
+    performance_summary: { metrics: Record<string, MetricValue> };
+    result_hash: string;
+    created_at: string;
+  };
+  backtest_run: {
+    backtest_run_id: string;
+    strategy_id: string;
+    strategy_version_id: string;
+    created_at: string;
+    strategy_version_content_hash: string;
+    backtest_result: {
+      start_date: string;
+      end_date: string;
+      initial_capital: number;
+      final_equity: number;
+      equity_curve: Array<{ date: string; cash: number; asset_values: Record<string, number>; total_equity: number }>;
+      orders: Array<{ order_id: string; signal_date: string; date: string; symbol: string; side: string; quantity: number; execution_price: number; status: string }>;
+      fills: Array<{ order_id: string; date: string; symbol: string; side: string; quantity: number; price: number }>;
+      trades: Array<{ symbol: string; entry_date: string; exit_date: string; entry_price: number; exit_price: number; quantity: number; pnl: number; pnl_pct: number; holding_period: number }>;
+      positions: Array<{ as_of_date: string; cash: number; total_equity: number; positions: Array<{ symbol: string; quantity: number; market_price: number; market_value: number; unrealized_pnl: number }> }>;
+      allocation_history: Array<{ date: string; symbol: string; target_weight: number; actual_weight: number }>;
+    };
+    performance_analysis: {
+      drawdown_curve: Array<{ date: string; value: number }>;
+      [key: string]: unknown;
+    };
+  };
+  provenance: Record<string, unknown>;
+}

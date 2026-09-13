@@ -2,6 +2,7 @@ import { useEffect, useMemo, useReducer, useState } from "react";
 
 import { BacktestLab } from "./backtest/BacktestLab";
 import { ExperimentResearch } from "./research/ExperimentResearch";
+import { OosResearchView } from "./research/OosResearchView";
 import { strategyApi, StrategyApiError } from "./strategy/api";
 import {
   allocationTotalPercent,
@@ -475,7 +476,7 @@ function Preview({ state }: { state: EditorState }) {
 }
 
 export function App() {
-  const [view, setView] = useState<"strategy" | "backtest" | "research">("strategy");
+  const [view, setView] = useState<"strategy" | "backtest" | "research" | "oos">("strategy");
   const [state, dispatch] = useReducer(editorReducer, undefined, () => {
     return createDefaultEditorState();
   });
@@ -574,6 +575,7 @@ export function App() {
   return (
     view === "backtest" ? <BacktestLab onBack={() => setView("strategy")} /> :
     view === "research" ? <ExperimentResearch onBack={() => setView("strategy")} /> :
+    view === "oos" ? <OosResearchView onBack={() => setView("strategy")} /> :
     <main className="app-shell">
       <header className="topbar">
         <div>
@@ -584,6 +586,7 @@ export function App() {
         <div className="topbar-status">
           <button className="button button-secondary" type="button" onClick={() => setView("backtest")}>Open Backtest Lab</button>
           <button className="button button-secondary" type="button" onClick={() => setView("research")}>Open Experiment Research</button>
+          <button className="button button-secondary" type="button" onClick={() => setView("oos")}>Open OOS Research View</button>
           <span className={`status-pill ${validation.is_valid ? "is-valid" : "is-draft"}`}>
             {validation.is_valid ? "Validated" : "Draft"}
           </span>
