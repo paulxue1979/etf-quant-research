@@ -40,7 +40,20 @@ from research.exceptions import (
     OosAlreadyObservedError,
     OosConfigurationMismatchError,
     OosDomainError,
+    OosExecutionBlockedError,
+    OosExecutionError,
+    OosExecutionIdentityConflictError,
+    OosExecutionInProgressError,
+    OosExecutionIntegrityError,
+    OosExecutionLeaseMismatchError,
+    OosExecutionNotFoundError,
+    OosExecutionNotRetryableError,
+    OosExecutionNotRunningError,
+    OosExecutionPersistenceError,
+    OosExecutionStaleWriterError,
+    OosOfficialResultExistsError,
     OosPreconditionError,
+    OosProtocolStateError,
     OosProvenanceError,
     OosRangeMismatchError,
     OosResultIntegrityError,
@@ -192,6 +205,19 @@ __all__ = [
     "build_experiment_selection_decision",
     "create_experiment_selection_decision",
     "OosAlreadyObservedError",
+    "OosExecutionBlockedError",
+    "OosExecutionError",
+    "OosExecutionIdentityConflictError",
+    "OosExecutionInProgressError",
+    "OosExecutionIntegrityError",
+    "OosExecutionLeaseMismatchError",
+    "OosExecutionNotFoundError",
+    "OosExecutionNotRetryableError",
+    "OosExecutionNotRunningError",
+    "OosExecutionPersistenceError",
+    "OosExecutionStaleWriterError",
+    "OosOfficialResultExistsError",
+    "OosProtocolStateError",
     "OosBoundarySignalPolicy",
     "OosConfigurationMismatchError",
     "OosDataProvenance",
@@ -265,4 +291,8 @@ def __getattr__(name: str) -> Any:
         from research import oos
 
         return getattr(oos, name)
+    if name in {"OosExecution", "OosExecutionEvent", "oos_execution_id_for"}:
+        from research import oos_execution
+
+        return getattr(oos_execution, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

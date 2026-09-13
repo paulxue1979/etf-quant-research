@@ -221,3 +221,81 @@ class OosAlreadyObservedError(OosDomainError):
     """Raised when an official OOS result would be replaced."""
 
     code = "OOS_ALREADY_OBSERVED"
+
+
+class OosExecutionError(OosDomainError):
+    """Base error for PHASE 8F-2 execution control and persistence."""
+
+    code = "OOS_EXECUTION_ERROR"
+
+
+class OosExecutionIdentityConflictError(OosExecutionError):
+    """Raised when a protocol lineage is bound to another immutable spec."""
+
+    code = "OOS_EXECUTION_IDENTITY_CONFLICT"
+
+
+class OosExecutionInProgressError(OosExecutionError):
+    """Raised when an active lease prevents a second claim."""
+
+    code = "OOS_EXECUTION_IN_PROGRESS"
+
+
+class OosExecutionNotRunningError(OosExecutionError):
+    """Raised when a lease-bound mutation requires RUNNING state."""
+
+    code = "OOS_EXECUTION_NOT_RUNNING"
+
+
+class OosExecutionLeaseMismatchError(OosExecutionError):
+    """Raised when a worker presents an invalid or stale lease token."""
+
+    code = "OOS_EXECUTION_LEASE_MISMATCH"
+
+
+class OosExecutionStaleWriterError(OosExecutionError):
+    """Raised when a worker tries to mutate an execution after lease expiry."""
+
+    code = "OOS_EXECUTION_STALE_WRITER"
+
+
+class OosExecutionNotRetryableError(OosExecutionError):
+    """Raised when a FAILED or BLOCKED execution cannot be retried."""
+
+    code = "OOS_EXECUTION_NOT_RETRYABLE"
+
+
+class OosExecutionBlockedError(OosExecutionError):
+    """Raised when an execution is permanently blocked by a safe failure."""
+
+    code = "OOS_EXECUTION_BLOCKED"
+
+
+class OosExecutionNotFoundError(OosExecutionError):
+    """Raised when an execution identity does not exist."""
+
+    code = "OOS_EXECUTION_NOT_FOUND"
+
+
+class OosExecutionIntegrityError(OosExecutionError):
+    """Raised when persisted execution or event data fails integrity checks."""
+
+    code = "OOS_EXECUTION_INTEGRITY_ERROR"
+
+
+class OosExecutionPersistenceError(OosExecutionError):
+    """Raised when SQLite execution persistence fails safely."""
+
+    code = "OOS_EXECUTION_PERSISTENCE_ERROR"
+
+
+class OosProtocolStateError(OosExecutionError):
+    """Raised when protocol governance does not permit execution control."""
+
+    code = "OOS_PROTOCOL_STATE_INVALID"
+
+
+class OosOfficialResultExistsError(OosExecutionError):
+    """Raised when official OOS observation already exists for the protocol."""
+
+    code = "OOS_OFFICIAL_RESULT_EXISTS"
