@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -298,7 +299,7 @@ class OosExecutionService:
                 price_field_used=config.price_field_used,
             )
             dataset = self._data.get_history(request)
-            self._validate_dataset(dataset, request)
+            dataset = self._validate_dataset(dataset, request)
             datasets[asset.symbol] = dataset
             sources.add(dataset.source.value)
             references[asset.symbol] = {
@@ -322,19 +323,23 @@ class OosExecutionService:
         return datasets, provenance
 
     @staticmethod
-    def _validate_dataset(dataset: Any, request: HistoricalDataRequest) -> None:
+    def _validate_dataset(dataset: Any, request: HistoricalDataRequest) -> HistoricalDataSet:
         if not isinstance(dataset, HistoricalDataSet):
             raise DataValidationError(f"data set for {request.symbol} is invalid")
         if dataset.request != request:
             raise DataValidationError(
                 f"data request for {request.symbol} does not match frozen bounds"
             )
-        validate_historical_data(dataset)
-        if any(
-            point.date < request.start_date or point.date > request.end_date
-            for point in dataset.points
-        ):
-            raise DataValidationError(f"data for {request.symbol} exceeds frozen date bounds")
+        clipped = replace(
+            dataset,
+            points=tuple(
+                point
+                for point in dataset.points
+                if request.start_date <= point.date <= request.end_date
+            ),
+        )
+        validate_historical_data(clipped)
+        return clipped
 
     @staticmethod
     def _prepare_indicators(
