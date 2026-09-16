@@ -280,6 +280,10 @@ class ExperimentResultsReadService:
         frozen_snapshot = experiment.backtest_configuration.snapshot({})
         snapshot.pop("data_snapshot_reference", None)
         frozen_snapshot.pop("data_snapshot_reference", None)
+        # Effective dates are derived from the common trading calendar and are
+        # provenance, not a change to the frozen backtest configuration.
+        for field in ("effective_start_date", "effective_end_date"):
+            snapshot.pop(field, None)
         derived_version_id = snapshot.pop("strategy_version_id", None)
         frozen_snapshot.pop("strategy_version_id", None)
         if any(

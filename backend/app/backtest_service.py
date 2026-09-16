@@ -98,6 +98,8 @@ class BacktestService:
             "warmup_start_date": warmup_start.isoformat(),
             "requested_start_date": request.start_date.isoformat(),
             "requested_end_date": request.end_date.isoformat(),
+            "effective_start_date": integration.backtest_result.effective_start_date.isoformat(),
+            "effective_end_date": integration.backtest_result.effective_end_date.isoformat(),
             "indicator_requirements": [
                 {
                     "asset": item.symbol,

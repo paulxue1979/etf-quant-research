@@ -90,6 +90,10 @@ def analyze_backtest(
     trades = _trade_metrics(backtest.trades)
     provenance = {
         "source": "BacktestResult",
+        "requested_start_date": backtest.requested_start_date.isoformat(),
+        "requested_end_date": backtest.requested_end_date.isoformat(),
+        "effective_start_date": backtest.effective_start_date.isoformat(),
+        "effective_end_date": backtest.effective_end_date.isoformat(),
         "equity_source": "equity_curve.total_equity",
         "return_source": "portfolio periodic equity returns",
         "trade_source": "BacktestResult.trades",

@@ -207,8 +207,14 @@ class BacktestConfig:
         if self.fractional_shares:
             raise ValueError("PHASE 3 supports integer shares only")
 
-    def snapshot(self, data_snapshot_reference: Mapping[str, Any]) -> dict[str, Any]:
-        return {
+    def snapshot(
+        self,
+        data_snapshot_reference: Mapping[str, Any],
+        *,
+        effective_start_date: date | None = None,
+        effective_end_date: date | None = None,
+    ) -> dict[str, Any]:
+        snapshot = {
             "strategy_version_id": self.strategy_version_id,
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
@@ -228,6 +234,11 @@ class BacktestConfig:
             "data_snapshot_reference": dict(data_snapshot_reference),
             "engine_version": ENGINE_VERSION,
         }
+        if effective_start_date is not None:
+            snapshot["effective_start_date"] = effective_start_date.isoformat()
+        if effective_end_date is not None:
+            snapshot["effective_end_date"] = effective_end_date.isoformat()
+        return snapshot
 
 
 @dataclass(frozen=True)
@@ -249,3 +260,24 @@ class BacktestResult:
     configuration_snapshot: Mapping[str, Any]
     data_snapshot_reference: Mapping[str, Any]
     engine_version: str = ENGINE_VERSION
+    requested_start_date: date | None = None
+    requested_end_date: date | None = None
+    effective_start_date: date | None = None
+    effective_end_date: date | None = None
+
+    def __post_init__(self) -> None:
+        requested_start = self.requested_start_date or self.start_date
+        requested_end = self.requested_end_date or self.end_date
+        requested_bounds = (
+            ("requested_start_date", requested_start),
+            ("requested_end_date", requested_end),
+        )
+        for label, value in requested_bounds:
+            if not isinstance(value, date):
+                raise TypeError(f"{label} must be a date")
+        if not isinstance(self.start_date, date) or not isinstance(self.end_date, date):
+            raise TypeError("BacktestResult bounds must be date values")
+        object.__setattr__(self, "requested_start_date", requested_start)
+        object.__setattr__(self, "requested_end_date", requested_end)
+        object.__setattr__(self, "effective_start_date", self.start_date)
+        object.__setattr__(self, "effective_end_date", self.end_date)

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import timedelta
+
+import pytest
 
 from backend.app.backtest_repository import BacktestRepository
 from backend.app.experiment_result_repository import ExperimentResultRepository
@@ -8,10 +12,12 @@ from backend.app.experiment_results_read_service import (
     ExperimentResultsReadModelError,
     ExperimentResultsReadService,
 )
+from backend.app.strategy_repository import StrategyRepository
 from research import ExperimentResult, ExperimentResultFinalizationService, ExperimentStatus
 from research.execution import CandidateExecutionStatus
 from research.experiment_read_model import ExperimentResultStatus
 from tests.unit.test_experiment_execution_service import _binding, _setup
+from tests.unit.test_experiment_result_persistence import _running_outcome
 
 
 def _service(tmp_path, experiments, executions, strategies):
@@ -185,3 +191,38 @@ def test_not_evaluable_status_is_explicit_and_never_zero(tmp_path) -> None:
     )
     assert model.candidates[0].result_status is ExperimentResultStatus.NOT_EVALUABLE
     assert model.candidates[0].failure_summary != "0"
+
+
+def test_effective_provenance_is_ignored_but_core_configuration_is_rejected(tmp_path) -> None:
+    finalizer, outcome, experiments, executions = _running_outcome(tmp_path, single_candidate=True)
+    result = finalizer.finalize(outcome)
+    database = tmp_path / "research.db"
+
+    def update_snapshot(**changes: str) -> None:
+        connection = sqlite3.connect(database)
+        try:
+            row = connection.execute(
+                "SELECT run_json FROM backtest_runs WHERE backtest_run_id = ?",
+                (result.backtest_run_id,),
+            ).fetchone()
+            assert row is not None
+            payload = json.loads(row[0])
+            payload["backtest_result"]["configuration_snapshot"].update(changes)
+            connection.execute(
+                "UPDATE backtest_runs SET run_json = ? WHERE backtest_run_id = ?",
+                (json.dumps(payload), result.backtest_run_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    service = _service(tmp_path, experiments, executions, StrategyRepository(database))
+    update_snapshot(effective_start_date="1900-01-01", effective_end_date="1900-01-02")
+    assert service.get(outcome.experiment_id).candidates[0].result_status is (
+        ExperimentResultStatus.COMPLETED
+    )
+
+    update_snapshot(price_field_used="raw_close")
+    with pytest.raises(ExperimentResultsReadModelError) as error:
+        service.get(outcome.experiment_id)
+    assert error.value.code == "EXPERIMENT_RESULT_INTEGRITY_ERROR"

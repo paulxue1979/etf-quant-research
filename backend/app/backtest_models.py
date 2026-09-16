@@ -140,6 +140,10 @@ def serialize_backtest_result(result: BacktestResult) -> dict[str, Any]:
     return {
         "start_date": result.start_date.isoformat(),
         "end_date": result.end_date.isoformat(),
+        "requested_start_date": result.requested_start_date.isoformat(),
+        "requested_end_date": result.requested_end_date.isoformat(),
+        "effective_start_date": result.effective_start_date.isoformat(),
+        "effective_end_date": result.effective_end_date.isoformat(),
         "initial_capital": result.initial_capital,
         "final_equity": result.final_equity,
         "equity_curve": [
@@ -239,6 +243,26 @@ def deserialize_backtest_result(payload: Mapping[str, Any]) -> BacktestResult:
     return BacktestResult(
         start_date=_date(payload["start_date"]),
         end_date=_date(payload["end_date"]),
+        requested_start_date=(
+            _date(payload["requested_start_date"])
+            if payload.get("requested_start_date") is not None
+            else None
+        ),
+        requested_end_date=(
+            _date(payload["requested_end_date"])
+            if payload.get("requested_end_date") is not None
+            else None
+        ),
+        effective_start_date=(
+            _date(payload["effective_start_date"])
+            if payload.get("effective_start_date") is not None
+            else None
+        ),
+        effective_end_date=(
+            _date(payload["effective_end_date"])
+            if payload.get("effective_end_date") is not None
+            else None
+        ),
         initial_capital=float(payload["initial_capital"]),
         final_equity=float(payload["final_equity"]),
         equity_curve=tuple(

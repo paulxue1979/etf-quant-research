@@ -80,6 +80,8 @@ class BacktestEngine:
         normalized_data = self._prepare_data(data, config)
         symbols = tuple(sorted(normalized_data))
         trading_dates = self._trading_dates(normalized_data, config)
+        effective_start_date = trading_dates[0]
+        effective_end_date = trading_dates[-1]
         allocations = self._prepare_allocations(target_allocations, symbols, config)
         next_date = {
             trading_dates[index]: trading_dates[index + 1]
@@ -157,8 +159,8 @@ class BacktestEngine:
             for symbol in symbols
         }
         return BacktestResult(
-            start_date=config.start_date,
-            end_date=config.end_date,
+            start_date=effective_start_date,
+            end_date=effective_end_date,
             initial_capital=config.initial_capital,
             final_equity=equity_curve[-1].total_equity,
             equity_curve=tuple(equity_curve),
@@ -169,8 +171,18 @@ class BacktestEngine:
             allocation_history=tuple(allocation_history),
             cash_history=tuple(cash_history),
             strategy_version_id=config.strategy_version_id,
-            configuration_snapshot=MappingProxyType(config.snapshot(data_reference)),
+            configuration_snapshot=MappingProxyType(
+                config.snapshot(
+                    data_reference,
+                    effective_start_date=effective_start_date,
+                    effective_end_date=effective_end_date,
+                )
+            ),
             data_snapshot_reference=MappingProxyType(data_reference),
+            requested_start_date=config.start_date,
+            requested_end_date=config.end_date,
+            effective_start_date=effective_start_date,
+            effective_end_date=effective_end_date,
         )
 
     def _validate_config(self, config: BacktestConfig) -> None:
@@ -208,10 +220,6 @@ class BacktestEngine:
                 for point in dataset.points
                 if config.start_date <= point.date <= config.end_date
             )
-            if not points:
-                raise MissingMarketDataError(
-                    f"no market data for {symbol} in requested date range"
-                )
             result[symbol] = _DataView(
                 request=dataset.request,
                 points=points,
@@ -227,16 +235,11 @@ class BacktestEngine:
         common_dates = set.intersection(*date_sets)
         dates = tuple(sorted(common_dates))
         if not dates:
-            raise MissingMarketDataError("no common trading dates are available")
+            raise MissingMarketDataError(
+                "effective trading range is empty: no common trading dates"
+            )
         if len(dates) < 2:
             raise ExecutionError("at least two trading dates are required for next-open execution")
-        for symbol, dataset in data.items():
-            expected = set(dates)
-            actual = set(dataset.points_by_date)
-            if actual != expected:
-                raise MissingMarketDataError(
-                    f"market data for {symbol} is not available on every common trading date"
-                )
         return dates
 
     def _prepare_allocations(
