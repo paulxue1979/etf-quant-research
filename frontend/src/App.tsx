@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 
 import { BacktestLab } from "./backtest/BacktestLab";
 import { ExperimentResearch } from "./research/ExperimentResearch";
@@ -13,6 +13,7 @@ import {
   isAssetReferenced,
   rebalanceOptions,
   toStrategyPayload,
+  validateEditorState,
 } from "./strategy/editor";
 import type {
   EditorAllocation,
@@ -31,6 +32,7 @@ import type {
 const emptyValidation: ValidationResult = { is_valid: false, errors: [], warnings: [] };
 
 function percent(value: number): string {
+  if (!Number.isFinite(value)) return "Invalid";
   return `${value.toFixed(2)}%`;
 }
 
@@ -283,16 +285,18 @@ function AllocationEditor({
   assets,
   onChange,
   onRemove,
+  labelPrefix = "Allocation",
 }: {
   allocation: EditorAllocation;
   assets: string[];
   onChange: (allocation: EditorAllocation) => void;
   onRemove: () => void;
+  labelPrefix?: string;
 }) {
   return (
     <div className="allocation-row">
       <select
-        aria-label="Allocation asset"
+        aria-label={`${labelPrefix} asset`}
         value={allocation.symbol}
         onChange={(event) => onChange({ ...allocation, symbol: event.target.value })}
       >
@@ -304,7 +308,7 @@ function AllocationEditor({
       </select>
       <div className="weight-input">
         <input
-          aria-label="Allocation weight percent"
+          aria-label={`${labelPrefix} weight percent`}
           inputMode="decimal"
           value={allocation.targetWeightPercent}
           onChange={(event) => onChange({ ...allocation, targetWeightPercent: event.target.value })}
@@ -448,8 +452,13 @@ function VersionHistory({
 }
 
 function Preview({ state }: { state: EditorState }) {
-  const payload = useMemo(() => toStrategyPayload(state), [state]);
-  const firstRule = payload.rules[0];
+  const firstRule = state.rules[0];
+  const noMatchSummary =
+    state.noMatchBehavior === "hold_previous_allocation"
+      ? `Hold previous · Cash ${percent(100 - allocationTotalPercent(state.initialAllocations))}`
+      : state.fallbackAllocations
+          .map((item) => `${item.symbol} ${item.targetWeightPercent}%`)
+          .join(" · ");
   return (
     <section className="panel preview-panel">
       <div className="section-header">
@@ -463,12 +472,12 @@ function Preview({ state }: { state: EditorState }) {
         <div><span>Assets</span><strong>{state.assets.join(" · ") || "None"}</strong></div>
         <div><span>Rules</span><strong>{state.rules.length}</strong></div>
         <div><span>Rebalance</span><strong>{state.rebalanceFrequency.replaceAll("_", " ")}</strong></div>
-        <div><span>Fallback</span><strong>{state.fallbackAllocations.map((item) => `${item.symbol} ${item.targetWeightPercent}%`).join(" · ")}</strong></div>
+        <div><span>No match</span><strong>{noMatchSummary || "Cash 100.00%"}</strong></div>
       </div>
       {firstRule && (
         <div className="preview-rule">
           <span className="eyebrow">RULE 1 · PRIORITY {firstRule.priority}</span>
-          <p>{firstRule.name}: {firstRule.allocations.map((item) => `${item.symbol} ${item.target_weight * 100}%`).join(" · ")}</p>
+          <p>{firstRule.name}: {firstRule.allocations.map((item) => `${item.symbol} ${item.targetWeightPercent}%`).join(" · ")}</p>
         </div>
       )}
     </section>
@@ -506,6 +515,14 @@ export function App() {
   async function validateCurrent(): Promise<ValidationResult> {
     setBusy("validate");
     setNotice(null);
+    const localErrors = validateEditorState(state);
+    if (localErrors.length > 0) {
+      const result = { ...emptyValidation, errors: localErrors };
+      setValidation(result);
+      setNotice({ tone: "error", text: "Fix the highlighted configuration before saving." });
+      setBusy(null);
+      return result;
+    }
     try {
       const result = await strategyApi.validate(toStrategyPayload(state));
       setValidation(result);
@@ -660,24 +677,82 @@ export function App() {
             <AllocationRuleEditor key={rule.id} rule={rule} state={state} issues={validation.errors} dispatch={dispatch} />
           ))}
 
-          <section className="panel fallback-panel">
+          <section className="panel no-match-panel">
             <div className="section-header">
               <div>
                 <span className="eyebrow">NO MATCH</span>
-                <h2>Fallback allocation</h2>
+                <h2>No match behavior</h2>
               </div>
-              <span className="muted">Used when no rule matches</span>
+              <span className="muted">Choose the strategy target when no rule matches</span>
             </div>
-            {state.fallbackAllocations.map((allocation) => (
-              <AllocationEditor
-                key={allocation.id}
-                allocation={allocation}
-                assets={state.assets}
-                onChange={(next) => dispatch({ type: "fallbackAllocation", allocation: next })}
-                onRemove={() => dispatch({ type: "removeFallbackAllocation", allocationId: allocation.id })}
-              />
-            ))}
-            <button className="button button-quiet" type="button" onClick={() => dispatch({ type: "addFallbackAllocation" })}>+ Add fallback allocation</button>
+            <fieldset className="behavior-options">
+              <legend className="sr-only">No Match Behavior</legend>
+              <label className="behavior-option">
+                <input
+                  aria-label="Use Fallback Allocation"
+                  type="radio"
+                  name="no-match-behavior"
+                  value="use_fallback"
+                  checked={state.noMatchBehavior === "use_fallback"}
+                  onChange={() => dispatch({ type: "noMatchBehavior", value: "use_fallback" })}
+                />
+                <span><strong>Use Fallback Allocation</strong><small>Resolve a fixed fallback target.</small></span>
+              </label>
+              <label className="behavior-option">
+                <input
+                  aria-label="Hold Previous Allocation"
+                  type="radio"
+                  name="no-match-behavior"
+                  value="hold_previous_allocation"
+                  checked={state.noMatchBehavior === "hold_previous_allocation"}
+                  onChange={() => dispatch({ type: "noMatchBehavior", value: "hold_previous_allocation" })}
+                />
+                <span><strong>Hold Previous Allocation</strong><small>Keep the last resolved strategy target.</small></span>
+              </label>
+            </fieldset>
+
+            {state.noMatchBehavior === "use_fallback" ? (
+              <div className="allocation-block no-match-allocation">
+                <div className="subsection-heading">
+                  <div><span className="eyebrow">FIXED TARGET</span><h3>Fallback allocation</h3></div>
+                  <strong className={allocationTotalPercent(state.fallbackAllocations) > 100 ? "invalid-number" : "valid-number"}>
+                    {percent(allocationTotalPercent(state.fallbackAllocations))}
+                  </strong>
+                </div>
+                {state.fallbackAllocations.map((allocation) => (
+                  <AllocationEditor
+                    key={allocation.id}
+                    allocation={allocation}
+                    assets={state.assets}
+                    onChange={(next) => dispatch({ type: "fallbackAllocation", allocation: next })}
+                    onRemove={() => dispatch({ type: "removeFallbackAllocation", allocationId: allocation.id })}
+                  />
+                ))}
+                <button className="button button-quiet" type="button" onClick={() => dispatch({ type: "addFallbackAllocation" })}>+ Add fallback allocation</button>
+              </div>
+            ) : (
+              <div className="allocation-block no-match-allocation">
+                <div className="subsection-heading">
+                  <div><span className="eyebrow">STARTING TARGET</span><h3>Initial allocation</h3></div>
+                  <strong className={allocationTotalPercent(state.initialAllocations) > 100 ? "invalid-number" : "valid-number"}>
+                    Cash {percent(100 - allocationTotalPercent(state.initialAllocations))}
+                  </strong>
+                </div>
+                <p className="help-text">When no rule matches, keep the previously resolved target allocation.</p>
+                {state.initialAllocations.map((allocation) => (
+                  <AllocationEditor
+                    key={allocation.id}
+                    allocation={allocation}
+                    assets={state.assets}
+                    labelPrefix="Initial allocation"
+                    onChange={(next) => dispatch({ type: "initialAllocation", allocation: next })}
+                    onRemove={() => dispatch({ type: "removeInitialAllocation", allocationId: allocation.id })}
+                  />
+                ))}
+                <button className="button button-quiet" type="button" onClick={() => dispatch({ type: "addInitialAllocation" })}>+ Add initial allocation</button>
+                {allocationTotalPercent(state.initialAllocations) > 100 && <span className="inline-error">Initial allocation exceeds 100%.</span>}
+              </div>
+            )}
           </section>
 
           <section className="panel rebalance-panel">
@@ -708,6 +783,11 @@ export function App() {
             <div>
               <span className="eyebrow">VERSIONED WORKFLOW</span>
               <p>{notice?.text ?? "Validation is required before an immutable version can be saved."}</p>
+              {validation.errors.length > 0 && (
+                <ul className="validation-errors">
+                  {validation.errors.map((issue, index) => <li key={`${issue.code}-${issue.path}-${index}`}>{issue.message}</li>)}
+                </ul>
+              )}
             </div>
             <div className="action-buttons">
               <button className="button button-secondary" type="button" disabled={busy !== null} onClick={() => void validateCurrent()}>

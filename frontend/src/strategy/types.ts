@@ -8,6 +8,7 @@ export type ComparisonOperator =
   | "equal";
 export type LogicalOperator = "and" | "or";
 export type RebalanceFrequency = "daily" | "weekly" | "monthly" | "on_signal_change";
+export type NoMatchBehavior = "use_fallback" | "hold_previous_allocation";
 
 export interface EditorOperand {
   id: string;
@@ -58,7 +59,9 @@ export interface EditorState {
   priceField: PriceField;
   assets: string[];
   rules: EditorAllocationRule[];
+  noMatchBehavior: NoMatchBehavior;
   fallbackAllocations: EditorAllocation[];
+  initialAllocations: EditorAllocation[];
   rebalanceFrequency: RebalanceFrequency;
   rebalanceThresholdPercent: string;
 }
@@ -105,6 +108,8 @@ export interface StrategyPayload {
     remaining: { symbol: string } | null;
   }>;
   fallback: { name: string; allocations: StrategyAllocationPayload[] };
+  no_match_behavior?: NoMatchBehavior;
+  initial_allocation?: { allocations: StrategyAllocationPayload[] };
   rebalance_policy: { frequency: RebalanceFrequency; threshold: number | null };
 }
 

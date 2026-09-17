@@ -41,6 +41,74 @@ function mockApi() {
 }
 
 describe("Strategy Lab", () => {
+  it("switches between fallback and hold-previous allocation controls", async () => {
+    mockApi();
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Fallback allocation" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Initial allocation" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Hold Previous Allocation" }));
+
+    expect(screen.queryByRole("heading", { name: "Fallback allocation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Initial allocation" })).toBeInTheDocument();
+    expect(
+      screen.getByText("When no rule matches, keep the previously resolved target allocation."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Cash 100.00%")).toBeInTheDocument();
+  });
+
+  it("saves hold-previous behavior with a cash-only initial allocation", async () => {
+    const fetchMock = mockApi();
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("No saved versions yet.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("radio", { name: "Hold Previous Allocation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
+
+    await waitFor(() => expect(screen.getByText("Saved immutable version v1.")).toBeInTheDocument());
+    const saveCall = fetchMock.mock.calls.find(
+      ([input, init]) => String(input).endsWith("/versions") && init?.method === "POST",
+    );
+    const body = JSON.parse(String(saveCall?.[1]?.body));
+    expect(body.strategy.no_match_behavior).toBe("hold_previous_allocation");
+    expect(body.strategy.initial_allocation).toEqual({ allocations: [] });
+  });
+
+  it("shows structured backend validation errors in the workflow", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/versions")) return new Response("[]", { status: 200 });
+      if (url.endsWith("/validate")) {
+        return new Response(
+          JSON.stringify({
+            is_valid: false,
+            errors: [
+              {
+                code: "MissingInitialAllocation",
+                path: "initial_allocation",
+                message: "Hold Previous Allocation requires an Initial Allocation.",
+              },
+            ],
+            warnings: [],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("No saved versions yet.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Validate strategy" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Hold Previous Allocation requires an Initial Allocation."),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it("renders structured strategy configuration and supports adding assets", async () => {
     mockApi();
     render(<App />);

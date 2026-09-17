@@ -8,6 +8,7 @@ import type {
   EditorRuleNode,
   EditorState,
   LogicalOperator,
+  NoMatchBehavior,
   OperandType,
   PriceField,
   RebalanceFrequency,
@@ -16,6 +17,7 @@ import type {
   StrategyOperandPayload,
   StrategyPayload,
   StrategyRuleGroupPayload,
+  ValidationIssue,
 } from "./types";
 
 let identifier = 0;
@@ -119,9 +121,11 @@ export function createDefaultEditorState(): EditorState {
     priceField: "adjusted_close",
     assets,
     rules: [rule],
+    noMatchBehavior: "use_fallback",
     fallbackAllocations: [
       { id: nextId("allocation"), symbol: "SGOV", targetWeightPercent: "100" },
     ],
+    initialAllocations: [],
     rebalanceFrequency: "weekly",
     rebalanceThresholdPercent: "5",
   };
@@ -197,6 +201,10 @@ export type EditorAction =
   | { type: "fallbackAllocation"; allocation: EditorAllocation }
   | { type: "addFallbackAllocation" }
   | { type: "removeFallbackAllocation"; allocationId: string }
+  | { type: "noMatchBehavior"; value: NoMatchBehavior }
+  | { type: "initialAllocation"; allocation: EditorAllocation }
+  | { type: "addInitialAllocation" }
+  | { type: "removeInitialAllocation"; allocationId: string }
   | { type: "rebalance"; field: "frequency" | "threshold"; value: string }
   | { type: "replace"; state: EditorState };
 
@@ -284,6 +292,27 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           (allocation) => allocation.id !== action.allocationId,
         ),
       };
+    case "noMatchBehavior":
+      return { ...state, noMatchBehavior: action.value };
+    case "initialAllocation":
+      return {
+        ...state,
+        initialAllocations: state.initialAllocations.map((allocation) =>
+          allocation.id === action.allocation.id ? action.allocation : allocation,
+        ),
+      };
+    case "addInitialAllocation":
+      return {
+        ...state,
+        initialAllocations: [...state.initialAllocations, createAllocation(state.assets)],
+      };
+    case "removeInitialAllocation":
+      return {
+        ...state,
+        initialAllocations: state.initialAllocations.filter(
+          (allocation) => allocation.id !== action.allocationId,
+        ),
+      };
     case "rebalance":
       return action.field === "frequency"
         ? { ...state, rebalanceFrequency: action.value as RebalanceFrequency }
@@ -293,17 +322,24 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   }
 }
 
-function toNumber(value: string): number {
-  return Number(value);
+function toNumber(value: string, field: string): number {
+  const numeric = Number(value);
+  if (value.trim() === "" || !Number.isFinite(numeric)) {
+    throw new Error(`${field} must be a finite number`);
+  }
+  return numeric;
 }
 
 function toWeightPayload(allocation: EditorAllocation): StrategyAllocationPayload {
-  return { symbol: allocation.symbol, target_weight: toNumber(allocation.targetWeightPercent) / 100 };
+  return {
+    symbol: allocation.symbol,
+    target_weight: toNumber(allocation.targetWeightPercent, "allocation weight") / 100,
+  };
 }
 
 function toOperandPayload(operand: EditorOperand, priceField: PriceField): StrategyOperandPayload {
   if (operand.type === "constant") {
-    return { type: "constant", asset: operand.asset, value: toNumber(operand.value) };
+    return { type: "constant", asset: operand.asset, value: toNumber(operand.value, "constant") };
   }
   if (operand.type === "price") {
     return { type: "price", asset: operand.asset, price_field: priceField };
@@ -311,7 +347,7 @@ function toOperandPayload(operand: EditorOperand, priceField: PriceField): Strat
   return {
     type: operand.type,
     asset: operand.asset,
-    period: toNumber(operand.period),
+    period: toNumber(operand.period, "indicator period"),
     price_field: priceField,
   };
 }
@@ -323,7 +359,10 @@ function toConditionPayload(
   const threshold =
     condition.operator === "equal" || condition.thresholdPercent.trim() === ""
       ? null
-      : { type: "relative" as const, value: toNumber(condition.thresholdPercent) / 100 };
+      : {
+          type: "relative" as const,
+          value: toNumber(condition.thresholdPercent, "relative threshold") / 100,
+        };
   return {
     type: "condition",
     left: toOperandPayload(condition.left, priceField),
@@ -346,7 +385,7 @@ function toRuleGroupPayload(group: EditorRuleGroup, priceField: PriceField): Str
 }
 
 export function toStrategyPayload(state: EditorState): StrategyPayload {
-  return {
+  const payload: StrategyPayload = {
     strategy_id: state.strategyId.trim(),
     name: state.name,
     description: state.description,
@@ -355,7 +394,7 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
     rules: state.rules.map((rule) => ({
       rule_id: rule.ruleId,
       name: rule.name,
-      priority: toNumber(rule.priority),
+      priority: toNumber(rule.priority, "rule priority"),
       condition: toRuleGroupPayload(rule.condition, state.priceField),
       allocations: rule.allocations.map(toWeightPayload),
       remaining: rule.remainingSymbol ? { symbol: rule.remainingSymbol } : null,
@@ -366,9 +405,16 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
       threshold:
         state.rebalanceThresholdPercent.trim() === ""
           ? null
-          : toNumber(state.rebalanceThresholdPercent) / 100,
+          : toNumber(state.rebalanceThresholdPercent, "rebalance threshold") / 100,
     },
   };
+  if (state.noMatchBehavior === "hold_previous_allocation") {
+    payload.no_match_behavior = state.noMatchBehavior;
+    payload.initial_allocation = {
+      allocations: state.initialAllocations.map(toWeightPayload),
+    };
+  }
+  return payload;
 }
 
 function fromOperandPayload(payload: StrategyOperandPayload): EditorOperand {
@@ -432,7 +478,11 @@ export function fromStrategyPayload(payload: StrategyPayload): EditorState {
         remainingSymbol: rule.remaining?.symbol ?? "",
       };
     }),
+    noMatchBehavior: payload.no_match_behavior ?? "use_fallback",
     fallbackAllocations: payload.fallback.allocations.map(fromAllocationPayload),
+    initialAllocations: (payload.initial_allocation?.allocations ?? []).map(
+      fromAllocationPayload,
+    ),
     rebalanceFrequency: payload.rebalance_policy.frequency,
     rebalanceThresholdPercent:
       payload.rebalance_policy.threshold === null
@@ -459,8 +509,115 @@ export function isAssetReferenced(state: EditorState, asset: string): boolean {
         hasOperand(rule.condition) ||
         rule.remainingSymbol === asset ||
         rule.allocations.some((allocation) => allocation.symbol === asset),
-    ) || state.fallbackAllocations.some((allocation) => allocation.symbol === asset)
+    ) ||
+    state.fallbackAllocations.some((allocation) => allocation.symbol === asset) ||
+    state.initialAllocations.some((allocation) => allocation.symbol === asset)
   );
+}
+
+function numericIssue(value: string, path: string, label: string): ValidationIssue | null {
+  if (value.trim() !== "" && Number.isFinite(Number(value))) return null;
+  return { code: "InvalidNumericInput", path, message: `${label} must be a finite number.` };
+}
+
+function allocationIssues(
+  allocations: EditorAllocation[],
+  assets: string[],
+  path: string,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  let total = 0;
+  allocations.forEach((allocation, index) => {
+    const itemPath = `${path}.allocations[${index}]`;
+    if (!assets.includes(allocation.symbol)) {
+      issues.push({
+        code: "UnknownAsset",
+        path: `${itemPath}.symbol`,
+        message: `${allocation.symbol || "Allocation"} must use a declared strategy asset.`,
+      });
+    }
+    const numeric = numericIssue(
+      allocation.targetWeightPercent,
+      `${itemPath}.target_weight`,
+      "Allocation weight",
+    );
+    if (numeric) {
+      issues.push(numeric);
+      return;
+    }
+    const weight = Number(allocation.targetWeightPercent);
+    if (weight < 0) {
+      issues.push({
+        code: "InvalidAllocationWeight",
+        path: `${itemPath}.target_weight`,
+        message: "Allocation weight cannot be negative.",
+      });
+    }
+    total += weight;
+  });
+  if (total > 100) {
+    issues.push({
+      code: "AllocationExceeds100Percent",
+      path: `${path}.allocations`,
+      message: "Explicit allocation cannot exceed 100%.",
+    });
+  }
+  return issues;
+}
+
+function ruleNumericIssues(rule: EditorAllocationRule, index: number): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const priority = numericIssue(rule.priority, `rules[${index}].priority`, "Rule priority");
+  if (priority) issues.push(priority);
+  const visit = (group: EditorRuleGroup) => {
+    group.children.forEach((child) => {
+      if (child.type === "group") {
+        visit(child);
+        return;
+      }
+      if (child.operator !== "equal" && child.thresholdPercent.trim() !== "") {
+        const issue = numericIssue(
+          child.thresholdPercent,
+          `rules[${index}].condition.${child.id}.threshold`,
+          "Relative threshold",
+        );
+        if (issue) issues.push(issue);
+      }
+      [child.left, child.right].forEach((operand) => {
+        const field = operand.type === "constant" ? operand.value : operand.period;
+        if (operand.type === "price") return;
+        const issue = numericIssue(
+          field,
+          `rules[${index}].condition.${child.id}.${operand.id}`,
+          operand.type === "constant" ? "Constant" : "Indicator period",
+        );
+        if (issue) issues.push(issue);
+      });
+    });
+  };
+  visit(rule.condition);
+  return issues;
+}
+
+export function validateEditorState(state: EditorState): ValidationIssue[] {
+  const issues = state.rules.flatMap((rule, index) => [
+    ...ruleNumericIssues(rule, index),
+    ...allocationIssues(rule.allocations, state.assets, `rules[${index}]`),
+  ]);
+  if (state.noMatchBehavior === "use_fallback") {
+    issues.push(...allocationIssues(state.fallbackAllocations, state.assets, "fallback"));
+  } else {
+    issues.push(...allocationIssues(state.initialAllocations, state.assets, "initial_allocation"));
+  }
+  if (state.rebalanceThresholdPercent.trim() !== "") {
+    const threshold = numericIssue(
+      state.rebalanceThresholdPercent,
+      "rebalance_policy.threshold",
+      "Rebalance threshold",
+    );
+    if (threshold) issues.push(threshold);
+  }
+  return issues;
 }
 
 export const comparisonOptions: Array<{ value: ComparisonOperator; label: string }> = [

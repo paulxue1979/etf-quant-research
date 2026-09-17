@@ -99,7 +99,18 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
 .allocation-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .remaining-select { max-width: 280px; margin-top: 12px; }
 
-.fallback-panel { border-left: 3px solid #6b5c3b; }
+.no-match-panel { border-left: 3px solid #6b5c3b; }
+.behavior-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; border: 0; }
+.behavior-option { display: flex; grid-template-columns: none; gap: 10px; align-items: flex-start; min-height: 70px; padding: 12px; border: 1px solid var(--line); border-radius: 5px; background: #10191e; cursor: pointer; }
+.behavior-option:has(input:checked) { border-color: #4d908d; background: #14272a; }
+.behavior-option input { width: auto; margin: 3px 0 0; accent-color: var(--cyan); }
+.behavior-option span { display: grid; gap: 4px; }
+.behavior-option strong { color: var(--text); font-size: 12px; }
+.behavior-option small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.no-match-allocation { margin-top: 16px; }
+.help-text { margin: -2px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.validation-errors { display: grid; gap: 4px; margin: 9px 0 0; padding-left: 18px; color: var(--red); font-size: 11px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .preview-panel { background: #111d22; }
 .preview-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .preview-grid div { background: #16252b; border: 1px solid #2b444c; border-radius: 5px; padding: 10px; min-width: 0; }
@@ -141,6 +152,7 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
   .action-buttons { justify-content: stretch; }
   .action-buttons .button { flex: 1; }
   .version-list { grid-template-columns: 1fr; }
+  .behavior-options { grid-template-columns: 1fr; }
 }
 
 .backtest-shell { width: min(1500px, 100%); margin: 0 auto; padding: 30px 34px 60px; }

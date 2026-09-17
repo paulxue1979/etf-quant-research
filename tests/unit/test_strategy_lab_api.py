@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
 from fastapi.testclient import TestClient
 
+from backend.app import backtest_lab
 from backend.app.main import app
 from backend.app.strategy_lab import strategy_version_store
+from tests.unit.test_backtest_repository import _run
 
 
 def _strategy_payload() -> dict[str, object]:
@@ -135,3 +140,120 @@ def test_unknown_version_and_malformed_requests_are_not_silently_accepted() -> N
 
     assert missing.status_code == 404
     assert malformed.status_code == 422
+
+
+def test_stateful_strategy_validates_and_round_trips_as_immutable_versions() -> None:
+    client = TestClient(app)
+    first_payload = _strategy_payload()
+    first_payload.update(
+        {
+            "name": "QQQ SMA200 Hysteresis",
+            "no_match_behavior": "hold_previous_allocation",
+            "initial_allocation": {"allocations": []},
+            "rebalance_policy": {
+                "frequency": "on_signal_change",
+                "threshold": None,
+            },
+        }
+    )
+    first_condition = first_payload["rules"][0]["condition"]["children"][0]  # type: ignore[index]
+    first_condition["right"]["period"] = 200
+
+    validation = client.post("/strategy-lab/validate", json={"strategy": first_payload})
+    first = client.post("/strategy-lab/versions", json={"strategy": first_payload})
+
+    assert validation.status_code == 200
+    assert validation.json()["is_valid"] is True
+    assert first.status_code == 200
+    first_body = first.json()
+    restored = client.get(
+        f"/strategy-lab/strategies/{first_body['strategy_id']}/versions/{first_body['version_id']}"
+    )
+    configuration = restored.json()["configuration"]
+    assert configuration["no_match_behavior"] == "hold_previous_allocation"
+    assert configuration["initial_allocation"] == {"allocations": []}
+    assert configuration["rebalance_policy"]["frequency"] == "on_signal_change"
+    assert configuration["rules"][0]["condition"]["children"][0]["threshold"] == {
+        "type": "relative",
+        "value": 0.04,
+    }
+
+    second_payload = dict(first_payload)
+    second_payload["name"] = "QQQ SMA200 Hysteresis v2"
+    second = client.post("/strategy-lab/versions", json={"strategy": second_payload})
+
+    assert second.status_code == 200
+    assert second.json()["version_number"] == 2
+    assert second.json()["version_id"] != first_body["version_id"]
+    assert (
+        client.get(
+            f"/strategy-lab/strategies/{first_body['strategy_id']}/versions/{first_body['version_id']}"
+        ).json()["configuration"]["name"]
+        == "QQQ SMA200 Hysteresis"
+    )
+
+
+def test_hold_previous_strategy_requires_initial_allocation() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    payload["no_match_behavior"] = "hold_previous_allocation"
+
+    response = client.post("/strategy-lab/validate", json={"strategy": payload})
+
+    assert response.status_code == 200
+    assert response.json()["is_valid"] is False
+    assert response.json()["errors"] == [
+        {
+            "code": "MissingInitialAllocation",
+            "path": "initial_allocation",
+            "message": "HOLD_PREVIOUS_ALLOCATION requires an initial allocation",
+        }
+    ]
+
+
+def test_saved_stateful_version_id_is_handed_to_the_existing_backtest_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    payload.update(
+        {
+            "no_match_behavior": "hold_previous_allocation",
+            "initial_allocation": {"allocations": []},
+            "rebalance_policy": {"frequency": "on_signal_change", "threshold": None},
+        }
+    )
+    saved = client.post("/strategy-lab/versions", json={"strategy": payload}).json()
+    captured: dict[str, object] = {}
+
+    def run_backtest(request: object) -> object:
+        captured["strategy_id"] = request.strategy_id  # type: ignore[attr-defined]
+        captured["strategy_version_id"] = request.strategy_version_id  # type: ignore[attr-defined]
+        return _run()
+
+    monkeypatch.setattr(
+        backtest_lab,
+        "_service",
+        lambda: SimpleNamespace(run=run_backtest),
+    )
+
+    response = client.post(
+        "/backtests",
+        json={
+            "strategy_id": saved["strategy_id"],
+            "strategy_version_id": saved["version_id"],
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-04",
+            "initial_capital": 10_000,
+            "price_field_used": "adjusted_close",
+        },
+    )
+
+    assert response.status_code == 201
+    assert captured == {
+        "strategy_id": saved["strategy_id"],
+        "strategy_version_id": saved["version_id"],
+    }
+    restored = strategy_version_store.get(saved["strategy_id"], saved["version_id"])
+    assert restored is not None
+    assert restored.configuration.no_match_behavior.value == "hold_previous_allocation"
