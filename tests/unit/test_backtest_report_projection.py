@@ -56,12 +56,7 @@ def test_projection_separates_capital_profit_and_strategy_metrics_without_recalc
     assert report["performance"]["twr_total_return"] == (
         run.performance_analysis.total_return.to_dict()
     )
-    assert report["investor_experience"]["xirr"] == {
-        "value": None,
-        "status": "not_available",
-        "reason": "XIRR is deferred to PHASE 9G-B",
-        "unit": "percent",
-    }
+    assert report["investor_experience"]["xirr"] == run.performance_analysis.xirr.to_dict()
 
 
 def test_projection_keeps_hold_previous_out_of_trade_count() -> None:
@@ -113,7 +108,7 @@ def test_series_are_windowed_without_altering_full_period_summary_metrics() -> N
         {"date": "2026-01-03", "value": run.backtest_result.initial_capital}
     ]
     assert payload["series"]["drawdown"]["source"] == ("PerformanceAnalysisResult.drawdown_curve")
-    assert payload["series"]["twr"]["status"] == "not_available"
+    assert payload["series"]["twr"]["status"] == "available"
     assert payload["series"]["benchmark"]["status"] == "not_available"
     assert payload["summary_period"] == {
         "start_date": "2026-01-02",

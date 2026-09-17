@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 from types import MappingProxyType
@@ -145,6 +145,87 @@ class DrawdownPoint:
 
 
 @dataclass(frozen=True)
+class WealthPoint:
+    """One normalized, flow-adjusted portfolio wealth observation."""
+
+    date: date
+    value: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.date, date):
+            raise TypeError("wealth date must be a date")
+        if (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, (int, float))
+            or not math.isfinite(float(self.value))
+            or self.value <= 0
+        ):
+            raise ValueError("wealth value must be finite and positive")
+        object.__setattr__(self, "value", float(self.value))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"date": self.date.isoformat(), "value": self.value}
+
+
+@dataclass(frozen=True)
+class ExposurePoint:
+    """Actual and target portfolio exposure for one observation date."""
+
+    date: date
+    cash_weight: float
+    gross_exposure: float
+    net_exposure: float
+    asset_weights: Mapping[str, float]
+    target_cash_weight: float
+    target_asset_weights: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.date, date):
+            raise TypeError("exposure date must be a date")
+        for label in (
+            "cash_weight",
+            "gross_exposure",
+            "net_exposure",
+            "target_cash_weight",
+        ):
+            value = getattr(self, label)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(f"{label} must be finite")
+            object.__setattr__(self, label, float(value))
+        for label in ("asset_weights", "target_asset_weights"):
+            values = getattr(self, label)
+            if not isinstance(values, Mapping):
+                raise TypeError(f"{label} must be a mapping")
+            normalized: dict[str, float] = {}
+            for symbol, value in values.items():
+                if not isinstance(symbol, str) or not symbol.strip():
+                    raise ValueError(f"{label} symbols must be non-empty")
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                ):
+                    raise ValueError(f"{label} values must be finite")
+                normalized[symbol.strip()] = float(value)
+            object.__setattr__(self, label, MappingProxyType(dict(sorted(normalized.items()))))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "date": self.date.isoformat(),
+            "cash_weight": self.cash_weight,
+            "gross_exposure": self.gross_exposure,
+            "net_exposure": self.net_exposure,
+            "asset_weights": dict(self.asset_weights),
+            "target_cash_weight": self.target_cash_weight,
+            "target_asset_weights": dict(self.target_asset_weights),
+        }
+
+
+@dataclass(frozen=True)
 class PerformanceAnalysisResult:
     """Immutable analytics over one completed PHASE 3 backtest result."""
 
@@ -172,6 +253,16 @@ class PerformanceAnalysisResult:
     trade_metrics: TradeMetrics
     provenance: Mapping[str, Any]
     drawdown_curve: tuple[DrawdownPoint, ...] = ()
+    xirr: MetricValue = field(
+        default_factory=lambda: MetricValue.not_evaluable("XIRR not calculated")
+    )
+    twr_wealth_curve: tuple[WealthPoint, ...] = ()
+    exposure_curve: tuple[ExposurePoint, ...] = ()
+    exposure_summary: Mapping[str, Any] = field(default_factory=dict)
+    turnover: MetricValue = field(
+        default_factory=lambda: MetricValue.not_evaluable("turnover not calculated")
+    )
+    turnover_provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for label in ("backtest_run_id", "strategy_id"):
@@ -243,6 +334,30 @@ class PerformanceAnalysisResult:
             set(drawdown_dates)
         ):
             raise ValueError("drawdown_curve dates must be sorted and unique")
+        if not isinstance(self.xirr, MetricValue) or not isinstance(self.turnover, MetricValue):
+            raise TypeError("xirr and turnover must be MetricValue values")
+        wealth_curve = tuple(self.twr_wealth_curve)
+        if not all(isinstance(item, WealthPoint) for item in wealth_curve):
+            raise TypeError("twr_wealth_curve must contain WealthPoint values")
+        wealth_dates = tuple(item.date for item in wealth_curve)
+        if wealth_dates != tuple(sorted(wealth_dates)) or len(wealth_dates) != len(
+            set(wealth_dates)
+        ):
+            raise ValueError("twr_wealth_curve dates must be sorted and unique")
+        exposure_curve = tuple(self.exposure_curve)
+        if not all(isinstance(item, ExposurePoint) for item in exposure_curve):
+            raise TypeError("exposure_curve must contain ExposurePoint values")
+        exposure_dates = tuple(item.date for item in exposure_curve)
+        if exposure_dates != tuple(sorted(exposure_dates)) or len(exposure_dates) != len(
+            set(exposure_dates)
+        ):
+            raise ValueError("exposure_curve dates must be sorted and unique")
+        for label, value in (
+            ("exposure_summary", self.exposure_summary),
+            ("turnover_provenance", self.turnover_provenance),
+        ):
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{label} must be a mapping")
         object.__setattr__(self, "strategy_version_id", self.strategy_version_id.strip())
         object.__setattr__(self, "price_field_used", price_field)
         object.__setattr__(self, "rebalance_frequency", self.rebalance_frequency.strip())
@@ -252,6 +367,12 @@ class PerformanceAnalysisResult:
         object.__setattr__(self, "final_equity", float(self.final_equity))
         object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
         object.__setattr__(self, "drawdown_curve", drawdown_curve)
+        object.__setattr__(self, "twr_wealth_curve", wealth_curve)
+        object.__setattr__(self, "exposure_curve", exposure_curve)
+        object.__setattr__(self, "exposure_summary", MappingProxyType(dict(self.exposure_summary)))
+        object.__setattr__(
+            self, "turnover_provenance", MappingProxyType(dict(self.turnover_provenance))
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a deterministic JSON-compatible result."""
@@ -280,13 +401,21 @@ class PerformanceAnalysisResult:
             "trade_metrics": self.trade_metrics.to_dict(),
             "provenance": dict(self.provenance),
             "drawdown_curve": [item.to_dict() for item in self.drawdown_curve],
+            "xirr": self.xirr.to_dict(),
+            "twr_wealth_curve": [item.to_dict() for item in self.twr_wealth_curve],
+            "exposure_curve": [item.to_dict() for item in self.exposure_curve],
+            "exposure_summary": dict(self.exposure_summary),
+            "turnover": self.turnover.to_dict(),
+            "turnover_provenance": dict(self.turnover_provenance),
         }
 
 
 __all__ = [
     "DrawdownPoint",
+    "ExposurePoint",
     "MetricStatus",
     "MetricValue",
     "PerformanceAnalysisResult",
     "TradeMetrics",
+    "WealthPoint",
 ]

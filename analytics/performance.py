@@ -9,8 +9,15 @@ from datetime import date
 from typing import Any
 
 from analytics.exceptions import AnalyticsInputError
-from analytics.models import DrawdownPoint, MetricValue, PerformanceAnalysisResult, TradeMetrics
-from backtest.models import BacktestResult, EquityPoint, Trade
+from analytics.models import (
+    DrawdownPoint,
+    ExposurePoint,
+    MetricValue,
+    PerformanceAnalysisResult,
+    TradeMetrics,
+    WealthPoint,
+)
+from backtest.models import BacktestResult, EquityPoint, RebalanceCause, Trade
 from data.models import PriceField
 
 _DAYS_PER_YEAR = 365.0
@@ -84,6 +91,13 @@ def analyze_backtest(
     drawdown = _drawdown_metrics(wealth_index)
     calmar = _calmar(cagr, drawdown["max_drawdown"])
     trades = _trade_metrics(backtest.trades)
+    twr_curve = tuple(
+        WealthPoint(point_date, value)
+        for point_date, value in zip(dates, wealth_index, strict=True)
+    )
+    exposure_curve, exposure_summary = _exposure_analytics(backtest)
+    turnover, turnover_provenance = _turnover_analytics(backtest)
+    xirr = _xirr(backtest)
     provenance = {
         "source": "BacktestResult",
         "requested_start_date": backtest.requested_start_date.isoformat(),
@@ -102,7 +116,10 @@ def analyze_backtest(
         "recovery_duration_unit": "trading_periods",
         "average_holding_period_source": "Trade.holding_period",
         "average_holding_period_unit": "Trade.holding_period units (PHASE 3 calendar days)",
-        "turnover_status": "not_evaluable: no canonical turnover contract in BacktestResult",
+        "turnover_source": "BacktestResult.fills joined to BacktestResult.orders",
+        "twr_wealth_source": "flow-adjusted geometric wealth factors",
+        "xirr_source": "initial capital and BacktestResult.external_cash_flows",
+        "exposure_source": "BacktestResult.equity_curve and allocation_history",
     }
     return PerformanceAnalysisResult(
         backtest_run_id=backtest_run_id,
@@ -132,6 +149,12 @@ def analyze_backtest(
             DrawdownPoint(point_date, value)
             for point_date, value in zip(dates, _drawdown_curve(wealth_index), strict=True)
         ),
+        xirr=xirr,
+        twr_wealth_curve=twr_curve,
+        exposure_curve=exposure_curve,
+        exposure_summary=exposure_summary,
+        turnover=turnover,
+        turnover_provenance=turnover_provenance,
     )
 
 
@@ -286,6 +309,136 @@ def _flow_adjusted_wealth(backtest: BacktestResult) -> tuple[float, ...]:
     return tuple(values)
 
 
+def flow_adjusted_wealth_curve(backtest: BacktestResult) -> tuple[WealthPoint, ...]:
+    """Return the canonical normalized wealth curve used by all TWR metrics."""
+    _validate_backtest(backtest)
+    return tuple(
+        WealthPoint(point.date, value)
+        for point, value in zip(backtest.equity_curve, _flow_adjusted_wealth(backtest), strict=True)
+    )
+
+
+def _xirr(backtest: BacktestResult) -> MetricValue:
+    cash_flows: list[tuple[date, float]] = [
+        (backtest.effective_start_date, -backtest.initial_capital)
+    ]
+    cash_flows.extend(
+        (item.date, -float(item.amount))
+        for item in backtest.external_cash_flows
+        if float(item.amount) != 0
+    )
+    cash_flows.append((backtest.effective_end_date, float(backtest.final_equity)))
+    if (
+        len(cash_flows) < 2
+        or not any(amount < 0 for _, amount in cash_flows)
+        or not any(amount > 0 for _, amount in cash_flows)
+    ):
+        return MetricValue.not_evaluable(
+            "XIRR requires both negative and positive dated cash flows"
+        )
+    origin = cash_flows[0][0]
+
+    def npv(rate: float) -> float:
+        if rate <= -1:
+            return math.inf
+        return math.fsum(
+            amount / (1.0 + rate) ** ((flow_date - origin).days / _DAYS_PER_YEAR)
+            for flow_date, amount in cash_flows
+        )
+
+    lower = -0.999999999
+    lower_value = npv(lower)
+    upper = 1.0
+    upper_value = npv(upper)
+    for _ in range(64):
+        if math.isfinite(upper_value) and lower_value * upper_value <= 0:
+            break
+        upper = upper * 2.0 + 1.0
+        upper_value = npv(upper)
+    else:
+        return MetricValue.not_evaluable("XIRR has no bounded sign change")
+    if not math.isfinite(lower_value) or not math.isfinite(upper_value):
+        return MetricValue.not_evaluable("XIRR cash flows are not finite")
+    for _ in range(200):
+        midpoint = (lower + upper) / 2.0
+        midpoint_value = npv(midpoint)
+        if not math.isfinite(midpoint_value):
+            return MetricValue.not_evaluable("XIRR calculation is not finite")
+        if abs(midpoint_value) < 1e-10 or abs(upper - lower) < 1e-12:
+            return MetricValue.available(midpoint)
+        if lower_value * midpoint_value <= 0:
+            upper, upper_value = midpoint, midpoint_value
+        else:
+            lower, lower_value = midpoint, midpoint_value
+    return MetricValue.not_evaluable("XIRR solver did not converge")
+
+
+def _exposure_analytics(
+    backtest: BacktestResult,
+) -> tuple[tuple[ExposurePoint, ...], dict[str, float | str]]:
+    targets: dict[date, dict[str, float]] = {}
+    for item in backtest.allocation_history:
+        targets.setdefault(item.date, {})[item.symbol] = float(item.target_weight)
+    points: list[ExposurePoint] = []
+    for equity in backtest.equity_curve:
+        if equity.total_equity <= 0:
+            raise AnalyticsInputError("exposure analytics requires positive equity")
+        asset_weights = {
+            symbol: float(value) / equity.total_equity
+            for symbol, value in equity.asset_values.items()
+        }
+        target_asset_weights = dict(targets.get(equity.date, {}))
+        target_cash = 1.0 - math.fsum(target_asset_weights.values())
+        points.append(
+            ExposurePoint(
+                date=equity.date,
+                cash_weight=float(equity.cash) / equity.total_equity,
+                gross_exposure=math.fsum(abs(value) for value in asset_weights.values()),
+                net_exposure=math.fsum(asset_weights.values()),
+                asset_weights=asset_weights,
+                target_cash_weight=target_cash,
+                target_asset_weights=target_asset_weights,
+            )
+        )
+    cash_weights = tuple(item.cash_weight for item in points)
+    gross = tuple(item.gross_exposure for item in points)
+    return tuple(points), {
+        "average_cash_weight": math.fsum(cash_weights) / len(cash_weights),
+        "max_cash_weight": max(cash_weights),
+        "average_gross_exposure": math.fsum(gross) / len(gross),
+        "max_gross_exposure": max(gross),
+        "time_in_cash_fraction": sum(value >= 1.0 - 1e-12 for value in cash_weights)
+        / len(cash_weights),
+        "time_invested_fraction": sum(value < 1.0 - 1e-12 for value in cash_weights)
+        / len(cash_weights),
+        "cash_is_not_a_security": True,
+    }
+
+
+def _turnover_analytics(backtest: BacktestResult) -> tuple[MetricValue, dict[str, Any]]:
+    orders = {item.order_id: item for item in backtest.orders}
+    traded_notional = math.fsum(
+        abs(float(fill.quantity) * float(fill.price))
+        for fill in backtest.fills
+        if orders.get(fill.order_id) is not None
+        and orders[fill.order_id].rebalance_cause is RebalanceCause.TARGET
+    )
+    average_equity = math.fsum(float(item.total_equity) for item in backtest.equity_curve) / len(
+        backtest.equity_curve
+    )
+    if average_equity <= 0:
+        return MetricValue.not_evaluable("average portfolio equity is not positive"), {
+            "contribution_cash_is_not_traded": True,
+            "status": "not_evaluable",
+        }
+    return MetricValue.available(traded_notional / average_equity), {
+        "contribution_cash_is_not_traded": True,
+        "traded_notional_source": "target-cause fills only",
+        "denominator": "average raw BacktestResult.equity_curve.total_equity",
+        "traded_notional": traded_notional,
+    }
+
+
 def _annual_to_periodic(annual_rate: float, config: PerformanceAnalyticsConfig) -> float:
     return (1.0 + annual_rate) ** (1.0 / config.periods_per_year) - 1.0
 
@@ -434,4 +587,4 @@ def _trade_metrics(trades: Sequence[Trade]) -> TradeMetrics:
     )
 
 
-__all__ = ["PerformanceAnalyticsConfig", "analyze_backtest"]
+__all__ = ["PerformanceAnalyticsConfig", "analyze_backtest", "flow_adjusted_wealth_curve"]

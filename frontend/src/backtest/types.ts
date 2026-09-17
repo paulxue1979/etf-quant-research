@@ -46,6 +46,21 @@ export interface DrawdownPoint {
   value: number;
 }
 
+export interface WealthPoint {
+  date: string;
+  value: number;
+}
+
+export interface ExposurePoint {
+  date: string;
+  cash_weight: number;
+  gross_exposure: number;
+  net_exposure: number;
+  asset_weights: Record<string, number>;
+  target_cash_weight: number;
+  target_asset_weights: Record<string, number>;
+}
+
 export interface PerformanceAnalysis {
   backtest_run_id: string;
   strategy_id: string;
@@ -67,6 +82,12 @@ export interface PerformanceAnalysis {
   recovery_duration: MetricValue;
   max_drawdown_recovered: boolean;
   calmar_ratio: MetricValue;
+  xirr: MetricValue;
+  turnover: MetricValue;
+  twr_wealth_curve: WealthPoint[];
+  exposure_curve: ExposurePoint[];
+  exposure_summary: Record<string, unknown>;
+  turnover_provenance: Record<string, unknown>;
   trade_metrics: {
     number_of_closed_trades: number;
     winning_trades: number;
@@ -193,7 +214,14 @@ export interface BacktestReport {
   provenance: Record<string, unknown>;
 }
 
-export type BacktestReportSeriesName = "equity" | "capital" | "twr" | "drawdown" | "benchmark";
+export type BacktestReportSeriesName =
+  | "equity"
+  | "capital"
+  | "twr"
+  | "drawdown"
+  | "benchmark"
+  | "benchmark_twr"
+  | "benchmark_drawdown";
 
 export interface BacktestReportSeries {
   report_schema_version: "1.0";

@@ -11,7 +11,14 @@ from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
-from analytics.models import DrawdownPoint, MetricValue, PerformanceAnalysisResult, TradeMetrics
+from analytics.models import (
+    DrawdownPoint,
+    ExposurePoint,
+    MetricValue,
+    PerformanceAnalysisResult,
+    TradeMetrics,
+    WealthPoint,
+)
 from backtest.models import (
     AllocationPoint,
     BacktestResult,
@@ -46,6 +53,7 @@ class BacktestRun:
     performance_analysis: PerformanceAnalysisResult
     provenance: Mapping[str, Any]
     strategy_provenance: Mapping[str, Any] | None = None
+    benchmark_evaluation: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for label in ("backtest_run_id", "strategy_id", "strategy_version_id"):
@@ -75,6 +83,10 @@ class BacktestRun:
             self.strategy_provenance, Mapping
         ):
             raise TypeError("strategy_provenance must be a mapping or None")
+        if self.benchmark_evaluation is not None and not isinstance(
+            self.benchmark_evaluation, Mapping
+        ):
+            raise TypeError("benchmark_evaluation must be a mapping or None")
         object.__setattr__(
             self,
             "strategy_version_content_hash",
@@ -86,6 +98,12 @@ class BacktestRun:
                 self,
                 "strategy_provenance",
                 _freeze_json_value(self.strategy_provenance),
+            )
+        if self.benchmark_evaluation is not None:
+            object.__setattr__(
+                self,
+                "benchmark_evaluation",
+                _freeze_json_value(self.benchmark_evaluation),
             )
 
     @classmethod
@@ -99,6 +117,7 @@ class BacktestRun:
         performance_analysis: PerformanceAnalysisResult,
         provenance: Mapping[str, Any],
         strategy_provenance: Mapping[str, Any] | None = None,
+        benchmark_evaluation: Mapping[str, Any] | None = None,
     ) -> BacktestRun:
         """Create a new run with a unique id; never reuses an existing run."""
         run_id = f"backtest-{uuid4().hex}"
@@ -119,6 +138,7 @@ class BacktestRun:
             performance_analysis=analysis,
             provenance=provenance,
             strategy_provenance=strategy_provenance,
+            benchmark_evaluation=benchmark_evaluation,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +152,7 @@ class BacktestRun:
             "performance_analysis": self.performance_analysis.to_dict(),
             "provenance": dict(self.provenance),
             "strategy_provenance": _thaw_json_value(self.strategy_provenance),
+            "benchmark_evaluation": _thaw_json_value(self.benchmark_evaluation),
         }
 
     @classmethod
@@ -150,6 +171,7 @@ class BacktestRun:
             performance_analysis=analysis,
             provenance=payload["provenance"],
             strategy_provenance=payload.get("strategy_provenance"),
+            benchmark_evaluation=payload.get("benchmark_evaluation"),
         )
 
 
@@ -517,6 +539,32 @@ def deserialize_performance_analysis(payload: Mapping[str, Any]) -> PerformanceA
             DrawdownPoint(date=_date(item["date"]), value=float(item["value"]))
             for item in payload.get("drawdown_curve", [])
         ),
+        xirr=_metric(
+            payload.get("xirr", {"value": None, "status": "not_evaluable", "reason": "legacy run"})
+        ),
+        twr_wealth_curve=tuple(
+            WealthPoint(date=_date(item["date"]), value=float(item["value"]))
+            for item in payload.get("twr_wealth_curve", [])
+        ),
+        exposure_curve=tuple(
+            ExposurePoint(
+                date=_date(item["date"]),
+                cash_weight=float(item["cash_weight"]),
+                gross_exposure=float(item["gross_exposure"]),
+                net_exposure=float(item["net_exposure"]),
+                asset_weights=item.get("asset_weights", {}),
+                target_cash_weight=float(item.get("target_cash_weight", 0.0)),
+                target_asset_weights=item.get("target_asset_weights", {}),
+            )
+            for item in payload.get("exposure_curve", [])
+        ),
+        exposure_summary=payload.get("exposure_summary", {}),
+        turnover=_metric(
+            payload.get(
+                "turnover", {"value": None, "status": "not_evaluable", "reason": "legacy run"}
+            )
+        ),
+        turnover_provenance=payload.get("turnover_provenance", {}),
     )
 
 

@@ -12,7 +12,9 @@ from backend.app.backtest_models import BacktestRun
 from backtest.models import canonical_decimal
 
 REPORT_SCHEMA_VERSION = "1.0"
-SERIES_NAMES = frozenset({"equity", "capital", "twr", "drawdown", "benchmark"})
+SERIES_NAMES = frozenset(
+    {"equity", "capital", "twr", "drawdown", "benchmark", "benchmark_twr", "benchmark_drawdown"}
+)
 
 
 class BacktestReportProjectionError(ValueError):
@@ -27,6 +29,7 @@ class BacktestReportProjectionService:
             raise TypeError("run must be a BacktestRun")
         result = run.backtest_result
         analysis = run.performance_analysis
+        benchmark = self._benchmark(run)
         strategy_provenance = self._strategy_provenance(run)
         return {
             "report_schema_version": REPORT_SCHEMA_VERSION,
@@ -46,8 +49,8 @@ class BacktestReportProjectionService:
                 "contributions": "available",
                 "strategy_provenance": strategy_provenance["status"],
                 "holdings": "not_available",
-                "benchmark": "not_available",
-                "xirr": "not_available",
+                "benchmark": benchmark["status"],
+                "xirr": _availability_for_metric(analysis.xirr),
             },
             "summary_period": {
                 "start_date": result.start_date.isoformat(),
@@ -68,7 +71,11 @@ class BacktestReportProjectionService:
                     "calmar_ratio": analysis.calmar_ratio.to_dict(),
                     "closed_trade_count": analysis.trade_metrics.number_of_closed_trades,
                     "win_rate": analysis.trade_metrics.win_rate.to_dict(),
+                    "xirr": analysis.xirr.to_dict(),
+                    "turnover": analysis.turnover.to_dict(),
+                    "exposure": dict(analysis.exposure_summary),
                 },
+                "benchmark": benchmark["summary"],
             },
             "capital": {
                 "initial_capital": result.initial_capital,
@@ -90,12 +97,8 @@ class BacktestReportProjectionService:
                 "trade_metrics": analysis.trade_metrics.to_dict(),
             },
             "investor_experience": {
-                "xirr": {
-                    "value": None,
-                    "status": "not_available",
-                    "reason": "XIRR is deferred to PHASE 9G-B",
-                    "unit": "percent",
-                }
+                "xirr": analysis.xirr.to_dict(),
+                "xirr_unit": "annualized decimal return",
             },
             "series_metadata": self._series_metadata(run),
             "contributions": [
@@ -220,6 +223,11 @@ class BacktestReportProjectionService:
     @staticmethod
     def _series_metadata(run: BacktestRun) -> dict[str, Any]:
         has_drawdown_curve = bool(run.performance_analysis.drawdown_curve)
+        has_twr_curve = bool(run.performance_analysis.twr_wealth_curve)
+        benchmark = run.benchmark_evaluation
+        benchmark_available = (
+            isinstance(benchmark, Mapping) and benchmark.get("status") == "available"
+        )
         return {
             "equity": {
                 "status": "available",
@@ -234,8 +242,11 @@ class BacktestReportProjectionService:
                 "source": "BacktestResult.initial_capital + effective ContributionEvent values",
             },
             "twr": {
-                "status": "not_available",
-                "reason": "normalized TWR wealth series is deferred to PHASE 9G-B",
+                "status": "available" if has_twr_curve else "not_available",
+                "reason": None
+                if has_twr_curve
+                else "normalized TWR wealth series was not persisted",
+                "source": "PerformanceAnalysisResult.twr_wealth_curve",
                 "unit": "normalized",
             },
             "drawdown": {
@@ -247,8 +258,16 @@ class BacktestReportProjectionService:
                 ),
             },
             "benchmark": {
-                "status": "not_available",
-                "reason": "benchmark evaluation is deferred to PHASE 9G-B",
+                "status": "available" if benchmark_available else "not_available",
+                "reason": None if benchmark_available else "benchmark evaluation was not persisted",
+            },
+            "benchmark_twr": {
+                "status": "available" if benchmark_available else "not_available",
+                "source": "BacktestRun.benchmark_evaluation",
+            },
+            "benchmark_drawdown": {
+                "status": "available" if benchmark_available else "not_available",
+                "source": "BacktestRun.benchmark_evaluation",
             },
         }
 
@@ -302,11 +321,123 @@ class BacktestReportProjectionService:
                     end,
                 ),
             }
-        reasons = {
-            "twr": "normalized TWR wealth series is deferred to PHASE 9G-B",
-            "benchmark": "benchmark evaluation is deferred to PHASE 9G-B",
+        if name == "twr":
+            curve = run.performance_analysis.twr_wealth_curve
+            if not curve:
+                return {
+                    "status": "not_available",
+                    "reason": "normalized TWR wealth series was not persisted",
+                    "source": "PerformanceAnalysisResult.twr_wealth_curve",
+                }
+            return {
+                "status": "available",
+                "series_type": "normalized_wealth",
+                "unit": "normalized",
+                "source": "PerformanceAnalysisResult.twr_wealth_curve",
+                "points": _window_points((item.to_dict() for item in curve), start, end),
+            }
+        if name in {"benchmark", "benchmark_twr", "benchmark_drawdown"}:
+            return self._benchmark_series(run, name, start=start, end=end)
+        raise BacktestReportProjectionError(f"unsupported report series: {name}")
+
+    @staticmethod
+    def _benchmark(run: BacktestRun) -> dict[str, Any]:
+        benchmark = run.benchmark_evaluation
+        if not isinstance(benchmark, Mapping):
+            return {
+                "status": "not_available",
+                "summary": {
+                    "status": "not_available",
+                    "reason": "benchmark evaluation was not persisted for this run",
+                },
+            }
+        status = str(benchmark.get("status", "not_evaluable"))
+        if status != "available":
+            return {
+                "status": "not_evaluable",
+                "summary": {
+                    "status": "not_evaluable",
+                    "reason": benchmark.get("reason", "benchmark is not evaluable"),
+                },
+            }
+        performance = benchmark.get("performance")
+        if not isinstance(performance, Mapping):
+            return {
+                "status": "not_evaluable",
+                "summary": {
+                    "status": "not_evaluable",
+                    "reason": "benchmark performance is invalid",
+                },
+            }
+        strategy_twr = run.performance_analysis.total_return
+        benchmark_twr = performance.get("twr_total_return")
+        excess = None
+        if (
+            strategy_twr.is_evaluable
+            and isinstance(benchmark_twr, Mapping)
+            and benchmark_twr.get("status") == "available"
+        ):
+            excess = {
+                "value": float(strategy_twr.value) - float(benchmark_twr["value"]),
+                "status": "available",
+                "reason": None,
+            }
+        return {
+            "status": "available",
+            "summary": {
+                "status": "available",
+                "benchmark_symbol": benchmark.get("benchmark_symbol"),
+                "ending_value": benchmark.get("ending_value"),
+                "twr_total_return": benchmark_twr,
+                "cagr": performance.get("cagr"),
+                "max_drawdown": performance.get("max_drawdown"),
+                "excess_return": excess
+                or {
+                    "value": None,
+                    "status": "not_evaluable",
+                    "reason": "strategy or benchmark TWR is not evaluable",
+                },
+                "ending_value_difference": {
+                    "value": None,
+                    "status": "not_evaluable",
+                    "reason": "ending strategy value is not paired in benchmark artifact",
+                },
+                "provenance": benchmark.get("provenance", {}),
+            },
         }
-        return {"status": "not_available", "reason": reasons[name]}
+
+    @staticmethod
+    def _benchmark_series(
+        run: BacktestRun,
+        name: str,
+        *,
+        start: date | None,
+        end: date | None,
+    ) -> dict[str, Any]:
+        benchmark = run.benchmark_evaluation
+        if not isinstance(benchmark, Mapping) or benchmark.get("status") != "available":
+            return {
+                "status": "not_available" if benchmark is None else "not_evaluable",
+                "reason": "benchmark evaluation was not persisted or is not evaluable",
+            }
+        performance = benchmark.get("performance")
+        if not isinstance(performance, Mapping):
+            return {"status": "not_evaluable", "reason": "benchmark performance is invalid"}
+        key = "twr_wealth_curve" if name in {"benchmark", "benchmark_twr"} else "drawdown_curve"
+        points = performance.get(key)
+        if not isinstance(points, list):
+            return {"status": "not_available", "reason": "benchmark series was not persisted"}
+        return {
+            "status": "available",
+            "series_type": "normalized_wealth" if key == "twr_wealth_curve" else "drawdown",
+            "unit": "normalized" if key == "twr_wealth_curve" else "percent",
+            "source": "BacktestRun.benchmark_evaluation",
+            "points": _window_points(points, start, end),
+        }
+
+
+def _availability_for_metric(metric: Any) -> str:
+    return "available" if metric.is_evaluable else "not_evaluable"
 
 
 def _normalized_series_names(include: Iterable[str]) -> tuple[str, ...]:
