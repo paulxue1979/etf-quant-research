@@ -317,6 +317,11 @@ class OosFinalizationService:
             backtest_result=outcome.backtest_result,
             performance_analysis=analysis,
             provenance=provenance,
+            strategy_provenance=(
+                outcome.strategy_provenance
+                if outcome.strategy_provenance is not None
+                else None
+            ),
         )
 
     @staticmethod

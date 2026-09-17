@@ -172,6 +172,13 @@ def _run_summary(run: BacktestRun) -> BacktestRunSummary:
     )
 
 
+def _legacy_run_payload(run: BacktestRun) -> dict[str, Any]:
+    """Keep established Backtest Lab responses independent of report storage."""
+    payload = run.to_dict()
+    payload.pop("strategy_provenance", None)
+    return payload
+
+
 strategy_repository = StrategyRepository()
 backtest_repository = BacktestRepository()
 backtest_service: BacktestService | None = None
@@ -209,7 +216,7 @@ def create_backtest(request: BacktestRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail="backtest service is unavailable") from exc
-    return run.to_dict()
+    return _legacy_run_payload(run)
 
 
 @router.get("/backtests/{backtest_run_id}")
@@ -220,7 +227,7 @@ def get_backtest(backtest_run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="backtest run was not found")
-    return run.to_dict()
+    return _legacy_run_payload(run)
 
 
 @router.get("/strategies/{strategy_id}/backtests", response_model=list[BacktestRunSummary])

@@ -71,6 +71,7 @@ def test_finalization_atomically_persists_all_official_records(tmp_path):
     assert run is not None
     assert run.backtest_result == outcome.backtest_result
     assert run.performance_analysis.backtest_run_id == result.backtest_run_id
+    assert run.strategy_provenance == outcome.strategy_provenance
     assert len(protocols.list_oos_evaluations(outcome.protocol_id)) == 1
 
 

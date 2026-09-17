@@ -87,6 +87,43 @@ def test_repository_round_trip_is_immutable_and_cross_instance(tmp_path) -> None
     assert repository.list("repo") == (run,)
 
 
+def test_repository_round_trips_strategy_execution_provenance_and_loads_legacy_runs(
+    tmp_path,
+) -> None:
+    repository = BacktestRepository(tmp_path / "backtests.db")
+    run = _run()
+    provenance_run = BacktestRun(
+        **{
+            **run.__dict__,
+            "strategy_provenance": {
+                "source": "StrategyBacktestResult.signal_records",
+                "records": (
+                    {
+                        "signal_date": "2026-01-02",
+                        "matched_rule_id": "rule-1",
+                        "allocation_source": "rule_match",
+                        "target_allocation": {"QQQ": 1.0},
+                        "execution_date": "2026-01-03",
+                        "execution_status": "submitted",
+                        "omission_reason": None,
+                    },
+                ),
+            },
+        }
+    )
+
+    repository.create(provenance_run)
+    restored = BacktestRepository(tmp_path / "backtests.db").get(provenance_run.backtest_run_id)
+    legacy_payload = run.to_dict()
+    legacy_payload.pop("strategy_provenance")
+    legacy = BacktestRun.from_dict(legacy_payload)
+
+    assert restored is not None
+    assert restored.strategy_provenance == provenance_run.strategy_provenance
+    assert restored.strategy_provenance is not provenance_run.strategy_provenance
+    assert legacy.strategy_provenance is None
+
+
 def test_repository_keeps_distinct_runs_even_for_identical_inputs(tmp_path) -> None:
     repository = BacktestRepository(tmp_path / "backtests.db")
     first = _run()

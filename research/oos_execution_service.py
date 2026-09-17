@@ -9,6 +9,7 @@ from typing import Any
 
 from analytics.models import PerformanceAnalysisResult
 from analytics.performance import analyze_backtest
+from backend.app.strategy_execution_provenance import strategy_execution_provenance
 from backtest.integration import run_strategy_backtest
 from backtest.models import BacktestConfig, CommissionPolicy
 from data.exceptions import (
@@ -222,6 +223,7 @@ class OosExecutionService:
             oos_end=oos_end,
             engine_version=resolved_spec.configuration.engine_version,
             analytics_version=resolved_spec.configuration.analytics_version,
+            strategy_provenance=strategy_execution_provenance(integration.signal_records),
         )
 
     def _resolve_spec(

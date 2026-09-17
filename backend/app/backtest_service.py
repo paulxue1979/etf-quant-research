@@ -8,6 +8,7 @@ from typing import Any
 from analytics.performance import analyze_backtest
 from backend.app.backtest_models import BacktestRun
 from backend.app.backtest_repository import BacktestRepository
+from backend.app.strategy_execution_provenance import strategy_execution_provenance
 from backend.app.strategy_repository import StrategyRepository
 from backtest.integration import run_strategy_backtest
 from data.cache import DiskCache
@@ -117,6 +118,7 @@ class BacktestService:
             backtest_result=integration.backtest_result,
             performance_analysis=analysis,
             provenance=provenance,
+            strategy_provenance=strategy_execution_provenance(integration.signal_records),
         )
         return self._runs.create(run)
 

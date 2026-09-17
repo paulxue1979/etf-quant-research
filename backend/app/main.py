@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.backtest_lab import router as backtest_lab_router
+from backend.app.backtest_report_api import router as backtest_report_router
 from backend.app.oos_research_api import router as oos_research_router
 from backend.app.research_execution_api import router as research_execution_router
 from backend.app.research_experiment_api import router as research_experiment_router
@@ -25,6 +26,7 @@ app.add_middleware(
 )
 app.include_router(strategy_lab_router)
 app.include_router(backtest_lab_router)
+app.include_router(backtest_report_router)
 app.include_router(research_protocol_router)
 app.include_router(research_execution_router)
 app.include_router(research_experiment_router)

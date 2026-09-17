@@ -160,6 +160,49 @@ export interface BacktestRun {
   provenance: Record<string, unknown>;
 }
 
+export type ReportAvailability = "available" | "not_available" | "not_evaluable";
+
+export interface BacktestReport {
+  report_schema_version: "1.0";
+  identity: {
+    backtest_run_id: string;
+    strategy_id: string;
+    strategy_version_id: string;
+    strategy_version_content_hash: string;
+    created_at: string;
+    engine_version: string;
+  };
+  availability: Record<string, ReportAvailability>;
+  summary_period: { start_date: string; end_date: string };
+  summary: Record<string, unknown>;
+  capital: {
+    initial_capital: number;
+    cumulative_contributions: number;
+    total_capital_invested: number | null;
+  };
+  profit: { investment_profit: number | null };
+  performance: Record<string, unknown>;
+  investor_experience: Record<string, unknown>;
+  series_metadata: Record<string, unknown>;
+  contributions: Array<Record<string, unknown>>;
+  strategy_provenance: Record<string, unknown>;
+  allocations: Record<string, unknown>;
+  holdings: Record<string, unknown>;
+  trades: Record<string, unknown>;
+  configuration: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}
+
+export type BacktestReportSeriesName = "equity" | "capital" | "twr" | "drawdown" | "benchmark";
+
+export interface BacktestReportSeries {
+  report_schema_version: "1.0";
+  identity: { backtest_run_id: string; strategy_version_id: string };
+  summary_period: { start_date: string; end_date: string };
+  window: { from: string | null; to: string | null };
+  series: Partial<Record<BacktestReportSeriesName, Record<string, unknown>>>;
+}
+
 export type ResearchSortBy =
   | "created_at"
   | "cagr"

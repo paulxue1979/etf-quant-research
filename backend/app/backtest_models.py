@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -44,6 +45,7 @@ class BacktestRun:
     backtest_result: BacktestResult
     performance_analysis: PerformanceAnalysisResult
     provenance: Mapping[str, Any]
+    strategy_provenance: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for label in ("backtest_run_id", "strategy_id", "strategy_version_id"):
@@ -69,12 +71,22 @@ class BacktestRun:
             raise ValueError("analysis backtest run id does not match run")
         if not isinstance(self.provenance, Mapping):
             raise TypeError("provenance must be a mapping")
+        if self.strategy_provenance is not None and not isinstance(
+            self.strategy_provenance, Mapping
+        ):
+            raise TypeError("strategy_provenance must be a mapping or None")
         object.__setattr__(
             self,
             "strategy_version_content_hash",
             self.strategy_version_content_hash.strip(),
         )
         object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+        if self.strategy_provenance is not None:
+            object.__setattr__(
+                self,
+                "strategy_provenance",
+                _freeze_json_value(self.strategy_provenance),
+            )
 
     @classmethod
     def create(
@@ -86,6 +98,7 @@ class BacktestRun:
         backtest_result: BacktestResult,
         performance_analysis: PerformanceAnalysisResult,
         provenance: Mapping[str, Any],
+        strategy_provenance: Mapping[str, Any] | None = None,
     ) -> BacktestRun:
         """Create a new run with a unique id; never reuses an existing run."""
         run_id = f"backtest-{uuid4().hex}"
@@ -105,6 +118,7 @@ class BacktestRun:
             backtest_result=backtest_result,
             performance_analysis=analysis,
             provenance=provenance,
+            strategy_provenance=strategy_provenance,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -117,6 +131,7 @@ class BacktestRun:
             "backtest_result": serialize_backtest_result(self.backtest_result),
             "performance_analysis": self.performance_analysis.to_dict(),
             "provenance": dict(self.provenance),
+            "strategy_provenance": _thaw_json_value(self.strategy_provenance),
         }
 
     @classmethod
@@ -134,7 +149,37 @@ class BacktestRun:
             backtest_result=result,
             performance_analysis=analysis,
             provenance=payload["provenance"],
+            strategy_provenance=payload.get("strategy_provenance"),
         )
+
+
+def _freeze_json_value(value: Any) -> Any:
+    """Freeze a strict JSON value so persisted report provenance is immutable."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("strategy_provenance must not contain non-finite values")
+        return value
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("strategy_provenance object keys must be strings")
+        return MappingProxyType(
+            {key: _freeze_json_value(item) for key, item in sorted(value.items())}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    raise TypeError("strategy_provenance must contain JSON-compatible values")
+
+
+def _thaw_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value
 
 
 def _date(value: object) -> date:

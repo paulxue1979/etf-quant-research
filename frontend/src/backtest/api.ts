@@ -1,6 +1,9 @@
 import type { StrategyVersionSummary } from "../strategy/types";
 import type {
   BacktestRequest,
+  BacktestReport,
+  BacktestReportSeries,
+  BacktestReportSeriesName,
   BacktestRun,
   ResearchBacktestList,
   ResearchComparison,
@@ -75,6 +78,25 @@ export const backtestApi = {
 
   get(runId: string): Promise<BacktestRun> {
     return requestJson<BacktestRun>(`/backtests/${encodeURIComponent(runId)}`);
+  },
+
+  getReport(runId: string): Promise<BacktestReport> {
+    return requestJson<BacktestReport>(
+      `/research/backtests/${encodeURIComponent(runId)}/report`,
+    );
+  },
+
+  getReportSeries(
+    runId: string,
+    include: BacktestReportSeriesName[],
+    window?: { from?: string; to?: string },
+  ): Promise<BacktestReportSeries> {
+    const query = new URLSearchParams({ include: include.join(",") });
+    if (window?.from) query.set("from", window.from);
+    if (window?.to) query.set("to", window.to);
+    return requestJson<BacktestReportSeries>(
+      `/research/backtests/${encodeURIComponent(runId)}/report/series?${query.toString()}`,
+    );
   },
 
   listResearchRuns(sortBy: ResearchSortBy, order: "asc" | "desc"): Promise<ResearchBacktestList> {

@@ -108,6 +108,9 @@ def test_service_orchestrates_existing_chain_and_preserves_warmup_scope(tmp_path
     assert first.backtest_result.start_date == date(2026, 2, 2)
     assert first.backtest_result.end_date == date(2026, 2, 5)
     assert first.provenance["warmup_start_date"] < "2026-02-02"
+    assert first.strategy_provenance is not None
+    assert first.strategy_provenance["source"] == "StrategyBacktestResult.signal_records"
+    assert first.strategy_provenance["records"]
     assert data_service.requests[0].start_date < date(2026, 2, 2)
     assert len(runs.list("service-fixture")) == 2
 

@@ -12,6 +12,7 @@ from analytics.models import PerformanceAnalysisResult
 from backend.app.backtest_models import BacktestRun, serialize_backtest_result
 from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
 from backend.app.experiment_repository import ExperimentPersistenceError, ExperimentRepository
+from backend.app.strategy_execution_provenance import strategy_execution_provenance
 from backtest.integration import StrategyBacktestResult
 from data.models import PriceField
 from research.canonical import canonical_json, sha256_hash
@@ -339,6 +340,7 @@ class ExperimentResultFinalizationService:
             backtest_result=backtest,
             performance_analysis=bound_analysis,
             provenance=provenance,
+            strategy_provenance=strategy_execution_provenance(integration.signal_records),
         )
 
     def _persist_or_reuse_backtest_run(

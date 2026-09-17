@@ -178,6 +178,9 @@ def test_execution_uses_exact_warmup_and_oos_boundaries_and_returns_internal_out
     assert outcome.backtest_result.start_date == OOS_START
     assert outcome.backtest_result.end_date == OOS_END
     assert outcome.performance_analysis.start_date == OOS_START
+    assert outcome.strategy_provenance is not None
+    assert outcome.strategy_provenance["source"] == "StrategyBacktestResult.signal_records"
+    assert outcome.strategy_provenance["records"]
     assert executions.get_execution(claimed.execution_id).status is OosExecutionStatus.RUNNING
 
 

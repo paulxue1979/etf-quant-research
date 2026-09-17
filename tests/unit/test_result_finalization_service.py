@@ -63,6 +63,9 @@ def test_finalization_persists_backtest_source_and_analytics_summary(tmp_path) -
     assert result.derived_strategy_version_hash == persisted.content_hash
     assert run is not None
     assert run.backtest_result == outcome.backtest_result.backtest_result
+    assert run.strategy_provenance is not None
+    assert run.strategy_provenance["source"] == "StrategyBacktestResult.signal_records"
+    assert run.strategy_provenance["records"]
     assert run.performance_analysis.to_dict() == outcome.performance_analysis_result.to_dict() | {
         "backtest_run_id": result.backtest_run_id,
         "strategy_id": outcome.backtest_result.strategy_id,

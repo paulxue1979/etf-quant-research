@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date
+from types import MappingProxyType
 from typing import Any
 
 from analytics.models import PerformanceAnalysisResult
@@ -67,6 +68,7 @@ class OosExecutionOutcome:
     engine_version: str
     analytics_version: str
     outcome_hash: str | None = None
+    strategy_provenance: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for label in (
@@ -91,6 +93,10 @@ class OosExecutionOutcome:
             raise TypeError("performance_analysis must be a PerformanceAnalysisResult")
         if not isinstance(self.data_provenance, OosDataProvenance):
             raise TypeError("data_provenance must be OosDataProvenance")
+        if self.strategy_provenance is not None and not isinstance(
+            self.strategy_provenance, Mapping
+        ):
+            raise TypeError("strategy_provenance must be a mapping or None")
         if self.backtest_result.strategy_version_id != self.strategy_version_id:
             raise ValueError("backtest result strategy version does not match outcome")
         if self.performance_analysis.strategy_version_id != self.strategy_version_id:
@@ -123,6 +129,12 @@ class OosExecutionOutcome:
             raise ValueError("data provenance requested_end must equal OOS end")
         if self.data_provenance.warmup_start != self.warmup_request_start:
             raise ValueError("data provenance warmup_start must match data request")
+        if self.strategy_provenance is not None:
+            object.__setattr__(
+                self,
+                "strategy_provenance",
+                MappingProxyType(dict(self.strategy_provenance)),
+            )
         expected = sha256_hash(self.semantic_payload())
         if self.outcome_hash is not None and _hash(self.outcome_hash, "outcome_hash") != expected:
             raise ValueError("outcome_hash does not match semantic outcome")
@@ -144,6 +156,7 @@ class OosExecutionOutcome:
             "oos_end": self.oos_end.isoformat(),
             "engine_version": self.engine_version,
             "analytics_version": self.analytics_version,
+            "strategy_provenance": self.strategy_provenance,
         }
 
     def __repr__(self) -> str:
