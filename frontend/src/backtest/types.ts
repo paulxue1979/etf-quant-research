@@ -12,6 +12,15 @@ export interface CommissionRequest {
   per_order: number;
 }
 
+export type ContributionFrequency = "one_time" | "monthly";
+
+export interface ContributionScheduleRequest {
+  frequency: ContributionFrequency;
+  amount: string;
+  requested_date?: string;
+  currency?: "USD";
+}
+
 export interface BacktestRequest {
   strategy_id: string;
   strategy_version_id: string;
@@ -23,6 +32,7 @@ export interface BacktestRequest {
   price_field_used: PriceField;
   execution_rule: "next_trading_day_open";
   fractional_shares: boolean;
+  contribution_schedule?: ContributionScheduleRequest;
 }
 
 export interface MetricValue {
@@ -97,6 +107,9 @@ export interface BacktestResult {
   end_date: string;
   initial_capital: number;
   final_equity: number;
+  cumulative_contributions: number;
+  total_capital_invested: number;
+  investment_profit: number;
   equity_curve: EquityPoint[];
   orders: Array<{
     order_id: string;
@@ -251,6 +264,7 @@ export interface ResearchEvaluationConfig {
     threshold: number | null;
   };
   engine_version: string;
+  contribution_schedule?: ContributionScheduleRequest | null;
 }
 
 export interface ResearchProtocol {

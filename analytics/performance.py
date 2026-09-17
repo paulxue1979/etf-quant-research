@@ -71,21 +71,17 @@ def analyze_backtest(
     snapshot = backtest.configuration_snapshot
     price_field = _snapshot_price_field(snapshot)
     rebalance_frequency = _snapshot_rebalance_frequency(snapshot)
-    equities = tuple(point.total_equity for point in backtest.equity_curve)
     dates = tuple(point.date for point in backtest.equity_curve)
-    returns = _periodic_returns(equities)
+    wealth_index = _flow_adjusted_wealth(backtest)
+    returns = _periodic_returns(wealth_index)
     risk_free_period = _annual_to_periodic(analytics_config.risk_free_rate, analytics_config)
-    mar_period = _annual_to_periodic(
-        analytics_config.minimum_acceptable_return, analytics_config
-    )
-    total_return = MetricValue.available(
-        backtest.final_equity / backtest.initial_capital - 1.0
-    )
-    cagr = _cagr(backtest.initial_capital, backtest.final_equity, dates[0], dates[-1])
+    mar_period = _annual_to_periodic(analytics_config.minimum_acceptable_return, analytics_config)
+    total_return = MetricValue.available(wealth_index[-1] - 1.0)
+    cagr = _cagr(1.0, wealth_index[-1], dates[0], dates[-1])
     volatility = _annualized_volatility(returns, analytics_config.periods_per_year)
     sharpe = _sharpe(returns, risk_free_period, analytics_config.periods_per_year)
     sortino = _sortino(returns, mar_period, analytics_config.periods_per_year)
-    drawdown = _drawdown_metrics(equities)
+    drawdown = _drawdown_metrics(wealth_index)
     calmar = _calmar(cagr, drawdown["max_drawdown"])
     trades = _trade_metrics(backtest.trades)
     provenance = {
@@ -95,7 +91,8 @@ def analyze_backtest(
         "effective_start_date": backtest.effective_start_date.isoformat(),
         "effective_end_date": backtest.effective_end_date.isoformat(),
         "equity_source": "equity_curve.total_equity",
-        "return_source": "portfolio periodic equity returns",
+        "return_source": "time-weighted portfolio returns adjusted for external cash flows",
+        "external_cash_flow_source": "BacktestResult.external_cash_flows",
         "trade_source": "BacktestResult.trades",
         "risk_free_rate_annual": analytics_config.risk_free_rate,
         "minimum_acceptable_return_annual": analytics_config.minimum_acceptable_return,
@@ -133,7 +130,7 @@ def analyze_backtest(
         provenance=provenance,
         drawdown_curve=tuple(
             DrawdownPoint(point_date, value)
-            for point_date, value in zip(dates, _drawdown_curve(equities), strict=True)
+            for point_date, value in zip(dates, _drawdown_curve(wealth_index), strict=True)
         ),
     )
 
@@ -178,12 +175,19 @@ def _validate_backtest(backtest: BacktestResult) -> None:
             float(point.total_equity), float(point.cash) + asset_total, abs_tol=_EQUITY_TOLERANCE
         ):
             raise AnalyticsInputError("equity point accounting identity is inconsistent")
+    first_day_flow = math.fsum(
+        float(item.amount)
+        for item in backtest.external_cash_flows
+        if item.date == backtest.equity_curve[0].date
+    )
     if not math.isclose(
-        float(backtest.initial_capital),
+        float(backtest.initial_capital) + first_day_flow,
         float(backtest.equity_curve[0].total_equity),
         abs_tol=_EQUITY_TOLERANCE,
     ):
-        raise AnalyticsInputError("initial_capital must match the first equity point")
+        raise AnalyticsInputError(
+            "initial_capital must match the first equity point after first-day external flow"
+        )
     if not math.isclose(
         float(backtest.final_equity),
         float(backtest.equity_curve[-1].total_equity),
@@ -256,6 +260,29 @@ def _periodic_returns(equities: Sequence[float]) -> tuple[float, ...]:
         if not math.isfinite(value):
             raise AnalyticsInputError("periodic return is not finite")
         values.append(value)
+    return tuple(values)
+
+
+def _flow_adjusted_wealth(backtest: BacktestResult) -> tuple[float, ...]:
+    flows: dict[date, float] = {}
+    for item in backtest.external_cash_flows:
+        flows[item.date] = flows.get(item.date, 0.0) + float(item.amount)
+    wealth = 1.0
+    values: list[float] = []
+    previous_equity: float | None = None
+    for point in backtest.equity_curve:
+        flow = flows.get(point.date, 0.0)
+        denominator = (
+            backtest.initial_capital + flow if previous_equity is None else previous_equity + flow
+        )
+        if denominator <= 0:
+            raise AnalyticsInputError("cash-flow adjusted return requires positive capital")
+        factor = point.total_equity / denominator
+        if not math.isfinite(factor) or factor < 0:
+            raise AnalyticsInputError("cash-flow adjusted return is invalid")
+        wealth *= factor
+        values.append(wealth)
+        previous_equity = point.total_equity
     return tuple(values)
 
 

@@ -386,6 +386,7 @@ class OosExecutionService:
             execution_rule=config.execution_rule,
             rebalance_policy=config.rebalance_policy,
             fractional_shares=config.fractional_shares,
+            contribution_schedule=config.contribution_schedule,
         )
 
     @staticmethod

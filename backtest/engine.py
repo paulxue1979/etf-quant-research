@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 
+from backtest.contributions import normalize_contribution_schedule
 from backtest.exceptions import (
     BacktestConfigurationError,
     ExecutionError,
@@ -22,11 +23,14 @@ from backtest.models import (
     AllocationPoint,
     BacktestConfig,
     BacktestResult,
+    ContributionEvent,
     EquityPoint,
+    ExternalCashFlow,
     Fill,
     Order,
     OrderSide,
     OrderStatus,
+    RebalanceCause,
     TargetAllocation,
     Trade,
 )
@@ -88,6 +92,19 @@ class BacktestEngine:
             for index in range(len(trading_dates) - 1)
         }
         scheduled = self._scheduled_allocations(allocations, trading_dates, symbols, config)
+        contribution_events = (
+            normalize_contribution_schedule(
+                config.contribution_schedule,
+                trading_dates,
+                investment_start=effective_start_date,
+                investment_end=effective_end_date,
+            )
+            if config.contribution_schedule is not None
+            else ()
+        )
+        contributions_by_date: dict[date, list[ContributionEvent]] = defaultdict(list)
+        for event in contribution_events:
+            contributions_by_date[event.effective_date].append(event)
 
         ledger = _Ledger.create(config.initial_capital)
         pending: tuple[TargetAllocation, date] | None = None
@@ -99,8 +116,20 @@ class BacktestEngine:
         snapshots: list[PortfolioSnapshot] = []
         allocation_history: list[AllocationPoint] = []
         cash_history: list[tuple[date, float]] = []
+        external_cash_flows: list[ExternalCashFlow] = []
 
         for current_date in trading_dates:
+            daily_contributions = contributions_by_date.get(current_date, [])
+            for event in daily_contributions:
+                ledger.cash += float(event.amount)
+                external_cash_flows.append(
+                    ExternalCashFlow(
+                        date=current_date,
+                        amount=event.amount,
+                        currency=event.currency,
+                    )
+                )
+            pending_executed = False
             if pending is not None and pending[1] == current_date:
                 active_target = pending[0]
                 created_orders, created_fills, created_trades = self._rebalance(
@@ -111,15 +140,31 @@ class BacktestEngine:
                     data=normalized_data,
                     symbols=symbols,
                     config=config,
+                    cause=RebalanceCause.TARGET,
                 )
                 orders.extend(created_orders)
                 fills.extend(created_fills)
                 trades.extend(created_trades)
                 pending = None
+                pending_executed = True
+
+            if daily_contributions and not pending_executed:
+                created_orders, created_fills, created_trades = self._rebalance(
+                    ledger=ledger,
+                    target=active_target,
+                    signal_date=active_target.date,
+                    execution_date=current_date,
+                    data=normalized_data,
+                    symbols=symbols,
+                    config=config,
+                    cause=RebalanceCause.CONTRIBUTION,
+                )
+                orders.extend(created_orders)
+                fills.extend(created_fills)
+                trades.extend(created_trades)
 
             point_by_symbol = {
-                symbol: normalized_data[symbol].points_by_date[current_date]
-                for symbol in symbols
+                symbol: normalized_data[symbol].points_by_date[current_date] for symbol in symbols
             }
             equity_point, snapshot = self._mark_to_market(
                 ledger, current_date, point_by_symbol, config.price_field_used
@@ -183,6 +228,9 @@ class BacktestEngine:
             requested_end_date=config.end_date,
             effective_start_date=effective_start_date,
             effective_end_date=effective_end_date,
+            contribution_events=contribution_events,
+            external_cash_flows=tuple(external_cash_flows),
+            cumulative_contributions=sum(float(item.amount) for item in contribution_events),
         )
 
     def _validate_config(self, config: BacktestConfig) -> None:
@@ -291,9 +339,13 @@ class BacktestEngine:
                 scheduled[allocation.date] = allocation
                 continue
             period = (
-                allocation.date.isocalendar().year,
-                allocation.date.isocalendar().week,
-            ) if frequency == "weekly" else (allocation.date.year, allocation.date.month)
+                (
+                    allocation.date.isocalendar().year,
+                    allocation.date.isocalendar().week,
+                )
+                if frequency == "weekly"
+                else (allocation.date.year, allocation.date.month)
+            )
             if period not in seen_periods:
                 scheduled[allocation.date] = allocation
                 seen_periods.add(period)
@@ -309,6 +361,7 @@ class BacktestEngine:
         data: Mapping[str, _DataView],
         symbols: Sequence[str],
         config: BacktestConfig,
+        cause: RebalanceCause,
     ) -> tuple[list[Order], list[Fill], list[Trade]]:
         prices = {
             symbol: self._valid_price(
@@ -362,6 +415,7 @@ class BacktestEngine:
                 target_weight=target.weight_for(symbol),
                 config=config,
                 order_number=order_number,
+                cause=cause,
             )
             result_orders.append(order)
             result_fills.append(fill)
@@ -375,7 +429,7 @@ class BacktestEngine:
                 config=config,
             )
             if affordable <= 0:
-                if quantity > 0:
+                if quantity > 0 and cause is not RebalanceCause.CONTRIBUTION:
                     raise InsufficientCashError(
                         f"insufficient cash for BUY {symbol} at {execution_date.isoformat()}"
                     )
@@ -391,6 +445,7 @@ class BacktestEngine:
                 target_weight=target.weight_for(symbol),
                 config=config,
                 order_number=order_number,
+                cause=cause,
             )
             result_orders.append(order)
             result_fills.append(fill)
@@ -410,6 +465,7 @@ class BacktestEngine:
         target_weight: float,
         config: BacktestConfig,
         order_number: int,
+        cause: RebalanceCause,
     ) -> tuple[Order, Fill, list[Trade]]:
         if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
             raise InvalidQuantityError("order quantity must be a positive integer")
@@ -451,6 +507,7 @@ class BacktestEngine:
             commission=commission,
             slippage=slippage_amount,
             target_weight=target_weight,
+            rebalance_cause=cause,
         )
         fill = Fill(
             order_id=order_id,
@@ -463,9 +520,13 @@ class BacktestEngine:
             slippage=slippage_amount,
             cash_effect=cash_effect,
         )
-        closed = self._close_trades(
-            ledger, symbol, quantity, execution_date, execution_price, commission
-        ) if side is OrderSide.SELL else []
+        closed = (
+            self._close_trades(
+                ledger, symbol, quantity, execution_date, execution_price, commission
+            )
+            if side is OrderSide.SELL
+            else []
+        )
         return order, fill, closed
 
     def _close_trades(
@@ -487,8 +548,7 @@ class BacktestEngine:
             closed_quantity = min(remaining, lot.quantity)
             entry_cost = lot.entry_price * closed_quantity
             exit_proceeds = (
-                exit_price * closed_quantity
-                - exit_commission * closed_quantity / quantity
+                exit_price * closed_quantity - exit_commission * closed_quantity / quantity
             )
             pnl = exit_proceeds - entry_cost
             trades.append(
@@ -540,8 +600,7 @@ class BacktestEngine:
                 continue
             market_value = quantity * price
             average_cost = (
-                sum(lot.entry_price * lot.quantity for lot in ledger.lots[symbol])
-                / quantity
+                sum(lot.entry_price * lot.quantity for lot in ledger.lots[symbol]) / quantity
             )
             asset_values[symbol] = market_value
             positions.append(

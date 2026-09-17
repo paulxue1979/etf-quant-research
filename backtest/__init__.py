@@ -1,5 +1,6 @@
 """Deterministic target-allocation backtest engine."""
 
+from backtest.contributions import normalize_contribution_schedule
 from backtest.engine import BacktestEngine
 from backtest.integration import (
     StrategyBacktestAllocation,
@@ -12,12 +13,17 @@ from backtest.models import (
     BacktestConfig,
     BacktestResult,
     CommissionPolicy,
+    ContributionEvent,
+    ContributionFrequency,
+    ContributionSchedule,
     EquityPoint,
     ExecutionRule,
+    ExternalCashFlow,
     Fill,
     Order,
     OrderSide,
     OrderStatus,
+    RebalanceCause,
     RebalanceFrequency,
     RebalancePolicy,
     TargetAllocation,
@@ -31,13 +37,18 @@ __all__ = [
     "BacktestEngine",
     "BacktestResult",
     "CommissionPolicy",
+    "ContributionEvent",
+    "ContributionFrequency",
+    "ContributionSchedule",
     "EquityPoint",
     "ExecutionRule",
     "Fill",
+    "ExternalCashFlow",
     "Order",
     "OrderSide",
     "OrderStatus",
     "RebalanceFrequency",
+    "RebalanceCause",
     "RebalancePolicy",
     "TargetAllocation",
     "TargetWeight",
@@ -46,4 +57,5 @@ __all__ = [
     "StrategyBacktestResult",
     "run_strategy_backtest",
     "target_allocations_from_timeline",
+    "normalize_contribution_schedule",
 ]

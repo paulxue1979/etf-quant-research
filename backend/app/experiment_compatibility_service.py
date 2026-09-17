@@ -33,6 +33,7 @@ class ExperimentCompatibilityService:
         "execution_rule",
         "fractional_shares",
         "rebalance_policy",
+        "contribution_schedule",
         "engine_version",
         "analysis_version",
         "backtest_configuration_hash",
@@ -65,8 +66,7 @@ class ExperimentCompatibilityService:
         ]
         if not completed:
             mismatches = tuple(
-                binding_mismatches
-                + [self._unavailable(candidate) for candidate in unavailable]
+                binding_mismatches + [self._unavailable(candidate) for candidate in unavailable]
             )
             return CompatibilityDiagnostic(
                 status=(
@@ -167,8 +167,7 @@ class ExperimentCompatibilityService:
         reference_values = self._values(reference)
         candidate_values = self._values(candidate)
         if (
-            reference.backtest_configuration_hash
-            == candidate.backtest_configuration_hash
+            reference.backtest_configuration_hash == candidate.backtest_configuration_hash
             and reference_values["configuration_semantics"]
             != candidate_values["configuration_semantics"]
         ):
@@ -188,9 +187,8 @@ class ExperimentCompatibilityService:
                 continue
             reference_value = reference_values[dimension]
             candidate_value = candidate_values[dimension]
-            if (
-                dimension == "data_snapshot_reference"
-                and (not reference_value or not candidate_value)
+            if dimension == "data_snapshot_reference" and (
+                not reference_value or not candidate_value
             ):
                 continue
             if reference_value == candidate_value:
@@ -246,6 +244,7 @@ class ExperimentCompatibilityService:
                 "frequency": rebalance.get("frequency"),
                 "threshold": rebalance.get("threshold"),
             },
+            "contribution_schedule": snapshot.get("contribution_schedule"),
         }
         return {
             "experiment_id": candidate.experiment_id,
@@ -280,6 +279,7 @@ class ExperimentCompatibilityService:
             "execution_rule": CompatibilityReasonCode.EXECUTION_RULE_MISMATCH,
             "fractional_shares": CompatibilityReasonCode.FRACTIONAL_SHARES_MISMATCH,
             "rebalance_policy": CompatibilityReasonCode.REBALANCE_POLICY_MISMATCH,
+            "contribution_schedule": CompatibilityReasonCode.BACKTEST_CONFIGURATION_MISMATCH,
             "engine_version": CompatibilityReasonCode.ENGINE_VERSION_MISMATCH,
             "analysis_version": CompatibilityReasonCode.ANALYTICS_VERSION_MISMATCH,
             "data_snapshot_reference": CompatibilityReasonCode.DATA_PROVENANCE_MISMATCH,

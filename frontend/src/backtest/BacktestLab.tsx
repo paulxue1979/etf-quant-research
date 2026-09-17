@@ -6,6 +6,7 @@ import type {
   BacktestRequest,
   BacktestRun,
   ComparisonSeries,
+  ContributionFrequency,
   DrawdownPoint,
   EquityPoint,
   MetricValue,
@@ -29,6 +30,10 @@ const EMPTY_FORM = {
   commissionPerOrder: "0",
   slippagePercent: "0",
   priceField: "adjusted_close" as PriceField,
+  contributionsEnabled: false,
+  contributionFrequency: "monthly" as ContributionFrequency,
+  contributionAmount: "",
+  contributionDate: "",
 };
 
 function number(value: string, fallback = 0): number {
@@ -245,6 +250,19 @@ function Results({ run }: { run: BacktestRun }) {
         <div className="backtest-metrics">{metrics.map(([label, metric, percentage]) => <MetricCard key={label} label={label} metric={metric} percentage={percentage} />)}</div>
       </section>
 
+      <section className="panel">
+        <div className="section-header compact"><div><span className="eyebrow">CAPITAL FLOWS</span><h2>Capital accounting</h2></div></div>
+        <div className="backtest-metrics">
+          {[
+            ["Initial Capital", result.initial_capital],
+            ["Cumulative contributions", result.cumulative_contributions],
+            ["Total capital invested", result.total_capital_invested],
+            ["Ending value", result.final_equity],
+            ["Investment profit", result.investment_profit],
+          ].map(([label, value]) => <div className="backtest-metric" key={label}><span>{label}</span><strong>{Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" })}</strong></div>)}
+        </div>
+      </section>
+
       <section className="panel chart-grid">
         <SeriesChart label="Equity curve" items={result.equity_curve} readValue={(item: EquityPoint) => item.total_equity} color="#6bd7d0" />
         <SeriesChart label="Drawdown curve" items={analysis.drawdown_curve} readValue={(item: DrawdownPoint) => item.value} color="#ff8b8b" />
@@ -345,6 +363,18 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       setError("Select a strategy and an immutable version before running.");
       return;
     }
+    const contributionAmount = Number(form.contributionAmount);
+    if (
+      form.contributionsEnabled
+      && (!form.contributionAmount.trim() || !Number.isFinite(contributionAmount) || contributionAmount <= 0)
+    ) {
+      setError("Contribution amount must be a positive finite USD value.");
+      return;
+    }
+    if (form.contributionsEnabled && form.contributionFrequency === "one_time" && !form.contributionDate) {
+      setError("Select a requested date for the one-time contribution.");
+      return;
+    }
     const request: BacktestRequest = {
       strategy_id: strategyId,
       strategy_version_id: versionId,
@@ -356,6 +386,13 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       price_field_used: form.priceField,
       execution_rule: "next_trading_day_open",
       fractional_shares: false,
+      ...(form.contributionsEnabled ? {
+        contribution_schedule: {
+          frequency: form.contributionFrequency,
+          amount: form.contributionAmount,
+          ...(form.contributionFrequency === "one_time" ? { requested_date: form.contributionDate } : {}),
+        },
+      } : {}),
     };
     setBusy("run");
     try {
@@ -410,6 +447,15 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
           <label>Strategy version<select aria-label="Backtest strategy version" value={versionId} onChange={(event) => setVersionId(event.target.value)} disabled={!strategyId || busy === "versions"}><option value="">Select immutable version</option>{versions.map((version) => <option key={version.version_id} value={version.version_id}>v{version.version_number} · {new Date(version.created_at).toLocaleString()}</option>)}</select></label>
           {selectedStrategy && <p className="muted">{selectedStrategy.version_count} saved version{selectedStrategy.version_count === 1 ? "" : "s"}; latest v{selectedStrategy.latest_version ?? "-"}.</p>}
           <div className="basic-grid"><label>Start date<input type="date" value={form.startDate} onChange={(event) => updateForm("startDate", event.target.value)} /></label><label>End date<input type="date" value={form.endDate} onChange={(event) => updateForm("endDate", event.target.value)} /></label><label>Initial capital<input type="number" min="0.01" step="0.01" value={form.initialCapital} onChange={(event) => updateForm("initialCapital", event.target.value)} /></label><label>Price field<select value={form.priceField} onChange={(event) => updateForm("priceField", event.target.value as PriceField)}><option value="adjusted_close">ADJUSTED_CLOSE</option><option value="raw_close">RAW_CLOSE</option></select></label><label>Commission rate %<input type="number" min="0" step="0.01" value={form.commissionRatePercent} onChange={(event) => updateForm("commissionRatePercent", event.target.value)} /></label><label>Commission per order<input type="number" min="0" step="0.01" value={form.commissionPerOrder} onChange={(event) => updateForm("commissionPerOrder", event.target.value)} /></label><label>Slippage %<input type="number" min="0" max="99.99" step="0.01" value={form.slippagePercent} onChange={(event) => updateForm("slippagePercent", event.target.value)} /></label></div>
+          <fieldset className="contribution-config">
+            <legend>Capital Contributions</legend>
+            <label className="checkbox-label"><input aria-label="Enable contributions" type="checkbox" checked={form.contributionsEnabled} onChange={(event) => updateForm("contributionsEnabled", event.target.checked)} />Enable contributions</label>
+            {form.contributionsEnabled && <div className="basic-grid">
+              <label>Frequency<select aria-label="Contribution frequency" value={form.contributionFrequency} onChange={(event) => updateForm("contributionFrequency", event.target.value as ContributionFrequency)}><option value="one_time">One Time</option><option value="monthly">Monthly</option></select></label>
+              <label>Amount USD<input aria-label="Contribution amount USD" type="number" min="0.01" step="0.01" value={form.contributionAmount} onChange={(event) => updateForm("contributionAmount", event.target.value)} /></label>
+              {form.contributionFrequency === "one_time" ? <label>Requested date<input aria-label="Contribution requested date" type="date" value={form.contributionDate} onChange={(event) => updateForm("contributionDate", event.target.value)} /></label> : <p className="muted">Monthly contribution on month start</p>}
+            </div>}
+          </fieldset>
           <button className="button button-primary run-button" type="submit" disabled={busy !== null || !strategyId || !versionId}>{busy === "run" ? "Running backtest..." : "Run backtest"}</button>
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>

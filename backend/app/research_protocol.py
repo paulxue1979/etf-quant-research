@@ -18,7 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 from backend.app.backtest_models import BacktestRun
-from backtest.models import ExecutionRule, RebalanceFrequency
+from backtest.models import ContributionSchedule, ExecutionRule, RebalanceFrequency
 from data.models import PriceField
 from research.materialization import derived_strategy_version_hash, derived_strategy_version_id
 from strategies.models import StrategyVersion
@@ -153,6 +153,7 @@ class ResearchEvaluationConfig:
     fractional_shares: bool
     rebalance_policy: Mapping[str, Any]
     engine_version: str
+    contribution_schedule: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -171,9 +172,7 @@ class ResearchEvaluationConfig:
             raise ResearchProtocolError("commission must contain rate and per_order")
         commission = {
             "rate": _finite_number(self.commission["rate"], "commission rate"),
-            "per_order": _finite_number(
-                self.commission["per_order"], "commission per_order"
-            ),
+            "per_order": _finite_number(self.commission["per_order"], "commission per_order"),
         }
         if commission["rate"] < 0 or commission["per_order"] < 0:
             raise ResearchProtocolError("commission values must be non-negative")
@@ -192,9 +191,7 @@ class ResearchEvaluationConfig:
             "frequency",
             "threshold",
         }:
-            raise ResearchProtocolError(
-                "rebalance_policy must contain frequency and threshold"
-            )
+            raise ResearchProtocolError("rebalance_policy must contain frequency and threshold")
         try:
             frequency = RebalanceFrequency(self.rebalance_policy["frequency"]).value
         except (TypeError, ValueError) as exc:
@@ -212,6 +209,13 @@ class ResearchEvaluationConfig:
         object.__setattr__(
             self, "engine_version", _require_text(self.engine_version, "engine_version")
         )
+        schedule = self.contribution_schedule
+        if schedule is not None:
+            try:
+                normalized_schedule = ContributionSchedule.from_dict(schedule).to_dict()
+            except (TypeError, ValueError) as exc:
+                raise ResearchProtocolError("contribution_schedule is invalid") from exc
+            object.__setattr__(self, "contribution_schedule", MappingProxyType(normalized_schedule))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -223,6 +227,9 @@ class ResearchEvaluationConfig:
             "fractional_shares": self.fractional_shares,
             "rebalance_policy": dict(self.rebalance_policy),
             "engine_version": self.engine_version,
+            "contribution_schedule": (
+                dict(self.contribution_schedule) if self.contribution_schedule is not None else None
+            ),
         }
 
     @classmethod
@@ -238,6 +245,7 @@ class ResearchEvaluationConfig:
             fractional_shares=payload.get("fractional_shares"),
             rebalance_policy=payload.get("rebalance_policy", {}),
             engine_version=str(payload.get("engine_version", "")),
+            contribution_schedule=payload.get("contribution_schedule"),
         )
 
     @classmethod
@@ -1088,8 +1096,7 @@ class ResearchProtocolRepository:
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing_row = connection.execute(
-                "SELECT payload_json FROM research_selection_decisions "
-                "WHERE protocol_id = ?",
+                "SELECT payload_json FROM research_selection_decisions WHERE protocol_id = ?",
                 (decision.protocol_id,),
             ).fetchone()
             if existing_row is not None:
@@ -1121,10 +1128,9 @@ class ResearchProtocolRepository:
             return decision
         except sqlite3.IntegrityError as exc:
             self._rollback(connection)
-            if (
-                "uq_research_selection_protocol" in str(exc)
-                or "research_selection_decisions.protocol_id" in str(exc)
-            ):
+            if "uq_research_selection_protocol" in str(
+                exc
+            ) or "research_selection_decisions.protocol_id" in str(exc):
                 raise ResearchProtocolError(
                     "research protocol already has a selection decision",
                     code="SELECTION_ALREADY_EXISTS",
@@ -1428,9 +1434,7 @@ class ResearchProtocolRepository:
         )
 
     @staticmethod
-    def _find_handoff_event(
-        connection: sqlite3.Connection, protocol_id: str
-    ) -> sqlite3.Row | None:
+    def _find_handoff_event(connection: sqlite3.Connection, protocol_id: str) -> sqlite3.Row | None:
         rows = connection.execute(
             "SELECT * FROM research_protocol_events "
             "WHERE protocol_id = ? AND event_type = ? "
@@ -1671,9 +1675,7 @@ class ResearchProtocolRepository:
             return tuple(
                 candidate_set
                 for row in rows
-                if (
-                    candidate_set := self.get_candidate_set(str(row["candidate_set_id"]))
-                )
+                if (candidate_set := self.get_candidate_set(str(row["candidate_set_id"])))
                 is not None
             )
         except sqlite3.Error as exc:
@@ -1714,9 +1716,7 @@ class ResearchProtocolRepository:
         finally:
             connection.close()
 
-    def get_frozen_evaluation_config(
-        self, protocol_id: str
-    ) -> ResearchEvaluationConfig | None:
+    def get_frozen_evaluation_config(self, protocol_id: str) -> ResearchEvaluationConfig | None:
         connection = self._connect()
         try:
             row = connection.execute(

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.backtest_models import BacktestRun
 from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
@@ -18,7 +19,7 @@ from backend.app.backtest_service import (
 )
 from backend.app.research import compare_records, sorted_records, summary_payload
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
-from backtest.models import ExecutionRule
+from backtest.models import ContributionFrequency, ContributionSchedule, ExecutionRule
 from data.models import PriceField
 
 
@@ -35,6 +36,32 @@ class CommissionRequest(BaseModel):
         return value
 
 
+class ContributionScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    frequency: ContributionFrequency
+    amount: Decimal
+    requested_date: date | None = None
+    currency: Literal["USD"] = "USD"
+
+    @model_validator(mode="after")
+    def valid_schedule(self) -> ContributionScheduleRequest:
+        ContributionSchedule(
+            frequency=self.frequency,
+            amount=self.amount,
+            requested_date=self.requested_date,
+            currency=self.currency,
+        )
+        return self
+
+    def to_domain(self) -> ContributionSchedule:
+        return ContributionSchedule(
+            frequency=self.frequency,
+            amount=self.amount,
+            requested_date=self.requested_date,
+            currency=self.currency,
+        )
+
+
 class BacktestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     strategy_id: str = Field(min_length=1)
@@ -47,6 +74,7 @@ class BacktestRequest(BaseModel):
     price_field_used: PriceField
     execution_rule: ExecutionRule = ExecutionRule.NEXT_TRADING_DAY_OPEN
     fractional_shares: bool = False
+    contribution_schedule: ContributionScheduleRequest | None = None
 
     @field_validator("initial_capital", "slippage")
     @classmethod
@@ -88,6 +116,11 @@ class BacktestRequest(BaseModel):
             execution_rule=self.execution_rule,
             rebalance_policy=rebalance_policy,
             fractional_shares=self.fractional_shares,
+            contribution_schedule=(
+                self.contribution_schedule.to_domain()
+                if self.contribution_schedule is not None
+                else None
+            ),
         )
 
 
@@ -256,6 +289,7 @@ def compare_research_backtests(request: ResearchComparisonRequest) -> dict[str, 
 
 __all__ = [
     "BacktestRequest",
+    "ContributionScheduleRequest",
     "ResearchComparisonRequest",
     "backtest_repository",
     "backtest_service",

@@ -14,12 +14,17 @@ from analytics.models import DrawdownPoint, MetricValue, PerformanceAnalysisResu
 from backtest.models import (
     AllocationPoint,
     BacktestResult,
+    ContributionEvent,
+    ContributionFrequency,
     EquityPoint,
+    ExternalCashFlow,
     Fill,
     Order,
     OrderSide,
     OrderStatus,
+    RebalanceCause,
     Trade,
+    canonical_decimal,
 )
 from data.models import PriceField
 from portfolio.models import PortfolioSnapshot, Position
@@ -169,6 +174,7 @@ def serialize_backtest_result(result: BacktestResult) -> dict[str, Any]:
                 "commission": item.commission,
                 "slippage": item.slippage,
                 "target_weight": item.target_weight,
+                "rebalance_cause": item.rebalance_cause.value,
             }
             for item in result.orders
         ],
@@ -230,6 +236,28 @@ def serialize_backtest_result(result: BacktestResult) -> dict[str, Any]:
             for item in result.allocation_history
         ],
         "cash_history": [[item_date.isoformat(), cash] for item_date, cash in result.cash_history],
+        "contribution_events": [
+            {
+                "frequency": item.frequency.value,
+                "amount": canonical_decimal(item.amount),
+                "requested_date": item.requested_date.isoformat(),
+                "effective_date": item.effective_date.isoformat(),
+                "currency": item.currency,
+            }
+            for item in result.contribution_events
+        ],
+        "external_cash_flows": [
+            {
+                "date": item.date.isoformat(),
+                "amount": canonical_decimal(item.amount),
+                "currency": item.currency,
+                "source": item.source,
+            }
+            for item in result.external_cash_flows
+        ],
+        "cumulative_contributions": result.cumulative_contributions,
+        "total_capital_invested": result.total_capital_invested,
+        "investment_profit": result.investment_profit,
         "strategy_version_id": result.strategy_version_id,
         "configuration_snapshot": dict(result.configuration_snapshot),
         "data_snapshot_reference": dict(result.data_snapshot_reference),
@@ -290,6 +318,9 @@ def deserialize_backtest_result(payload: Mapping[str, Any]) -> BacktestResult:
                 commission=float(item["commission"]),
                 slippage=float(item["slippage"]),
                 target_weight=float(item["target_weight"]),
+                rebalance_cause=RebalanceCause(
+                    item.get("rebalance_cause", RebalanceCause.TARGET.value)
+                ),
             )
             for item in payload["orders"]
         ),
@@ -307,41 +338,82 @@ def deserialize_backtest_result(payload: Mapping[str, Any]) -> BacktestResult:
             )
             for item in payload["fills"]
         ),
-        trades=tuple(Trade(**{
-            "symbol": str(item["symbol"]),
-            "entry_date": _date(item["entry_date"]),
-            "exit_date": _date(item["exit_date"]),
-            "entry_price": float(item["entry_price"]),
-            "exit_price": float(item["exit_price"]),
-            "quantity": int(item["quantity"]),
-            "pnl": float(item["pnl"]),
-            "pnl_pct": float(item["pnl_pct"]),
-            "holding_period": int(item["holding_period"]),
-        }) for item in payload["trades"]),
+        trades=tuple(
+            Trade(
+                **{
+                    "symbol": str(item["symbol"]),
+                    "entry_date": _date(item["entry_date"]),
+                    "exit_date": _date(item["exit_date"]),
+                    "entry_price": float(item["entry_price"]),
+                    "exit_price": float(item["exit_price"]),
+                    "quantity": int(item["quantity"]),
+                    "pnl": float(item["pnl"]),
+                    "pnl_pct": float(item["pnl_pct"]),
+                    "holding_period": int(item["holding_period"]),
+                }
+            )
+            for item in payload["trades"]
+        ),
         positions=tuple(
             PortfolioSnapshot(
                 as_of_date=_date(item["as_of_date"]),
                 cash=float(item["cash"]),
-                positions=tuple(Position(
-                    symbol=str(position["symbol"]),
-                    quantity=int(position["quantity"]),
-                    average_cost=float(position["average_cost"]),
-                    market_price=float(position["market_price"]),
-                    market_value=float(position["market_value"]),
-                    unrealized_pnl=float(position["unrealized_pnl"]),
-                    as_of_date=_date(position["as_of_date"]),
-                ) for position in item["positions"]),
+                positions=tuple(
+                    Position(
+                        symbol=str(position["symbol"]),
+                        quantity=int(position["quantity"]),
+                        average_cost=float(position["average_cost"]),
+                        market_price=float(position["market_price"]),
+                        market_value=float(position["market_value"]),
+                        unrealized_pnl=float(position["unrealized_pnl"]),
+                        as_of_date=_date(position["as_of_date"]),
+                    )
+                    for position in item["positions"]
+                ),
                 total_equity=float(item["total_equity"]),
             )
             for item in payload["positions"]
         ),
-        allocation_history=tuple(AllocationPoint(
-            date=_date(item["date"]),
-            symbol=str(item["symbol"]),
-            target_weight=float(item["target_weight"]),
-            actual_weight=float(item["actual_weight"]),
-        ) for item in payload["allocation_history"]),
+        allocation_history=tuple(
+            AllocationPoint(
+                date=_date(item["date"]),
+                symbol=str(item["symbol"]),
+                target_weight=float(item["target_weight"]),
+                actual_weight=float(item["actual_weight"]),
+            )
+            for item in payload["allocation_history"]
+        ),
         cash_history=tuple((_date(item[0]), float(item[1])) for item in payload["cash_history"]),
+        contribution_events=tuple(
+            ContributionEvent(
+                frequency=ContributionFrequency(item["frequency"]),
+                amount=item["amount"],
+                requested_date=_date(item["requested_date"]),
+                effective_date=_date(item["effective_date"]),
+                currency=str(item.get("currency", "USD")),
+            )
+            for item in payload.get("contribution_events", [])
+        ),
+        external_cash_flows=tuple(
+            ExternalCashFlow(
+                date=_date(item["date"]),
+                amount=item["amount"],
+                currency=str(item.get("currency", "USD")),
+                source=str(item.get("source", "contribution")),
+            )
+            for item in payload.get("external_cash_flows", [])
+        ),
+        cumulative_contributions=float(payload.get("cumulative_contributions", 0.0)),
+        total_capital_invested=(
+            float(payload["total_capital_invested"])
+            if payload.get("total_capital_invested") is not None
+            else None
+        ),
+        investment_profit=(
+            float(payload["investment_profit"])
+            if payload.get("investment_profit") is not None
+            else None
+        ),
         strategy_version_id=str(payload["strategy_version_id"]),
         configuration_snapshot=MappingProxyType(dict(payload["configuration_snapshot"])),
         data_snapshot_reference=MappingProxyType(dict(payload["data_snapshot_reference"])),

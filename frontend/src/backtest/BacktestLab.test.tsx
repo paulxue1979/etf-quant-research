@@ -31,6 +31,9 @@ function runPayload() {
       end_date: "2025-01-03",
       initial_capital: 100000,
       final_equity: 103000,
+      cumulative_contributions: 0,
+      total_capital_invested: 100000,
+      investment_profit: 3000,
       equity_curve: [
         { date: "2025-01-01", cash: 0, asset_values: { QQQ: 100000 }, total_equity: 100000 },
         { date: "2025-01-02", cash: 0, asset_values: { QQQ: 101000 }, total_equity: 101000 },
@@ -307,5 +310,42 @@ describe("Backtest Lab", () => {
         kind: "server",
         message: "OOS backtest configuration does not match the frozen protocol contract",
       });
+  });
+
+  it("submits monthly capital contributions and renders capital accounting", async () => {
+    const fetchMock = mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: /v1/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable contributions" }));
+    fireEvent.change(screen.getByLabelText("Contribution frequency"), { target: { value: "monthly" } });
+    fireEvent.change(screen.getByLabelText("Contribution amount USD"), { target: { value: "500" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
+
+    await waitFor(() => expect(screen.getByText("Capital accounting")).toBeInTheDocument());
+    const request = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).endsWith("/backtests") && init?.method === "POST"
+    );
+    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
+      contribution_schedule: { frequency: "monthly", amount: "500" },
+    });
+    expect(screen.getByText("Cumulative contributions")).toBeInTheDocument();
+    expect(screen.getByText("Investment profit")).toBeInTheDocument();
+  });
+
+  it("rejects invalid enabled contribution input before calling the backend", async () => {
+    const fetchMock = mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: /v1/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable contributions" }));
+    const contributionAmount = screen.getByLabelText("Contribution amount USD");
+    fireEvent.change(contributionAmount, { target: { value: "0" } });
+    expect(contributionAmount).toBeInvalid();
+    fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
+
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/backtests") && init?.method === "POST")).toBe(false);
   });
 });

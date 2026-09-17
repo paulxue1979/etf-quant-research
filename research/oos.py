@@ -25,7 +25,13 @@ from backend.app.research_protocol import (
     SelectionDecision,
     StrategyFreezeRecord,
 )
-from backtest.models import BacktestConfig, ExecutionRule, RebalanceFrequency, RebalancePolicy
+from backtest.models import (
+    BacktestConfig,
+    ContributionSchedule,
+    ExecutionRule,
+    RebalanceFrequency,
+    RebalancePolicy,
+)
 from data.models import PriceField
 from research.canonical import sha256_hash
 from research.exceptions import (
@@ -300,6 +306,7 @@ class OosEvaluationConfig:
     rebalance_policy: RebalancePolicy
     engine_version: str
     analytics_version: str
+    contribution_schedule: ContributionSchedule | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -355,6 +362,19 @@ class OosEvaluationConfig:
         object.__setattr__(
             self, "analytics_version", _text(self.analytics_version, "analytics_version")
         )
+        schedule = self.contribution_schedule
+        if isinstance(schedule, Mapping):
+            try:
+                schedule = ContributionSchedule.from_dict(schedule)
+            except (TypeError, ValueError) as exc:
+                raise OosDomainError(
+                    "contribution_schedule is invalid", code="OOS_INVALID_CONFIGURATION"
+                ) from exc
+        if schedule is not None and not isinstance(schedule, ContributionSchedule):
+            raise OosDomainError(
+                "contribution_schedule is invalid", code="OOS_INVALID_CONFIGURATION"
+            )
+        object.__setattr__(self, "contribution_schedule", schedule)
 
     @classmethod
     def from_backtest_config(
@@ -375,6 +395,7 @@ class OosEvaluationConfig:
             rebalance_policy=config.rebalance_policy,
             engine_version="phase-3.0",
             analytics_version=analytics_version,
+            contribution_schedule=config.contribution_schedule,
         )
 
     @classmethod
@@ -397,6 +418,11 @@ class OosEvaluationConfig:
             rebalance_policy=config.rebalance_policy,
             engine_version=config.engine_version,
             analytics_version=analytics_version,
+            contribution_schedule=(
+                ContributionSchedule.from_dict(config.contribution_schedule)
+                if config.contribution_schedule is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -414,6 +440,11 @@ class OosEvaluationConfig:
             },
             "engine_version": self.engine_version,
             "analytics_version": self.analytics_version,
+            "contribution_schedule": (
+                self.contribution_schedule.to_dict()
+                if self.contribution_schedule is not None
+                else None
+            ),
         }
 
     def canonical_json(self) -> str:
@@ -447,6 +478,7 @@ class OosEvaluationConfig:
             rebalance_policy=payload.get("rebalance_policy", {}),
             engine_version=payload.get("engine_version", ""),
             analytics_version=payload.get("analytics_version", ""),
+            contribution_schedule=payload.get("contribution_schedule"),
         )
 
 

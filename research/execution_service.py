@@ -123,9 +123,7 @@ class ExperimentExecutionService:
                     prepared,
                     status=ExperimentExecutionOutcomeStatus.FAILED,
                     execution_id=execution.execution_id,
-                    failure=_RuntimeFailure(
-                        "CANDIDATE_EXECUTION_CONFLICT", retryable=False
-                    ),
+                    failure=_RuntimeFailure("CANDIDATE_EXECUTION_CONFLICT", retryable=False),
                 )
             claimed = self._executions.claim_candidate(
                 prepared.experiment.experiment_id,
@@ -154,13 +152,10 @@ class ExperimentExecutionService:
                 source_data_reference=prepared.source_data_reference,
             )
             if not any(
-                item.status is StrategyEvaluationStatus.EVALUATED
-                for item in timeline.evaluations
+                item.status is StrategyEvaluationStatus.EVALUATED for item in timeline.evaluations
             ):
                 raise _RuntimeFailure("INDICATOR_NOT_EVALUABLE", retryable=False)
-            if any(
-                item.status is StrategyEvaluationStatus.ERROR for item in timeline.evaluations
-            ):
+            if any(item.status is StrategyEvaluationStatus.ERROR for item in timeline.evaluations):
                 raise _RuntimeFailure("STRATEGY_EVALUATION_ERROR", retryable=False)
             integration = run_strategy_backtest(
                 prepared.derived_strategy,
@@ -311,8 +306,14 @@ class ExperimentExecutionService:
         ):
             raise _ExecutionFailure(
                 self._preflight_failure(
-                    experiment_id, candidate_index, "PRICE_FIELD_MISMATCH", experiment, candidate,
-                    parameter_set, bindings, derived,
+                    experiment_id,
+                    candidate_index,
+                    "PRICE_FIELD_MISMATCH",
+                    experiment,
+                    candidate,
+                    parameter_set,
+                    bindings,
+                    derived,
                 )
             )
         if derived.materialization_provenance is None:
@@ -383,9 +384,7 @@ class ExperimentExecutionService:
             source_data_reference=source,
         )
 
-    def _load_is_data(
-        self, prepared: _PreparedExecution
-    ) -> dict[str, HistoricalDataSet]:
+    def _load_is_data(self, prepared: _PreparedExecution) -> dict[str, HistoricalDataSet]:
         strategy = prepared.derived_strategy.configuration
         data: dict[str, HistoricalDataSet] = {}
         for asset in strategy.assets:
@@ -505,6 +504,11 @@ class ExperimentExecutionService:
                 "threshold": experiment.backtest_configuration.rebalance_policy.threshold,
             },
             engine_version=experiment.engine_version,
+            contribution_schedule=(
+                experiment.backtest_configuration.contribution_schedule.to_dict()
+                if experiment.backtest_configuration.contribution_schedule is not None
+                else None
+            ),
         )
         if frozen.mismatch_fields(actual):
             raise _ExecutionFailure(

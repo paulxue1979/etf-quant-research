@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
@@ -36,6 +37,120 @@ class RebalanceFrequency(StrEnum):
     ON_SIGNAL_CHANGE = "on_signal_change"
 
 
+class ContributionFrequency(StrEnum):
+    ONE_TIME = "one_time"
+    MONTHLY = "monthly"
+
+
+class RebalanceCause(StrEnum):
+    TARGET = "target"
+    CONTRIBUTION = "contribution"
+
+
+def _positive_decimal(value: object, label: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a positive finite decimal")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive finite decimal") from exc
+    if not result.is_finite() or result <= 0:
+        raise ValueError(f"{label} must be a positive finite decimal")
+    return result.normalize()
+
+
+def canonical_decimal(value: Decimal) -> str:
+    normalized = value.normalize()
+    text = format(normalized, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+@dataclass(frozen=True)
+class ContributionSchedule:
+    frequency: ContributionFrequency
+    amount: Decimal | str | int | float
+    requested_date: date | None = None
+    currency: str = "USD"
+
+    def __post_init__(self) -> None:
+        try:
+            frequency = (
+                self.frequency
+                if isinstance(self.frequency, ContributionFrequency)
+                else ContributionFrequency(self.frequency)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("contribution frequency is invalid") from exc
+        amount = _positive_decimal(self.amount, "contribution amount")
+        if frequency is ContributionFrequency.ONE_TIME:
+            if not isinstance(self.requested_date, date):
+                raise ValueError("one-time contribution requested_date is required")
+        elif self.requested_date is not None:
+            raise ValueError("monthly contribution requested_date must be omitted")
+        currency = self.currency.strip().upper() if isinstance(self.currency, str) else ""
+        if currency != "USD":
+            raise ValueError("contribution currency must be USD")
+        object.__setattr__(self, "frequency", frequency)
+        object.__setattr__(self, "amount", amount)
+        object.__setattr__(self, "currency", currency)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "frequency": self.frequency.value,
+            "amount": canonical_decimal(self.amount),
+            "requested_date": (
+                self.requested_date.isoformat() if self.requested_date is not None else None
+            ),
+            "currency": self.currency,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ContributionSchedule:
+        requested_date = payload.get("requested_date")
+        return cls(
+            frequency=ContributionFrequency(str(payload.get("frequency", ""))),
+            amount=payload.get("amount"),
+            requested_date=(
+                date.fromisoformat(str(requested_date)) if requested_date is not None else None
+            ),
+            currency=str(payload.get("currency", "USD")),
+        )
+
+
+@dataclass(frozen=True)
+class ContributionEvent:
+    frequency: ContributionFrequency
+    amount: Decimal
+    requested_date: date
+    effective_date: date
+    currency: str = "USD"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "frequency", ContributionFrequency(self.frequency))
+        object.__setattr__(self, "amount", _positive_decimal(self.amount, "contribution amount"))
+        if not isinstance(self.requested_date, date) or not isinstance(self.effective_date, date):
+            raise TypeError("contribution dates must be date values")
+        if self.effective_date < self.requested_date:
+            raise ValueError("effective contribution date cannot precede requested date")
+        if self.currency != "USD":
+            raise ValueError("contribution currency must be USD")
+
+
+@dataclass(frozen=True)
+class ExternalCashFlow:
+    date: date
+    amount: Decimal
+    currency: str = "USD"
+    source: str = "contribution"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.date, date):
+            raise TypeError("external cash flow date must be a date")
+        object.__setattr__(self, "amount", _positive_decimal(self.amount, "cash flow amount"))
+        if self.currency != "USD" or self.source != "contribution":
+            raise ValueError("only USD contribution cash flows are supported")
+
+
 @dataclass(frozen=True)
 class CommissionPolicy:
     """Commission as a proportional rate plus optional per-order fee."""
@@ -58,9 +173,7 @@ class RebalancePolicy:
     threshold: float | None = None
 
     def __post_init__(self) -> None:
-        if self.threshold is not None and (
-            not math.isfinite(self.threshold) or self.threshold < 0
-        ):
+        if self.threshold is not None and (not math.isfinite(self.threshold) or self.threshold < 0):
             raise ValueError("rebalance threshold must be finite and non-negative")
 
 
@@ -132,6 +245,7 @@ class Order:
     commission: float
     slippage: float
     target_weight: float
+    rebalance_cause: RebalanceCause = RebalanceCause.TARGET
 
 
 @dataclass(frozen=True)
@@ -194,6 +308,7 @@ class BacktestConfig:
     execution_rule: ExecutionRule = ExecutionRule.NEXT_TRADING_DAY_OPEN
     rebalance_policy: RebalancePolicy = field(default_factory=RebalancePolicy)
     fractional_shares: bool = False
+    contribution_schedule: ContributionSchedule | None = None
 
     def __post_init__(self) -> None:
         if not self.strategy_version_id.strip():
@@ -206,6 +321,10 @@ class BacktestConfig:
             raise ValueError("slippage must be finite and in [0, 1)")
         if self.fractional_shares:
             raise ValueError("PHASE 3 supports integer shares only")
+        if self.contribution_schedule is not None and not isinstance(
+            self.contribution_schedule, ContributionSchedule
+        ):
+            raise TypeError("contribution_schedule must be a ContributionSchedule or None")
 
     def snapshot(
         self,
@@ -231,6 +350,11 @@ class BacktestConfig:
                 "threshold": self.rebalance_policy.threshold,
             },
             "fractional_shares": self.fractional_shares,
+            "contribution_schedule": (
+                self.contribution_schedule.to_dict()
+                if self.contribution_schedule is not None
+                else None
+            ),
             "data_snapshot_reference": dict(data_snapshot_reference),
             "engine_version": ENGINE_VERSION,
         }
@@ -264,6 +388,11 @@ class BacktestResult:
     requested_end_date: date | None = None
     effective_start_date: date | None = None
     effective_end_date: date | None = None
+    contribution_events: tuple[ContributionEvent, ...] = ()
+    external_cash_flows: tuple[ExternalCashFlow, ...] = ()
+    cumulative_contributions: float = 0.0
+    total_capital_invested: float | None = None
+    investment_profit: float | None = None
 
     def __post_init__(self) -> None:
         requested_start = self.requested_start_date or self.start_date
@@ -281,3 +410,27 @@ class BacktestResult:
         object.__setattr__(self, "requested_end_date", requested_end)
         object.__setattr__(self, "effective_start_date", self.start_date)
         object.__setattr__(self, "effective_end_date", self.end_date)
+        contributions = tuple(self.contribution_events)
+        flows = tuple(self.external_cash_flows)
+        if not all(isinstance(item, ContributionEvent) for item in contributions):
+            raise TypeError("contribution_events must contain ContributionEvent values")
+        if not all(isinstance(item, ExternalCashFlow) for item in flows):
+            raise TypeError("external_cash_flows must contain ExternalCashFlow values")
+        cumulative = float(sum((item.amount for item in contributions), Decimal("0")))
+        total_invested = (
+            self.initial_capital + cumulative
+            if self.total_capital_invested is None
+            else float(self.total_capital_invested)
+        )
+        profit = (
+            self.final_equity - total_invested
+            if self.investment_profit is None
+            else float(self.investment_profit)
+        )
+        if not math.isclose(float(self.cumulative_contributions), cumulative, abs_tol=1e-9):
+            raise ValueError("cumulative_contributions does not match contribution_events")
+        object.__setattr__(self, "contribution_events", contributions)
+        object.__setattr__(self, "external_cash_flows", flows)
+        object.__setattr__(self, "cumulative_contributions", cumulative)
+        object.__setattr__(self, "total_capital_invested", total_invested)
+        object.__setattr__(self, "investment_profit", profit)
