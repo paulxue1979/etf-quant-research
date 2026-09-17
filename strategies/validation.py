@@ -18,6 +18,7 @@ from data.models import PriceField
 from strategies.enums import (
     ComparisonOperator,
     LogicalOperator,
+    NoMatchBehavior,
     OperandType,
     RebalanceFrequency,
     ThresholdType,
@@ -36,6 +37,7 @@ from strategies.exceptions import (
 from strategies.models import (
     Allocation,
     AllocationRule,
+    AllocationSpecification,
     AssetReference,
     Condition,
     FallbackAllocation,
@@ -71,6 +73,9 @@ class ValidationCode(StrEnum):
     INVALID_PRICE_FIELD = "InvalidPriceField"
     PRICE_FIELD_MISMATCH = "PriceFieldMismatch"
     INVALID_REBALANCE_POLICY = "InvalidRebalancePolicy"
+    INVALID_NO_MATCH_BEHAVIOR = "InvalidNoMatchBehavior"
+    INVALID_INITIAL_ALLOCATION = "InvalidInitialAllocation"
+    MISSING_INITIAL_ALLOCATION = "MissingInitialAllocation"
 
 
 @dataclass(frozen=True)
@@ -175,8 +180,59 @@ class StrategyValidator:
         self._validate_price_field(strategy, errors)
         self._validate_rules(strategy, assets, errors)
         self._validate_fallback(strategy, assets, errors)
+        self._validate_initial_allocation(strategy, assets, errors)
         self._validate_rebalance_policy(strategy, errors)
+        self._validate_no_match_behavior(strategy, errors)
         return ValidationResult(errors=tuple(errors))
+
+    def _validate_no_match_behavior(
+        self, strategy: StrategyDefinition, errors: list[ValidationIssue]
+    ) -> None:
+        behavior = getattr(strategy, "no_match_behavior", None)
+        if not isinstance(behavior, NoMatchBehavior):
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_NO_MATCH_BEHAVIOR,
+                    "no_match_behavior",
+                    "no_match_behavior must be USE_FALLBACK or HOLD_PREVIOUS_ALLOCATION",
+                )
+            )
+
+    def _validate_initial_allocation(
+        self,
+        strategy: StrategyDefinition,
+        assets: set[str],
+        errors: list[ValidationIssue],
+    ) -> None:
+        behavior = getattr(strategy, "no_match_behavior", None)
+        initial = getattr(strategy, "initial_allocation", None)
+        if behavior is NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION and initial is None:
+            errors.append(
+                self._issue(
+                    ValidationCode.MISSING_INITIAL_ALLOCATION,
+                    "initial_allocation",
+                    "HOLD_PREVIOUS_ALLOCATION requires an initial allocation",
+                )
+            )
+            return
+        if initial is None:
+            return
+        if not isinstance(initial, AllocationSpecification):
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_INITIAL_ALLOCATION,
+                    "initial_allocation",
+                    "initial_allocation must be an AllocationSpecification",
+                )
+            )
+            return
+        self._validate_allocations(
+            initial.allocations,
+            "initial_allocation.allocations",
+            assets,
+            errors,
+            allow_empty=True,
+        )
 
     def _validate_assets(
         self, strategy: StrategyDefinition, errors: list[ValidationIssue]
@@ -303,6 +359,8 @@ class StrategyValidator:
         path: str,
         assets: set[str],
         errors: list[ValidationIssue],
+        *,
+        allow_empty: bool = False,
     ) -> set[str]:
         if not isinstance(allocations, Sequence) or isinstance(allocations, (str, bytes)):
             errors.append(
@@ -311,7 +369,7 @@ class StrategyValidator:
                 )
             )
             return set()
-        if not allocations:
+        if not allocations and not allow_empty:
             errors.append(
                 self._issue(
                     ValidationCode.INVALID_ALLOCATION, path, "allocations must not be empty"
@@ -663,6 +721,21 @@ class StrategyValidator:
     def _issue_from_exception(self, exc: Exception) -> ValidationIssue:
         message = str(exc)
         normalized_message = message.lower()
+        if "no_match_behavior" in normalized_message:
+            return self._issue(
+                ValidationCode.INVALID_NO_MATCH_BEHAVIOR,
+                "no_match_behavior",
+                message or "no_match_behavior is invalid",
+            )
+        if (
+            "initial_allocation" in normalized_message
+            or "allocation specification" in normalized_message
+        ):
+            return self._issue(
+                ValidationCode.INVALID_INITIAL_ALLOCATION,
+                "initial_allocation",
+                message or "initial_allocation is invalid",
+            )
         if isinstance(exc, InvalidStrategyError):
             if "assets must contain at least one" in normalized_message:
                 code = ValidationCode.EMPTY_ASSETS

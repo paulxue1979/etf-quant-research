@@ -20,6 +20,7 @@ from data.models import PriceField
 from strategies.enums import (
     ComparisonOperator,
     LogicalOperator,
+    NoMatchBehavior,
     OperandType,
     RebalanceFrequency,
     StrategyStatus,
@@ -460,6 +461,46 @@ class FallbackAllocation:
         )
 
 
+@dataclass(frozen=True)
+class AllocationSpecification:
+    """Static target allocation used to initialize a stateful strategy.
+
+    Unallocated weight is an implicit cash position.  Cash therefore remains
+    distinct from declared ETF assets and no synthetic ticker is introduced.
+    """
+
+    allocations: tuple[Allocation, ...]
+
+    def __post_init__(self) -> None:
+        allocations = _normalize_sequence(self.allocations, "allocations")
+        if not all(isinstance(item, Allocation) for item in allocations):
+            raise InvalidAllocationError("allocation specification must contain Allocation values")
+        symbols = [item.symbol.symbol for item in allocations]
+        if len(set(symbols)) != len(symbols):
+            raise InvalidAllocationError("allocation specification symbols must be unique")
+        if sum(item.target_weight for item in allocations) > 1.0 + 1e-12:
+            raise InvalidAllocationError("allocation specification weights must not exceed 1.0")
+        object.__setattr__(self, "allocations", allocations)
+
+    @property
+    def cash_weight(self) -> float:
+        """Return the implicit cash remainder of the specification."""
+        return 1.0 - sum(item.target_weight for item in self.allocations)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"allocations": [allocation.to_dict() for allocation in self.allocations]}
+
+    @classmethod
+    def from_dict(cls, payload: object) -> AllocationSpecification:
+        data = _require_mapping(payload, "allocation specification")
+        return cls(
+            allocations=tuple(
+                Allocation.from_dict(item)
+                for item in _normalize_sequence(data.get("allocations", []), "allocations")
+            )
+        )
+
+
 @dataclass(frozen=True, init=False)
 class RebalancePolicy:
     """Rebalance configuration; execution is owned by PHASE 3."""
@@ -518,6 +559,8 @@ class StrategyDefinition:
     rules: tuple[AllocationRule, ...]
     fallback: FallbackAllocation
     rebalance_policy: RebalancePolicy
+    no_match_behavior: NoMatchBehavior = NoMatchBehavior.USE_FALLBACK
+    initial_allocation: AllocationSpecification | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
@@ -541,14 +584,27 @@ class StrategyDefinition:
             raise InvalidStrategyError("fallback must be a FallbackAllocation value")
         if not isinstance(self.rebalance_policy, RebalancePolicy):
             raise InvalidStrategyError("rebalance_policy must be a RebalancePolicy value")
+        no_match_behavior = _validate_enum(
+            self.no_match_behavior,
+            NoMatchBehavior,
+            InvalidStrategyError,
+            "no_match_behavior",
+        )
+        if self.initial_allocation is not None and not isinstance(
+            self.initial_allocation, AllocationSpecification
+        ):
+            raise InvalidStrategyError(
+                "initial_allocation must be an AllocationSpecification value or None"
+            )
         object.__setattr__(self, "strategy_id", self.strategy_id.strip())
         object.__setattr__(self, "name", self.name.strip())
         object.__setattr__(self, "assets", assets)
         object.__setattr__(self, "price_field", price_field)
         object.__setattr__(self, "rules", rules)
+        object.__setattr__(self, "no_match_behavior", no_match_behavior)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "strategy_id": self.strategy_id,
             "name": self.name,
             "description": self.description,
@@ -558,6 +614,11 @@ class StrategyDefinition:
             "fallback": self.fallback.to_dict(),
             "rebalance_policy": self.rebalance_policy.to_dict(),
         }
+        if self.no_match_behavior is not NoMatchBehavior.USE_FALLBACK:
+            payload["no_match_behavior"] = self.no_match_behavior.value
+        if self.initial_allocation is not None:
+            payload["initial_allocation"] = self.initial_allocation.to_dict()
+        return payload
 
     def to_json(self) -> str:
         return _canonical_json(self.to_dict())
@@ -580,6 +641,12 @@ class StrategyDefinition:
             ),
             fallback=FallbackAllocation.from_dict(data.get("fallback")),
             rebalance_policy=RebalancePolicy.from_dict(data.get("rebalance_policy")),
+            no_match_behavior=data.get("no_match_behavior", NoMatchBehavior.USE_FALLBACK.value),
+            initial_allocation=(
+                AllocationSpecification.from_dict(data["initial_allocation"])
+                if data.get("initial_allocation") is not None
+                else None
+            ),
         )
 
     @classmethod

@@ -6,6 +6,7 @@ from strategies.enums import (
     AllocationSource,
     ComparisonOperator,
     LogicalOperator,
+    NoMatchBehavior,
     OperandType,
     RebalanceFrequency,
     StrategyEvaluationStatus,
@@ -23,6 +24,7 @@ from strategies.evaluation import (
 from strategies.models import (
     Allocation,
     AllocationRule,
+    AllocationSpecification,
     AssetReference,
     Condition,
     FallbackAllocation,
@@ -56,6 +58,7 @@ from strategies.validation import (
 
 __all__ = [
     "Allocation",
+    "AllocationSpecification",
     "AllocationSource",
     "AllocationRule",
     "AssetReference",
@@ -66,6 +69,7 @@ __all__ = [
     "EvaluationFailure",
     "FallbackAllocation",
     "LogicalOperator",
+    "NoMatchBehavior",
     "Operand",
     "OperandType",
     "OperandValue",

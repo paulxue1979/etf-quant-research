@@ -60,6 +60,13 @@ class AllocationSource(StrEnum):
     FALLBACK = "fallback"
 
 
+class NoMatchBehavior(StrEnum):
+    """Strategy behavior when no allocation rule matches."""
+
+    USE_FALLBACK = "use_fallback"
+    HOLD_PREVIOUS_ALLOCATION = "hold_previous_allocation"
+
+
 class StrategyEvaluationStatus(StrEnum):
     """Outcome of one point-in-time strategy evaluation."""
 
