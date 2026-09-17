@@ -7,7 +7,7 @@ from datetime import date
 from typing import Any
 
 from data.models import PriceField
-from strategies.enums import AllocationSource
+from strategies.enums import AllocationSource, NoMatchBehavior
 from strategies.evaluation import (
     ConditionResult,
     OperandValue,
@@ -81,6 +81,15 @@ class StrategySignal:
             if self.matched_rule_id is not None:
                 raise SignalInputConsistencyError(
                     "fallback signals must not have a matched_rule_id"
+                )
+        elif self.allocation_source is AllocationSource.HOLD_PREVIOUS:
+            if self.matched_rule_id is not None:
+                raise SignalInputConsistencyError(
+                    "hold-previous signals must not have a matched_rule_id"
+                )
+            if self.target_allocation.used_fallback:
+                raise SignalInputConsistencyError(
+                    "hold-previous signals must not use fallback allocation"
                 )
         elif not self.matched_rule_id:
             raise SignalInputConsistencyError("rule-match signals require a matched_rule_id")
@@ -201,9 +210,14 @@ def _resolve_provenance(
         return None, AllocationSource.FALLBACK
     matched_rule_id = target_allocation.matched_rule_id
     if not matched_rule_id:
-        raise SignalInputConsistencyError(
-            "non-fallback target allocation must identify a matched rule"
-        )
+        if (
+            strategy_version.configuration.no_match_behavior
+            is not NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION
+        ):
+            raise SignalInputConsistencyError(
+                "non-fallback target allocation must identify a matched rule"
+            )
+        return None, AllocationSource.HOLD_PREVIOUS
     rules = {rule.rule_id: rule for rule in strategy_version.configuration.rules}
     rule = rules.get(matched_rule_id)
     if rule is None:
@@ -244,11 +258,12 @@ def _build_explanation(
     allocation_source: AllocationSource,
     matched_rule_id: str | None,
 ) -> str:
-    selected = (
-        f"rule {matched_rule_id}"
-        if allocation_source is AllocationSource.RULE_MATCH
-        else "fallback"
-    )
+    if allocation_source is AllocationSource.RULE_MATCH:
+        selected = f"rule {matched_rule_id}"
+    elif allocation_source is AllocationSource.FALLBACK:
+        selected = "fallback"
+    else:
+        selected = "previous target allocation"
     return (
         f"StrategySignal(date={target_allocation.date.isoformat()}, "
         f"strategy_version_id={strategy_version.version_id}, selected={selected}, "

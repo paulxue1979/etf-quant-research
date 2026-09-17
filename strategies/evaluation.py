@@ -41,9 +41,7 @@ class IndicatorKey:
         return self.asset.symbol
 
     @classmethod
-    def from_series(
-        cls, asset: AssetReference | str, series: IndicatorSeries
-    ) -> IndicatorKey:
+    def from_series(cls, asset: AssetReference | str, series: IndicatorSeries) -> IndicatorKey:
         return cls(asset, series.kind, series.period, series.price_field_used)
 
 
@@ -85,9 +83,7 @@ class EvaluationContext:
         indicators: Iterable[tuple[AssetReference | str, IndicatorSeries]] = (),
     ) -> EvaluationContext:
         """Build a context from asset-qualified indicator series."""
-        keyed = {
-            IndicatorKey.from_series(asset, series): series for asset, series in indicators
-        }
+        keyed = {IndicatorKey.from_series(asset, series): series for asset, series in indicators}
         return cls(market_data=market_data, indicators=keyed)
 
 
@@ -106,9 +102,7 @@ class OperandValue:
             raise TypeError("operand result date must be a date")
         if not isinstance(self.operand_type, OperandType):
             object.__setattr__(self, "operand_type", OperandType(self.operand_type))
-        if self.price_field_used is not None and not isinstance(
-            self.price_field_used, PriceField
-        ):
+        if self.price_field_used is not None and not isinstance(self.price_field_used, PriceField):
             object.__setattr__(self, "price_field_used", PriceField(self.price_field_used))
         if not isinstance(self.value, (int, float)) or isinstance(self.value, bool):
             raise InvalidEvaluationValueError("evaluated operand value must be numeric")
@@ -190,7 +184,7 @@ class RuleGroupResult:
 
 @dataclass(frozen=True)
 class TargetAllocationResult:
-    """Immutable target weights resolved from one matched allocation rule."""
+    """Immutable target weights resolved from strategy allocation semantics."""
 
     date: date
     matched_rule_id: str | None
@@ -212,7 +206,7 @@ class TargetAllocationResult:
         if isinstance(self.allocations, (str, bytes)):
             raise TypeError("allocations must be a sequence")
         allocations = tuple(self.allocations)
-        if not allocations or not all(isinstance(item, Allocation) for item in allocations):
+        if not all(isinstance(item, Allocation) for item in allocations):
             raise ValueError("allocations must contain Allocation values")
         symbols = [item.symbol.symbol for item in allocations]
         if len(symbols) != len(set(symbols)):

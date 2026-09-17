@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 from datetime import date
 
+from strategies.enums import NoMatchBehavior
 from strategies.evaluation import RuleGroupResult, TargetAllocationResult
 from strategies.exceptions import (
     EvaluationError,
@@ -16,6 +17,7 @@ from strategies.exceptions import (
 from strategies.models import (
     Allocation,
     AllocationRule,
+    AllocationSpecification,
     FallbackAllocation,
     RemainingAllocation,
     StrategyDefinition,
@@ -28,6 +30,8 @@ def resolve_allocations(
     strategy: StrategyDefinition,
     rule_results: Mapping[str, RuleGroupResult | EvaluationError],
     as_of_date: date,
+    *,
+    previous_target_allocation: AllocationSpecification | None = None,
 ) -> TargetAllocationResult:
     """Resolve all supplied rule results without evaluating conditions again."""
     if not isinstance(strategy, StrategyDefinition):
@@ -80,6 +84,23 @@ def resolve_allocations(
             matched_rule_id=selected.rule_id,
             used_fallback=False,
             selected_priority=selected.priority,
+        )
+
+    if strategy.no_match_behavior is NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION:
+        if not isinstance(previous_target_allocation, AllocationSpecification):
+            raise InvalidAllocationConfigurationError(
+                "HOLD_PREVIOUS_ALLOCATION requires a previous target allocation"
+            )
+        return _build_result(
+            previous_target_allocation.allocations,
+            None,
+            declared_assets,
+            as_of_date,
+            matched_rule_id=None,
+            used_fallback=False,
+            selected_priority=None,
+            allow_empty=True,
+            source_description="previous target allocation",
         )
 
     fallback = getattr(strategy, "fallback", None)
@@ -155,21 +176,23 @@ def _build_result(
     declared_assets: tuple[str, ...],
     as_of_date: date,
     *,
-    matched_rule_id: str,
+    matched_rule_id: str | None,
     used_fallback: bool,
     selected_priority: int | None,
+    allow_empty: bool = False,
+    source_description: str | None = None,
 ) -> TargetAllocationResult:
     if isinstance(allocations, (str, bytes)) or not isinstance(allocations, tuple):
         raise InvalidAllocationConfigurationError("allocations must be an immutable tuple")
-    if not allocations or not all(isinstance(item, Allocation) for item in allocations):
+    if (not allocations and not allow_empty) or not all(
+        isinstance(item, Allocation) for item in allocations
+    ):
         raise InvalidAllocationConfigurationError("allocations must contain Allocation values")
     explicit = list(allocations)
     try:
         symbols = [item.symbol.symbol for item in explicit]
     except AttributeError as exc:
-        raise InvalidAllocationConfigurationError(
-            "allocation symbols are malformed"
-        ) from exc
+        raise InvalidAllocationConfigurationError("allocation symbols are malformed") from exc
     if len(symbols) != len(set(symbols)):
         raise InvalidAllocationConfigurationError("allocation symbols must be unique")
     unknown = set(symbols) - set(declared_assets)
@@ -203,9 +226,8 @@ def _build_result(
                 f"target weight is invalid for {allocation.symbol.symbol}"
             )
         if allocation.minimum_weight is not None and allocation.maximum_weight is not None:
-            if (
-                not _is_valid_bound(allocation.minimum_weight)
-                or not _is_valid_bound(allocation.maximum_weight)
+            if not _is_valid_bound(allocation.minimum_weight) or not _is_valid_bound(
+                allocation.maximum_weight
             ):
                 raise InvalidAllocationConfigurationError(
                     f"allocation bounds are invalid for {allocation.symbol.symbol}"
@@ -248,7 +270,7 @@ def _build_result(
     allocation_text = ", ".join(
         f"{item.symbol.symbol}={item.target_weight:.12g}" for item in ordered
     )
-    source = "fallback" if used_fallback else f"rule {matched_rule_id}"
+    source = source_description or ("fallback" if used_fallback else f"rule {matched_rule_id}")
     priority_text = "" if selected_priority is None else f", priority={selected_priority}"
     explanation = (
         f"Selected {source}{priority_text}; allocations=[{allocation_text}]; "

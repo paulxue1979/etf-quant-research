@@ -22,7 +22,13 @@ from strategies.evaluation import (
     TargetAllocationResult,
 )
 from strategies.exceptions import EvaluationError, StrategyEvaluationInputError
-from strategies.models import Condition, RuleGroup, RuleNode, StrategyVersion
+from strategies.models import (
+    AllocationSpecification,
+    Condition,
+    RuleGroup,
+    RuleNode,
+    StrategyVersion,
+)
 from strategies.rule_group_evaluator import evaluate_rule_group
 from strategies.signal_engine import StrategySignal, build_signal
 from strategies.validation import validate_strategy_definition
@@ -201,22 +207,28 @@ def evaluate_strategy(
     mismatch = _price_field_mismatch(strategy.price_field, asset_data)
     requirements = _indicator_requirements(strategy_version)
 
-    evaluations = tuple(
-        _evaluate_date(
+    previous_target_allocation = strategy.initial_allocation
+    evaluations: list[StrategyEvaluationResult] = []
+    for as_of_date in candidate_dates:
+        evaluation = _evaluate_date(
             strategy_version,
             context,
             as_of_date,
             requirements,
             mismatch,
             source_data_reference,
+            previous_target_allocation,
         )
-        for as_of_date in candidate_dates
-    )
+        evaluations.append(evaluation)
+        if evaluation.target_allocation is not None:
+            previous_target_allocation = AllocationSpecification(
+                evaluation.target_allocation.allocations
+            )
     return StrategyEvaluationTimeline(
         strategy_version_id=strategy_version.version_id,
         start_date=start_date,
         end_date=end_date,
-        evaluations=evaluations,
+        evaluations=tuple(evaluations),
         source_data_reference=source_data_reference,
     )
 
@@ -332,6 +344,7 @@ def _evaluate_date(
     requirements: tuple[IndicatorKey, ...],
     price_field_mismatch: EvaluationFailure | None,
     source_data_reference: str | None,
+    previous_target_allocation: AllocationSpecification | None,
 ) -> StrategyEvaluationResult:
     if price_field_mismatch is not None:
         return _failure_result(
@@ -357,7 +370,10 @@ def _evaluate_date(
                 group, context, as_of_date, rule_group_id=rule.rule_id
             )
         target_allocation = resolve_allocations(
-            strategy_version.configuration, rule_results, as_of_date
+            strategy_version.configuration,
+            rule_results,
+            as_of_date,
+            previous_target_allocation=previous_target_allocation,
         )
         aggregate = _aggregate_rule_results(as_of_date, rule_results)
         signal = build_signal(

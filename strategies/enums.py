@@ -58,6 +58,7 @@ class AllocationSource(StrEnum):
 
     RULE_MATCH = "rule_match"
     FALLBACK = "fallback"
+    HOLD_PREVIOUS = "hold_previous"
 
 
 class NoMatchBehavior(StrEnum):
