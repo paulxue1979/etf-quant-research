@@ -11,6 +11,7 @@ interface FinancialChartProps {
   markers?: ChartMarker[];
   height: number;
   onReady: (chart: SyncedChart) => () => void;
+  showDollarDifference?: boolean;
 }
 
 function ChartState({ series }: { series: ChartSeries[] }) {
@@ -20,7 +21,7 @@ function ChartState({ series }: { series: ChartSeries[] }) {
   return <div className={`financial-chart-state ${status}`} role="status">{state ? availabilityText(state) : "EMPTY"}{state?.reason ? ` · ${state.reason}` : ""}</div>;
 }
 
-export function FinancialChart({ title, description, series, markers = [], height, onReady }: FinancialChartProps) {
+export function FinancialChart({ title, description, series, markers = [], height, onReady, showDollarDifference = false }: FinancialChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ date: string; values: Array<{ label: string; value: string; color: string }>; details: string[] } | null>(null);
   useEffect(() => {
@@ -43,7 +44,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     resizeObserver?.observe(container);
     const chartSeries: SyncSeries[] = [];
     const valuesByTime = new Map<string, { series: SyncSeries; value: number }>();
-    const byTime = new Map<string, Array<{ label: string; value: string; color: string }>>();
+    const byTime = new Map<string, Array<{ label: string; value: string; color: string; raw: number }>>();
     const detailsByTime = new Map<string, string[]>();
     for (const marker of markers) {
       const current = detailsByTime.get(marker.date) ?? [];
@@ -70,7 +71,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       for (const point of item.points) {
         if (!valuesByTime.has(point.date)) valuesByTime.set(point.date, { series: line, value: point.value });
         const existing = byTime.get(point.date) ?? [];
-        existing.push({ label: item.label, value: formatChartValue(point.value, item.unit), color: item.color });
+        existing.push({ label: item.label, value: formatChartValue(point.value, item.unit), color: item.color, raw: point.value });
         byTime.set(point.date, existing);
       }
     }
@@ -78,9 +79,9 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       const visibleMarkers: SeriesMarker<Time>[] = markers.flatMap((marker) => markerDates?.has(marker.date) ? [{
         time: marker.date as Time,
         position: marker.kind === "signal" ? "aboveBar" as const : "belowBar" as const,
-        shape: marker.kind === "signal" ? "arrowDown" as const : "arrowUp" as const,
+        shape: marker.kind === "signal" ? "arrowDown" as const : marker.kind === "execution" ? "arrowUp" as const : "circle" as const,
         color: marker.color,
-        text: marker.kind === "signal" ? "S" : "E",
+        text: marker.kind === "signal" ? "S" : marker.kind === "execution" ? "E" : "C",
         size: 1,
       }] : []);
       createSeriesMarkers(markerAnchor, visibleMarkers);
@@ -90,9 +91,16 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       const time = event.time;
       if (typeof time !== "string") { setHover(null); return; }
       const available = new Map((byTime.get(time) ?? []).map((item) => [item.label, item]));
+      const values = series.map((item) => available.get(item.label) ?? { label: item.label, value: "N/A", color: item.color, raw: Number.NaN });
+      const portfolioValue = available.get("Portfolio Value")?.raw;
+      const capitalInvested = available.get("Capital Invested")?.raw;
+      if (showDollarDifference && Number.isFinite(portfolioValue) && Number.isFinite(capitalInvested)) {
+        const difference = Number(portfolioValue) - Number(capitalInvested);
+        values.push({ label: "Dollar Profit", value: formatChartValue(difference, "USD"), color: "#d8e1e5", raw: difference });
+      }
       setHover({
         date: time,
-        values: series.map((item) => available.get(item.label) ?? { label: item.label, value: "N/A", color: item.color }),
+        values,
         details: detailsByTime.get(time) ?? [],
       });
     };
@@ -104,7 +112,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       chart.unsubscribeCrosshairMove(crosshairHandler);
       chart.remove();
     };
-  }, [height, markers, onReady, series]);
+  }, [height, markers, onReady, series, showDollarDifference]);
 
   return <section className="financial-chart" aria-label={title}>
     <div className="financial-chart-heading"><div><h3>{title}</h3><span className="muted">{description}</span></div><span className="chart-unit">{series[0]?.unit ?? "-"}</span></div>
@@ -112,6 +120,6 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     <ChartState series={series} />
     {hover && <div className="financial-chart-tooltip" role="status"><strong>{hover.date}</strong>{hover.values.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}: {item.value}</span>)}{hover.details.map((detail, index) => <span className="marker-detail" key={`${detail}-${index}`}>{detail}</span>)}</div>}
     <div className="financial-chart-legend">{series.map((item) => <span key={item.key} className={item.status !== "available" ? "is-unavailable" : undefined}><i style={{ background: item.color }} />{item.label}<small>{availabilityText(item)}</small></span>)}</div>
-    {markers.length > 0 && <div className="marker-legend" aria-label="Signal and execution marker legend"><span><i className="signal-marker">S</i>Signal at close</span><span><i className="execution-marker">E</i>Execution at next open</span></div>}
+    {markers.length > 0 && <div className="marker-legend" aria-label="Chart marker legend">{markers.some((item) => item.kind === "signal") && <span><i className="signal-marker">S</i>Signal at close</span>}{markers.some((item) => item.kind === "execution") && <span><i className="execution-marker">E</i>Execution at next open</span>}{markers.some((item) => item.kind === "contribution") && <span><i className="contribution-marker">C</i>External cash flow</span>}</div>}
   </section>;
 }

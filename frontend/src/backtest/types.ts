@@ -183,6 +183,47 @@ export interface BacktestRun {
 
 export type ReportAvailability = "available" | "not_available" | "not_evaluable";
 
+export interface ContributionScheduleReport {
+  enabled: boolean;
+  frequency: ContributionFrequency | null;
+  amount: string | null;
+  requested_date: string | null;
+  currency: "USD";
+  requested_date_semantics: "month_start" | "explicit_date" | null;
+}
+
+export interface ContributionReportEvent {
+  sequence: number;
+  requested_date: string;
+  effective_date: string;
+  amount: string;
+  currency: "USD";
+  frequency: ContributionFrequency;
+  source: "ContributionEvent";
+  strategy_signal: false;
+  deployment: {
+    cause: "contribution";
+    status: "rebalance_executed" | "no_contribution_rebalance_execution";
+    order_count: number;
+    fill_count: number;
+    symbols: string[];
+  };
+}
+
+export interface ContributionReport {
+  status: ReportAvailability;
+  reason?: string;
+  schedule: ContributionScheduleReport | null;
+  event_count: number;
+  events: ContributionReportEvent[];
+  integrity: {
+    status: "consistent" | "inconsistent" | "not_available";
+    event_amount_total: string | null;
+    external_cash_flow_total?: string | null;
+    cumulative_contributions: number | null;
+  };
+}
+
 export interface StrategyProvenanceRecord {
   signal_date: string;
   matched_rule_id: string | null;
@@ -317,17 +358,28 @@ export interface BacktestReport {
   };
   availability: Record<string, ReportAvailability>;
   summary_period: { start_date: string; end_date: string };
-  summary: Record<string, unknown>;
+  summary: {
+    account?: { ending_value?: number; unit?: string };
+    strategy_performance?: Record<string, unknown>;
+    benchmark?: {
+      status?: ReportAvailability;
+      ending_value?: MetricValue;
+      provenance?: { same_contribution_schedule?: boolean; [key: string]: unknown };
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
   capital: {
     initial_capital: number;
     cumulative_contributions: number;
     total_capital_invested: number | null;
   };
   profit: { investment_profit: number | null };
-  performance: Record<string, unknown>;
-  investor_experience: Record<string, unknown>;
+  performance: { twr_total_return?: MetricValue; [key: string]: unknown };
+  investor_experience: { xirr?: MetricValue; xirr_unit?: string; [key: string]: unknown };
   series_metadata: Record<string, unknown>;
   contributions: Array<Record<string, unknown>>;
+  contribution_report: ContributionReport;
   strategy_provenance: StrategyProvenanceReport;
   allocations: ReportAllocations;
   holdings: Record<string, unknown>;

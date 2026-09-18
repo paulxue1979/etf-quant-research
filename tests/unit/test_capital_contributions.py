@@ -311,6 +311,7 @@ def test_flow_adjusted_analytics_do_not_count_contribution_as_return() -> None:
     assert result.total_capital_invested == pytest.approx(110_000.0)
     assert result.investment_profit == pytest.approx(0.0)
     assert analysis.total_return.value == pytest.approx(0.0)
+    assert analysis.xirr.value == pytest.approx(0.0, abs=1e-8)
     assert analysis.max_drawdown.value == pytest.approx(0.0)
 
 

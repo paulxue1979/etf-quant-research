@@ -32,6 +32,7 @@ class BacktestReportProjectionService:
         benchmark = self._benchmark(run)
         strategy_provenance = self._strategy_provenance(run)
         holdings = self._holding_summary(run)
+        contribution_report = self._contribution_report(run)
         return {
             "report_schema_version": REPORT_SCHEMA_VERSION,
             "identity": {
@@ -47,7 +48,7 @@ class BacktestReportProjectionService:
                 "capital": "available",
                 "profit": "available",
                 "performance": "available",
-                "contributions": "available",
+                "contributions": contribution_report["status"],
                 "strategy_provenance": strategy_provenance["status"],
                 "holdings": holdings["status"],
                 "benchmark": benchmark["status"],
@@ -113,6 +114,7 @@ class BacktestReportProjectionService:
                 }
                 for item in result.contribution_events
             ],
+            "contribution_report": contribution_report,
             "strategy_provenance": strategy_provenance,
             "allocations": self._allocations(run, strategy_provenance),
             "holdings": holdings,
@@ -129,6 +131,110 @@ class BacktestReportProjectionService:
                 "backtest_configuration": _sanitize(result.configuration_snapshot),
             },
             "provenance": _sanitize(run.provenance),
+        }
+
+    @staticmethod
+    def _contribution_report(run: BacktestRun) -> dict[str, Any]:
+        result = run.backtest_result
+        if not run.contribution_provenance_available:
+            return {
+                "status": "not_available",
+                "reason": "legacy contribution provenance was not persisted for this run",
+                "schedule": None,
+                "event_count": 0,
+                "events": [],
+                "integrity": {
+                    "status": "not_available",
+                    "event_amount_total": None,
+                    "external_cash_flow_total": None,
+                    "cumulative_contributions": None,
+                },
+            }
+
+        raw_schedule = result.configuration_snapshot.get("contribution_schedule")
+        if isinstance(raw_schedule, Mapping):
+            frequency = str(raw_schedule.get("frequency", ""))
+            schedule = {
+                "enabled": True,
+                "frequency": frequency,
+                "amount": str(raw_schedule.get("amount", "")),
+                "requested_date": raw_schedule.get("requested_date"),
+                "currency": str(raw_schedule.get("currency", "USD")),
+                "requested_date_semantics": (
+                    "month_start" if frequency == "monthly" else "explicit_date"
+                ),
+            }
+        else:
+            schedule = {
+                "enabled": False,
+                "frequency": None,
+                "amount": None,
+                "requested_date": None,
+                "currency": "USD",
+                "requested_date_semantics": None,
+            }
+
+        ordered_events = sorted(
+            enumerate(result.contribution_events),
+            key=lambda pair: (
+                pair[1].effective_date,
+                pair[1].requested_date,
+                pair[0],
+            ),
+        )
+        events: list[dict[str, Any]] = []
+        for sequence, (_, event) in enumerate(ordered_events, start=1):
+            orders = tuple(
+                order
+                for order in result.orders
+                if order.date == event.effective_date
+                and order.rebalance_cause.value == "contribution"
+            )
+            order_ids = {order.order_id for order in orders}
+            fills = tuple(fill for fill in result.fills if fill.order_id in order_ids)
+            events.append(
+                {
+                    "sequence": sequence,
+                    "requested_date": event.requested_date.isoformat(),
+                    "effective_date": event.effective_date.isoformat(),
+                    "amount": canonical_decimal(event.amount),
+                    "currency": event.currency,
+                    "frequency": event.frequency.value,
+                    "source": "ContributionEvent",
+                    "strategy_signal": False,
+                    "deployment": {
+                        "cause": "contribution",
+                        "status": (
+                            "rebalance_executed"
+                            if orders
+                            else "no_contribution_rebalance_execution"
+                        ),
+                        "order_count": len(orders),
+                        "fill_count": len(fills),
+                        "symbols": sorted({order.symbol for order in orders}),
+                    },
+                }
+            )
+
+        event_total = sum((item.amount for item in result.contribution_events), Decimal("0"))
+        flow_total = sum((item.amount for item in result.external_cash_flows), Decimal("0"))
+        cumulative = Decimal(str(result.cumulative_contributions))
+        integrity_status = (
+            "consistent"
+            if event_total == cumulative and flow_total == cumulative
+            else "inconsistent"
+        )
+        return {
+            "status": "available",
+            "schedule": schedule,
+            "event_count": len(events),
+            "events": events,
+            "integrity": {
+                "status": integrity_status,
+                "event_amount_total": canonical_decimal(event_total),
+                "external_cash_flow_total": canonical_decimal(flow_total),
+                "cumulative_contributions": result.cumulative_contributions,
+            },
         }
 
     def series(

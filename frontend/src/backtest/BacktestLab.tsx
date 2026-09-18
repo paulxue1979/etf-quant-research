@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { BacktestApiError, backtestApi } from "./api";
 import { BacktestReportCharts } from "./BacktestReportCharts";
+import { CapitalResearchPanel } from "./CapitalResearchPanel";
 import { HoldingPeriodReport } from "./HoldingPeriodReport";
 import { ResearchProtocolPanel } from "./ResearchProtocolPanel";
 import type {
@@ -260,18 +261,7 @@ function Results({ run, report, reportSeries, reportLoading, reportError }: {
         <div className="backtest-metrics">{metrics.map(([label, metric, percentage]) => <MetricCard key={label} label={label} metric={metric} percentage={percentage} />)}</div>
       </section>
 
-      <section className="panel">
-        <div className="section-header compact"><div><span className="eyebrow">CAPITAL FLOWS</span><h2>Capital accounting</h2></div></div>
-        <div className="backtest-metrics">
-          {[
-            ["Initial Capital", result.initial_capital],
-            ["Cumulative contributions", result.cumulative_contributions],
-            ["Total capital invested", result.total_capital_invested],
-            ["Ending value", result.final_equity],
-            ["Investment profit", result.investment_profit],
-          ].map(([label, value]) => <div className="backtest-metric" key={label}><span>{label}</span><strong>{Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" })}</strong></div>)}
-        </div>
-      </section>
+      <CapitalResearchPanel report={report} loading={reportLoading} error={reportError} />
 
       <BacktestReportCharts report={report} series={reportSeries} loading={reportLoading} error={reportError} />
 

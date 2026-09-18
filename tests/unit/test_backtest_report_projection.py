@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from decimal import Decimal
 from types import MappingProxyType
 
 from backend.app.backtest_report_projection import (
     REPORT_SCHEMA_VERSION,
     BacktestReportProjectionService,
 )
-from backtest.models import AllocationPoint, RebalanceCause
+from backtest.models import (
+    AllocationPoint,
+    ContributionEvent,
+    ContributionFrequency,
+    ExternalCashFlow,
+    RebalanceCause,
+)
 from tests.unit.test_backtest_repository import _run
 
 
@@ -114,6 +121,94 @@ def test_projection_separates_capital_profit_and_strategy_metrics_without_recalc
         run.performance_analysis.total_return.to_dict()
     )
     assert report["investor_experience"]["xirr"] == run.performance_analysis.xirr.to_dict()
+
+
+def test_contribution_report_preserves_requested_dates_and_execution_context() -> None:
+    base = _run()
+    first = ContributionEvent(
+        frequency=ContributionFrequency.MONTHLY,
+        amount=Decimal("500"),
+        requested_date=date(2026, 1, 1),
+        effective_date=date(2026, 1, 3),
+    )
+    second = ContributionEvent(
+        frequency=ContributionFrequency.MONTHLY,
+        amount=Decimal("500"),
+        requested_date=date(2026, 1, 2),
+        effective_date=date(2026, 1, 3),
+    )
+    order = replace(base.backtest_result.orders[0], rebalance_cause=RebalanceCause.CONTRIBUTION)
+    result = replace(
+        base.backtest_result,
+        orders=(order,),
+        contribution_events=(second, first),
+        external_cash_flows=(
+            ExternalCashFlow(date=date(2026, 1, 3), amount=Decimal("500")),
+            ExternalCashFlow(date=date(2026, 1, 3), amount=Decimal("500")),
+        ),
+        cumulative_contributions=1_000,
+        total_capital_invested=11_000,
+        investment_profit=base.backtest_result.final_equity - 11_000,
+        configuration_snapshot=MappingProxyType(
+            {
+                **base.backtest_result.configuration_snapshot,
+                "contribution_schedule": {
+                    "frequency": "monthly",
+                    "amount": "500",
+                    "requested_date": None,
+                    "currency": "USD",
+                },
+            }
+        ),
+    )
+
+    report = BacktestReportProjectionService().project(replace(base, backtest_result=result))
+    contributions = report["contribution_report"]
+
+    assert contributions["status"] == "available"
+    assert contributions["schedule"] == {
+        "enabled": True,
+        "frequency": "monthly",
+        "amount": "500",
+        "requested_date": None,
+        "currency": "USD",
+        "requested_date_semantics": "month_start",
+    }
+    assert [item["sequence"] for item in contributions["events"]] == [1, 2]
+    assert [item["requested_date"] for item in contributions["events"]] == [
+        "2026-01-01",
+        "2026-01-02",
+    ]
+    assert {item["effective_date"] for item in contributions["events"]} == {"2026-01-03"}
+    assert all(item["strategy_signal"] is False for item in contributions["events"])
+    assert contributions["events"][0]["deployment"]["status"] == "rebalance_executed"
+    assert contributions["events"][0]["deployment"]["order_count"] == 1
+    assert contributions["integrity"]["status"] == "consistent"
+
+
+def test_no_dca_is_available_and_empty_but_legacy_contributions_are_unavailable() -> None:
+    base = _run()
+    current = BacktestReportProjectionService().project(base)["contribution_report"]
+    payload = base.to_dict()
+    for key in (
+        "contribution_events",
+        "external_cash_flows",
+        "cumulative_contributions",
+        "total_capital_invested",
+        "investment_profit",
+    ):
+        payload["backtest_result"].pop(key)
+    payload.pop("contribution_provenance_available")
+    legacy = type(base).from_dict(payload)
+    unavailable = BacktestReportProjectionService().project(legacy)["contribution_report"]
+
+    assert current["status"] == "available"
+    assert current["schedule"]["enabled"] is False
+    assert current["event_count"] == 0
+    assert current["events"] == []
+    assert unavailable["status"] == "not_available"
+    assert unavailable["events"] == []
+    assert "legacy" in unavailable["reason"]
 
 
 def test_projection_keeps_hold_previous_out_of_trade_count() -> None:

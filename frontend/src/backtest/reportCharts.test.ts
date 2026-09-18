@@ -23,6 +23,13 @@ function report(): BacktestReport {
     investor_experience: {},
     series_metadata: {},
     contributions: [],
+    contribution_report: {
+      status: "available",
+      schedule: { enabled: false, frequency: null, amount: null, requested_date: null, currency: "USD", requested_date_semantics: null },
+      event_count: 0,
+      integrity: { status: "consistent", event_amount_total: "0", external_cash_flow_total: "0", cumulative_contributions: 0 },
+      events: [],
+    },
     strategy_provenance: {},
     allocations: {},
     holdings: {},
@@ -84,6 +91,44 @@ describe("report chart projection", () => {
     expect(bundle.anchorDate).toBe("2025-01-01");
     expect(rangeForPreset(bundle, "1Y")).toEqual({ from: "2024-01-01", to: "2025-01-01" });
     expect(rangeForPreset(bundle, "MAX")).toEqual({ from: "2020-01-01", to: "2025-01-01" });
+  });
+
+  it("creates external-cash-flow markers without calling them strategy signals", () => {
+    const value = report();
+    value.contribution_report = {
+      status: "available",
+      schedule: { enabled: true, frequency: "monthly", amount: "1000", requested_date: null, currency: "USD", requested_date_semantics: "month_start" },
+      event_count: 1,
+      integrity: { status: "consistent", event_amount_total: "1000", cumulative_contributions: 1000 },
+      events: [{
+        sequence: 1,
+        requested_date: "2025-01-01",
+        effective_date: "2025-01-02",
+        amount: "1000",
+        currency: "USD",
+        frequency: "monthly",
+        source: "ContributionEvent",
+        strategy_signal: false,
+        deployment: { cause: "contribution", status: "rebalance_executed", order_count: 1, fill_count: 1, symbols: ["QQQ"] },
+      }],
+    };
+
+    const bundle = buildChartBundle(value, series());
+
+    expect(bundle.contributionMarkers).toEqual([{
+      date: "2025-01-02",
+      kind: "contribution",
+      label: "External Cash Flow · $1,000.00",
+      color: "#d2a956",
+      details: [
+        "Requested date: 2025-01-01",
+        "Effective date: 2025-01-02",
+        "Amount: $1,000.00",
+        "Schedule: monthly",
+        "Strategy signal: NONE",
+        "Contribution rebalance: executed",
+      ],
+    }]);
   });
 
   it("adapts canonical provenance into continuous regimes and meaningful markers", () => {

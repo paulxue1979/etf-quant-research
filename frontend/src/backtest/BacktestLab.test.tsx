@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./BacktestReportCharts", () => ({
+  BacktestReportCharts: () => <section aria-label="Core financial charts" />,
+}));
+
 import { BacktestLab } from "./BacktestLab";
 import { backtestApi } from "./api";
 
@@ -153,6 +157,51 @@ function researchHistory() {
   return { items, total: items.length, limit: 50, offset: 0, sort_by: "created_at", order: "desc" };
 }
 
+function reportPayload() {
+  return {
+    report_schema_version: "1.0",
+    identity: { backtest_run_id: "backtest-demo-1", strategy_id: "demo", strategy_version_id: "demo-v1", strategy_version_content_hash: "hash-demo", created_at: "2026-09-07T00:00:00Z", engine_version: "phase-3.0" },
+    availability: { contributions: "available", xirr: "available" },
+    summary_period: { start_date: "2025-01-01", end_date: "2025-01-03" },
+    summary: { account: { ending_value: 103000, unit: "USD" }, strategy_performance: {}, benchmark: { status: "not_available" } },
+    capital: { initial_capital: 100000, cumulative_contributions: 0, total_capital_invested: 100000 },
+    profit: { investment_profit: 3000 },
+    performance: { twr_total_return: { value: 0.03, status: "available", reason: null } },
+    investor_experience: { xirr: { value: 0.03, status: "available", reason: null }, xirr_unit: "annualized decimal return" },
+    series_metadata: {},
+    contributions: [],
+    contribution_report: {
+      status: "available",
+      schedule: { enabled: false, frequency: null, amount: null, requested_date: null, currency: "USD", requested_date_semantics: null },
+      event_count: 0,
+      events: [],
+      integrity: { status: "consistent", event_amount_total: "0", external_cash_flow_total: "0", cumulative_contributions: 0 },
+    },
+    strategy_provenance: {},
+    allocations: {},
+    holdings: {},
+    trades: {},
+    configuration: {},
+    provenance: {},
+  };
+}
+
+function reportSeriesPayload() {
+  const points = [{ date: "2025-01-01", value: 100000 }, { date: "2025-01-03", value: 103000 }];
+  return {
+    report_schema_version: "1.0",
+    identity: { backtest_run_id: "backtest-demo-1", strategy_version_id: "demo-v1" },
+    summary_period: { start_date: "2025-01-01", end_date: "2025-01-03" },
+    window: { from: null, to: null },
+    series: {
+      equity: { status: "available", points },
+      capital: { status: "available", points: [{ date: "2025-01-01", value: 100000 }, { date: "2025-01-03", value: 100000 }] },
+      twr: { status: "available", points: [{ date: "2025-01-01", value: 1 }, { date: "2025-01-03", value: 1.03 }] },
+      drawdown: { status: "available", points: [{ date: "2025-01-01", value: 0 }, { date: "2025-01-03", value: 0 }] },
+    },
+  };
+}
+
 function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
   return {
     protocol: {
@@ -208,6 +257,8 @@ function mockBacktestApi() {
     const url = String(input);
     if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
+    if (url.includes("/report/series?")) return new Response(JSON.stringify(reportSeriesPayload()), { status: 200 });
+    if (url.endsWith("/report")) return new Response(JSON.stringify(reportPayload()), { status: 200 });
     if (url.includes("/report/holdings")) return new Response(JSON.stringify({
       report_schema_version: "1.0",
       identity: { backtest_run_id: "backtest-demo-1", strategy_version_id: "demo-v1" },
@@ -245,7 +296,7 @@ describe("Backtest Lab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
 
     await waitFor(() => expect(screen.getByText("backtest-demo-1")).toBeInTheDocument());
-    expect(screen.getByText("3.00%", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getAllByText("3.00%", { selector: "strong" }).length).toBeGreaterThan(0);
     expect(screen.getByRole("img", { name: "Equity curve" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Drawdown curve" })).toBeInTheDocument();
     expect(screen.getAllByText("QQQ").length).toBeGreaterThan(0);
@@ -338,15 +389,15 @@ describe("Backtest Lab", () => {
     fireEvent.change(screen.getByLabelText("Contribution amount USD"), { target: { value: "500" } });
     fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
 
-    await waitFor(() => expect(screen.getByText("Capital accounting")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Capital Summary")).toBeInTheDocument());
     const request = fetchMock.mock.calls.find(([input, init]) =>
       String(input).endsWith("/backtests") && init?.method === "POST"
     );
     expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
       contribution_schedule: { frequency: "monthly", amount: "500" },
     });
-    expect(screen.getByText("Cumulative contributions")).toBeInTheDocument();
-    expect(screen.getByText("Investment profit")).toBeInTheDocument();
+    expect(screen.getByText("Cumulative Contributions")).toBeInTheDocument();
+    expect(screen.getByText("Investment Profit")).toBeInTheDocument();
   });
 
   it("rejects invalid enabled contribution input before calling the backend", async () => {

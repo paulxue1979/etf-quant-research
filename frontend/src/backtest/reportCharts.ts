@@ -39,7 +39,7 @@ export interface RegimePoint {
 
 export interface ChartMarker {
   date: string;
-  kind: "signal" | "execution";
+  kind: "signal" | "execution" | "contribution";
   label: string;
   color: string;
   details: string[];
@@ -55,6 +55,7 @@ export interface ChartBundle {
   targetAllocation: ChartSeries[];
   actualAllocation: ChartSeries[];
   strategyMarkers: ChartMarker[];
+  contributionMarkers: ChartMarker[];
   anchorDate: string | null;
   range: { from: string; to: string } | null;
 }
@@ -70,6 +71,7 @@ const COLORS = {
   cash: "#aeb8c1",
   signal: "#f1c878",
   execution: "#6bd7d0",
+  contribution: "#d2a956",
 };
 const ASSET_COLORS = ["#63c7c2", "#e3b85f", "#7fa8e8", "#d9879e", "#9fc45f", "#b997d9", "#d58e5c", "#75a9ad", "#c5cf72", "#e29170"];
 
@@ -265,6 +267,35 @@ function strategyMarkers(report: BacktestReport | null): ChartMarker[] {
   }).sort((left, right) => left.date.localeCompare(right.date) || left.kind.localeCompare(right.kind));
 }
 
+function contributionMarkers(report: BacktestReport | null): ChartMarker[] {
+  if (report?.contribution_report?.status !== "available") return [];
+  return report.contribution_report.events.flatMap((event) => {
+    const effectiveDate = parseReportDate(event.effective_date);
+    const amount = Number(event.amount);
+    if (!effectiveDate || !Number.isFinite(amount)) return [];
+    const formatted = amount.toLocaleString(undefined, {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    return [{
+      date: effectiveDate,
+      kind: "contribution" as const,
+      label: `External Cash Flow · ${formatted}`,
+      color: COLORS.contribution,
+      details: [
+        `Requested date: ${event.requested_date}`,
+        `Effective date: ${event.effective_date}`,
+        `Amount: ${formatted}`,
+        `Schedule: ${event.frequency}`,
+        "Strategy signal: NONE",
+        `Contribution rebalance: ${event.deployment.status === "rebalance_executed" ? "executed" : "not executed"}`,
+      ],
+    }];
+  });
+}
+
 export function buildChartBundle(report: BacktestReport | null, series: BacktestReportSeries | null): ChartBundle {
   const equity = makeSeries("equity", "Portfolio Value", "USD", COLORS.equity, reportSeries(series, "equity"));
   const capital = makeSeries("capital", "Capital Invested", "USD", COLORS.capital, reportSeries(series, "capital"), "step");
@@ -276,11 +307,13 @@ export function buildChartBundle(report: BacktestReport | null, series: Backtest
   const targetAllocation = allocationSeries(report?.allocations?.target, "target");
   const actualAllocation = allocationSeries(report?.allocations?.actual, "actual");
   const markers = strategyMarkers(report);
+  const capitalMarkers = contributionMarkers(report);
   const allSeries = [equity, capital, strategy, benchmark, drawdown, benchmarkDrawdown, ...targetAllocation, ...actualAllocation];
   const dates = [...new Set([
     ...allSeries.flatMap((item) => item.points.map((point) => point.date)),
     ...regime.map((point) => point.date),
     ...markers.map((marker) => marker.date),
+    ...capitalMarkers.map((marker) => marker.date),
   ])].sort();
   const provenanceStatus = report?.strategy_provenance?.status;
   return {
@@ -293,6 +326,7 @@ export function buildChartBundle(report: BacktestReport | null, series: Backtest
     targetAllocation,
     actualAllocation,
     strategyMarkers: markers,
+    contributionMarkers: capitalMarkers,
     anchorDate: dates.at(-1) ?? null,
     range: dates.length ? { from: dates[0], to: dates.at(-1) ?? dates[0] } : null,
   };

@@ -39,6 +39,9 @@ def test_report_summary_reads_persisted_run_without_running_backtest(client: Tes
     assert payload["allocations"]["target"]["status"] == "not_available"
     assert payload["allocations"]["actual"]["source"] == "BacktestResult.allocation_history"
     assert payload["allocations"]["cash_semantics"].endswith("SGOV remains an asset")
+    assert payload["contribution_report"]["status"] == "available"
+    assert payload["contribution_report"]["schedule"]["enabled"] is False
+    assert payload["contribution_report"]["event_count"] == 0
 
 
 def test_report_series_rejects_unknown_include_and_invalid_date_range(client: TestClient) -> None:

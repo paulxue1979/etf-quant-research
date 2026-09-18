@@ -83,6 +83,7 @@ def test_repository_round_trip_is_immutable_and_cross_instance(tmp_path) -> None
 
     assert restored == run
     assert restored is not run
+    assert restored.contribution_provenance_available is True
     assert repository.list() == (run,)
     assert repository.list("repo") == (run,)
 
@@ -122,6 +123,24 @@ def test_repository_round_trips_strategy_execution_provenance_and_loads_legacy_r
     assert restored.strategy_provenance == provenance_run.strategy_provenance
     assert restored.strategy_provenance is not provenance_run.strategy_provenance
     assert legacy.strategy_provenance is None
+
+
+def test_repository_marks_pre_contribution_artifacts_as_provenance_unavailable() -> None:
+    run = _run()
+    payload = run.to_dict()
+    payload.pop("contribution_provenance_available")
+    for key in (
+        "contribution_events",
+        "external_cash_flows",
+        "cumulative_contributions",
+        "total_capital_invested",
+        "investment_profit",
+    ):
+        payload["backtest_result"].pop(key)
+
+    restored = BacktestRun.from_dict(payload)
+
+    assert restored.contribution_provenance_available is False
 
 
 def test_repository_round_trips_holding_segments_and_marks_legacy_result_unavailable(

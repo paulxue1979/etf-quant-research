@@ -1,10 +1,11 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BacktestReport, BacktestReportSeries } from "./types";
 
 vi.mock("./FinancialChart", () => ({
-  FinancialChart: ({ title, markers = [] }: { title: string; markers?: unknown[] }) => <section aria-label={title} data-marker-count={markers.length}><h3>{title}</h3></section>,
+  FinancialChart: ({ title, markers = [], showDollarDifference = false }: { title: string; markers?: unknown[]; showDollarDifference?: boolean }) => <section aria-label={title} data-marker-count={markers.length} data-dollar-difference={showDollarDifference}><h3>{title}</h3></section>,
 }));
 
 vi.mock("./StrategyRegimeStrip", () => ({
@@ -12,6 +13,8 @@ vi.mock("./StrategyRegimeStrip", () => ({
 }));
 
 import { BacktestReportCharts } from "./BacktestReportCharts";
+
+afterEach(cleanup);
 
 function report(): BacktestReport {
   return {
@@ -33,6 +36,13 @@ function report(): BacktestReport {
     investor_experience: {},
     series_metadata: {},
     contributions: [],
+    contribution_report: {
+      status: "available",
+      schedule: { enabled: false, frequency: null, amount: null, requested_date: null, currency: "USD", requested_date_semantics: null },
+      event_count: 0,
+      integrity: { status: "consistent", event_amount_total: "0", external_cash_flow_total: "0", cumulative_contributions: 0 },
+      events: [],
+    },
     strategy_provenance: {
       status: "available",
       records: [{ signal_date: "2025-01-02", matched_rule_id: "risk-on", allocation_source: "rule_match", target_allocation: { QQQ: 1 }, execution_date: "2025-01-03", execution_status: "submitted", omission_reason: null }],
@@ -84,5 +94,24 @@ describe("BacktestReportCharts", () => {
 
     rerender(<BacktestReportCharts report={null} series={null} error="report unavailable" />);
     expect(screen.getByText("report unavailable")).toBeInTheDocument();
+  });
+
+  it("keeps contribution markers opt-in on the synchronized portfolio chart", async () => {
+    const value = report();
+    value.contribution_report = {
+      status: "available",
+      schedule: { enabled: true, frequency: "monthly", amount: "1000", requested_date: null, currency: "USD", requested_date_semantics: "month_start" },
+      event_count: 1,
+      integrity: { status: "consistent", event_amount_total: "1000", external_cash_flow_total: "1000", cumulative_contributions: 1000 },
+      events: [{ sequence: 1, requested_date: "2025-01-01", effective_date: "2025-01-02", amount: "1000", currency: "USD", frequency: "monthly", source: "ContributionEvent", strategy_signal: false, deployment: { cause: "contribution", status: "rebalance_executed", order_count: 1, fill_count: 1, symbols: ["QQQ"] } }],
+    };
+    const user = userEvent.setup();
+    render(<BacktestReportCharts report={value} series={reportSeries()} />);
+
+    const chart = screen.getByLabelText("Portfolio Value vs Capital Invested");
+    expect(chart).toHaveAttribute("data-marker-count", "0");
+    expect(chart).toHaveAttribute("data-dollar-difference", "true");
+    await user.click(screen.getByRole("checkbox", { name: "Show contributions" }));
+    expect(chart).toHaveAttribute("data-marker-count", "1");
   });
 });

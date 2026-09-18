@@ -56,6 +56,7 @@ class BacktestRun:
     provenance: Mapping[str, Any]
     strategy_provenance: Mapping[str, Any] | None = None
     benchmark_evaluation: Mapping[str, Any] | None = None
+    contribution_provenance_available: bool = True
 
     def __post_init__(self) -> None:
         for label in ("backtest_run_id", "strategy_id", "strategy_version_id"):
@@ -89,6 +90,8 @@ class BacktestRun:
             self.benchmark_evaluation, Mapping
         ):
             raise TypeError("benchmark_evaluation must be a mapping or None")
+        if not isinstance(self.contribution_provenance_available, bool):
+            raise TypeError("contribution_provenance_available must be boolean")
         object.__setattr__(
             self,
             "strategy_version_content_hash",
@@ -155,14 +158,26 @@ class BacktestRun:
             "provenance": dict(self.provenance),
             "strategy_provenance": _thaw_json_value(self.strategy_provenance),
             "benchmark_evaluation": _thaw_json_value(self.benchmark_evaluation),
+            "contribution_provenance_available": self.contribution_provenance_available,
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> BacktestRun:
         if not isinstance(payload, Mapping):
             raise ValueError("backtest run payload must be an object")
-        result = deserialize_backtest_result(payload["backtest_result"])
+        result_payload = payload["backtest_result"]
+        result = deserialize_backtest_result(result_payload)
         analysis = deserialize_performance_analysis(payload["performance_analysis"])
+        inferred_contribution_provenance = isinstance(result_payload, Mapping) and all(
+            key in result_payload
+            for key in (
+                "contribution_events",
+                "external_cash_flows",
+                "cumulative_contributions",
+                "total_capital_invested",
+                "investment_profit",
+            )
+        )
         return cls(
             backtest_run_id=str(payload["backtest_run_id"]),
             strategy_id=str(payload["strategy_id"]),
@@ -174,6 +189,10 @@ class BacktestRun:
             provenance=payload["provenance"],
             strategy_provenance=payload.get("strategy_provenance"),
             benchmark_evaluation=payload.get("benchmark_evaluation"),
+            contribution_provenance_available=payload.get(
+                "contribution_provenance_available",
+                inferred_contribution_provenance,
+            ),
         )
 
 
