@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { BacktestApiError, backtestApi } from "./api";
+import { BacktestReportCharts } from "./BacktestReportCharts";
 import { ResearchProtocolPanel } from "./ResearchProtocolPanel";
 import type {
   BacktestRequest,
+  BacktestReport,
+  BacktestReportSeries,
   BacktestRun,
   ComparisonSeries,
   ContributionFrequency,
@@ -215,7 +218,13 @@ function ComparisonView({ comparison }: { comparison: ResearchComparison }) {
   );
 }
 
-function Results({ run }: { run: BacktestRun }) {
+function Results({ run, report, reportSeries, reportLoading, reportError }: {
+  run: BacktestRun;
+  report: BacktestReport | null;
+  reportSeries: BacktestReportSeries | null;
+  reportLoading: boolean;
+  reportError: string | null;
+}) {
   const analysis = run.performance_analysis;
   const result = run.backtest_result;
   const metrics = useMemo(
@@ -263,6 +272,8 @@ function Results({ run }: { run: BacktestRun }) {
         </div>
       </section>
 
+      <BacktestReportCharts report={report} series={reportSeries} loading={reportLoading} error={reportError} />
+
       <section className="panel chart-grid">
         <SeriesChart label="Equity curve" items={result.equity_curve} readValue={(item: EquityPoint) => item.total_equity} color="#6bd7d0" />
         <SeriesChart label="Drawdown curve" items={analysis.drawdown_curve} readValue={(item: DrawdownPoint) => item.value} color="#ff8b8b" />
@@ -293,6 +304,10 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
   const [versionId, setVersionId] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [report, setReport] = useState<BacktestReport | null>(null);
+  const [reportSeries, setReportSeries] = useState<BacktestReportSeries | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [researchRuns, setResearchRuns] = useState<ResearchBacktestSummary[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [researchSortBy, setResearchSortBy] = useState<ResearchSortBy>("created_at");
@@ -359,6 +374,9 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     event.preventDefault();
     setError(null);
     setRun(null);
+    setReport(null);
+    setReportSeries(null);
+    setReportError(null);
     if (!strategyId || !versionId) {
       setError("Select a strategy and an immutable version before running.");
       return;
@@ -396,7 +414,21 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     };
     setBusy("run");
     try {
-      setRun(await backtestApi.create(request));
+      const created = await backtestApi.create(request);
+      setRun(created);
+      setReportLoading(true);
+      try {
+        const [nextReport, nextSeries] = await Promise.all([
+          backtestApi.getReport(created.backtest_run_id),
+          backtestApi.getReportSeries(created.backtest_run_id, ["equity", "capital", "twr", "drawdown", "benchmark_twr", "benchmark_drawdown"]),
+        ]);
+        setReport(nextReport);
+        setReportSeries(nextSeries);
+      } catch (reason) {
+        setReportError(reason instanceof BacktestApiError ? reason.message : "Unable to load versioned report series.");
+      } finally {
+        setReportLoading(false);
+      }
       void loadResearchRuns();
     } catch (reason) {
       setError(reason instanceof BacktestApiError ? reason.message : "Backtest request failed.");
@@ -460,7 +492,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>
-      {run && <Results run={run} />}
+      {run && <Results run={run} report={report} reportSeries={reportSeries} reportLoading={reportLoading} reportError={reportError} />}
       <section className="research-workspace">
         {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
         <ResearchProtocolPanel

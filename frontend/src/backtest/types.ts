@@ -223,12 +223,19 @@ export type BacktestReportSeriesName =
   | "benchmark_twr"
   | "benchmark_drawdown";
 
+export interface BacktestReportSeriesPayload {
+  status?: ReportAvailability;
+  reason?: string | null;
+  points?: Array<{ date: string; value: number }>;
+  unit?: string;
+}
+
 export interface BacktestReportSeries {
   report_schema_version: "1.0";
   identity: { backtest_run_id: string; strategy_version_id: string };
   summary_period: { start_date: string; end_date: string };
   window: { from: string | null; to: string | null };
-  series: Partial<Record<BacktestReportSeriesName, Record<string, unknown>>>;
+  series: Partial<Record<BacktestReportSeriesName, BacktestReportSeriesPayload>>;
 }
 
 export type ResearchSortBy =
