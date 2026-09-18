@@ -31,8 +31,13 @@ def test_report_summary_reads_persisted_run_without_running_backtest(client: Tes
     response = client.get("/research/backtests/repo-run/report")
 
     assert response.status_code == 200
-    assert response.json()["report_schema_version"] == "1.0"
-    assert response.json()["identity"]["backtest_run_id"] == "repo-run"
+    payload = response.json()
+    assert payload["report_schema_version"] == "1.0"
+    assert payload["identity"]["backtest_run_id"] == "repo-run"
+    assert payload["strategy_provenance"]["status"] == "not_available"
+    assert payload["allocations"]["target"]["status"] == "not_available"
+    assert payload["allocations"]["actual"]["source"] == "BacktestResult.allocation_history"
+    assert payload["allocations"]["cash_semantics"].endswith("SGOV remains an asset")
 
 
 def test_report_series_rejects_unknown_include_and_invalid_date_range(client: TestClient) -> None:

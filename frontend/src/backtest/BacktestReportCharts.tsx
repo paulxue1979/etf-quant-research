@@ -4,6 +4,7 @@ import type { BacktestReport, BacktestReportSeries } from "./types";
 import { ChartSyncController } from "./chartSync";
 import { FinancialChart } from "./FinancialChart";
 import { buildChartBundle, rangeForPreset } from "./reportCharts";
+import { StrategyRegimeStrip } from "./StrategyRegimeStrip";
 
 interface BacktestReportChartsProps {
   report: BacktestReport | null;
@@ -21,6 +22,9 @@ export function BacktestReportCharts({ report, series, loading = false, error = 
   const registerPortfolio = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("portfolio", chart), [sync]);
   const registerPerformance = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("performance", chart), [sync]);
   const registerDrawdown = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("drawdown", chart), [sync]);
+  const registerRegime = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("regime", chart), [sync]);
+  const registerTargetAllocation = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("target-allocation", chart), [sync]);
+  const registerActualAllocation = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("actual-allocation", chart), [sync]);
   const selectRange = (preset: typeof presets[number]) => {
     const range = rangeForPreset(bundle, preset);
     setSelectedRange(preset);
@@ -35,6 +39,9 @@ export function BacktestReportCharts({ report, series, loading = false, error = 
       <FinancialChart title="Portfolio Value" description="Account value and cumulative capital invested" series={bundle.portfolio} height={500} onReady={registerPortfolio} />
       <FinancialChart title="Strategy Performance" description="Normalized TWR with optional benchmark" series={bundle.performance} height={500} onReady={registerPerformance} />
       <FinancialChart title="Drawdown" description="Percentage decline from normalized wealth peaks" series={bundle.drawdown} height={320} onReady={registerDrawdown} />
+      <StrategyRegimeStrip points={bundle.regime} status={bundle.regimeStatus} reason={bundle.regimeReason} height={140} onReady={registerRegime} />
+      <FinancialChart title="Target Allocation" description="Strategy intent resolved at the signal close" series={bundle.targetAllocation} markers={bundle.strategyMarkers} height={340} onReady={registerTargetAllocation} />
+      <FinancialChart title="Actual Allocation" description="Portfolio reality after integer-share execution, costs, and cash remainder" series={bundle.actualAllocation} height={340} onReady={registerActualAllocation} />
     </div>
   </section>;
 }

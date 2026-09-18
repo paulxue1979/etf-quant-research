@@ -85,4 +85,106 @@ describe("report chart projection", () => {
     expect(rangeForPreset(bundle, "1Y")).toEqual({ from: "2024-01-01", to: "2025-01-01" });
     expect(rangeForPreset(bundle, "MAX")).toEqual({ from: "2020-01-01", to: "2025-01-01" });
   });
+
+  it("adapts canonical provenance into continuous regimes and meaningful markers", () => {
+    const value = report();
+    value.strategy_provenance = {
+      status: "available",
+      records: [
+        { signal_date: "2025-01-02", matched_rule_id: "buy", allocation_source: "rule_match", target_allocation: { QQQ: 1 }, execution_date: "2025-01-03", execution_status: "submitted", omission_reason: null },
+        { signal_date: "2025-01-03", matched_rule_id: null, allocation_source: "hold_previous", target_allocation: { QQQ: 1 }, execution_date: "2025-01-04", execution_status: "submitted", omission_reason: null },
+        { signal_date: "2025-01-04", matched_rule_id: "sell", allocation_source: "rule_match", target_allocation: {}, execution_date: null, execution_status: "omitted", omission_reason: "no future trading day in backtest range" },
+      ],
+      markers: [
+        { date: "2025-01-02", marker_type: "signal", signal_date: "2025-01-02", allocation_source: "rule_match", matched_rule_id: "buy", target_allocation: { QQQ: 1 }, execution_date: "2025-01-03", execution_status: "submitted" },
+        { date: "2025-01-03", marker_type: "execution", signal_date: "2025-01-02", execution_date: "2025-01-03", execution_status: "filled", rebalance_cause: "target", order_count: 1, fill_count: 1 },
+        { date: "2025-01-04", marker_type: "signal", signal_date: "2025-01-04", allocation_source: "rule_match", matched_rule_id: "sell", target_allocation: {}, execution_date: null, execution_status: "omitted" },
+        { date: "2025-01-05", marker_type: "execution", signal_date: "2025-01-05", execution_date: "2025-01-05", execution_status: "filled", rebalance_cause: "contribution", order_count: 1, fill_count: 1 },
+      ],
+    };
+    value.allocations = {
+      target: {
+        status: "available",
+        timeline: [
+          { date: "2025-01-02", asset_weights: { QQQ: 1 }, cash_weight: 0, allocation_source: "rule_match", matched_rule_id: "buy" },
+          { date: "2025-01-03", asset_weights: { QQQ: 1 }, cash_weight: 0, allocation_source: "hold_previous", matched_rule_id: null },
+          { date: "2025-01-04", asset_weights: {}, cash_weight: 1, allocation_source: "rule_match", matched_rule_id: "sell" },
+        ],
+        asset_symbols: ["QQQ"],
+      },
+      actual: { status: "available", timeline: [], asset_symbols: [] },
+      cash_semantics: "cash is ledger cash; SGOV remains an asset",
+    };
+
+    const bundle = buildChartBundle(value, series());
+
+    expect(bundle.regime.map((point) => [point.date, point.label, point.allocationLabel])).toEqual([
+      ["2025-01-02", "buy", "QQQ"],
+      ["2025-01-03", "Hold Previous", "QQQ"],
+      ["2025-01-04", "sell", "Cash"],
+    ]);
+    expect(bundle.strategyMarkers.map((marker) => [marker.kind, marker.date, marker.label])).toEqual([
+      ["signal", "2025-01-02", "Signal · buy"],
+      ["execution", "2025-01-03", "Execution · TARGET"],
+      ["signal", "2025-01-04", "Signal · sell"],
+      ["execution", "2025-01-05", "Execution · CONTRIBUTION"],
+    ]);
+    expect(bundle.strategyMarkers.filter((marker) => marker.kind === "signal")).toHaveLength(2);
+    expect(bundle.strategyMarkers.at(2)?.details).toContain("Execution: Not executed");
+  });
+
+  it("builds dynamic target and actual allocation series without treating SGOV as cash", () => {
+    const value = report();
+    value.allocations = {
+      target: {
+        status: "available",
+        timeline: [{ date: "2025-01-02", asset_weights: { QQQ: 0.6, TQQQ: 0.3, SGOV: 0.1 }, cash_weight: 0, allocation_source: "rule_match", matched_rule_id: "mixed" }],
+        asset_symbols: ["QQQ", "SGOV", "TQQQ"],
+      },
+      actual: {
+        status: "available",
+        timeline: [{ date: "2025-01-03", asset_weights: { QQQ: 0.58, TQQQ: 0.28, SGOV: 0.09 }, target_asset_weights: { QQQ: 0.6, TQQQ: 0.3, SGOV: 0.1 }, cash_weight: 0.05 }],
+        asset_symbols: ["QQQ", "SGOV", "TQQQ"],
+      },
+      cash_semantics: "cash is ledger cash; SGOV remains an asset",
+    };
+
+    const bundle = buildChartBundle(value, series());
+
+    expect(bundle.targetAllocation.map((item) => item.label)).toEqual(["QQQ", "SGOV", "TQQQ", "Cash"]);
+    expect(bundle.actualAllocation.map((item) => item.label)).toEqual(["QQQ", "SGOV", "TQQQ", "Cash"]);
+    expect(bundle.targetAllocation.find((item) => item.label === "SGOV")?.points).toEqual([{ date: "2025-01-02", value: 0.1 }]);
+    expect(bundle.targetAllocation.find((item) => item.label === "Cash")?.points).toEqual([{ date: "2025-01-02", value: 0 }]);
+    expect(bundle.actualAllocation.find((item) => item.label === "Cash")?.points).toEqual([{ date: "2025-01-03", value: 0.05 }]);
+  });
+
+  it("labels fallback and mixed multi-asset regimes without hard-coded risk states", () => {
+    const value = report();
+    value.strategy_provenance = {
+      status: "available",
+      records: [
+        { signal_date: "2025-01-02", matched_rule_id: null, allocation_source: "fallback", target_allocation: { SGOV: 1 }, execution_date: "2025-01-03", execution_status: "submitted", omission_reason: null },
+        { signal_date: "2025-01-03", matched_rule_id: "balanced", allocation_source: "rule_match", target_allocation: { QQQ: 0.6, TQQQ: 0.3, SGOV: 0.1 }, execution_date: "2025-01-04", execution_status: "submitted", omission_reason: null },
+      ],
+      markers: [],
+    };
+    value.allocations = {
+      target: {
+        status: "available",
+        timeline: [
+          { date: "2025-01-02", asset_weights: { SGOV: 1 }, cash_weight: 0, allocation_source: "fallback", matched_rule_id: null },
+          { date: "2025-01-03", asset_weights: { QQQ: 0.6, TQQQ: 0.3, SGOV: 0.1 }, cash_weight: 0, allocation_source: "rule_match", matched_rule_id: "balanced" },
+        ],
+        asset_symbols: ["QQQ", "SGOV", "TQQQ"],
+      },
+      actual: { status: "available", timeline: [], asset_symbols: [] },
+    };
+
+    const regimes = buildChartBundle(value, series()).regime;
+
+    expect(regimes.map((point) => [point.label, point.allocationLabel])).toEqual([
+      ["Fallback", "SGOV"],
+      ["balanced", "Mixed Allocation"],
+    ]);
+  });
 });

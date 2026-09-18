@@ -239,11 +239,23 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .financial-chart-state.not_available, .financial-chart-state.not_evaluable { color: var(--muted); }
 .financial-chart-tooltip { display: grid; gap: 5px; position: absolute; z-index: 2; top: 52px; right: 16px; min-width: 170px; padding: 9px 10px; border: 1px solid #38505b; border-radius: 5px; background: #0c1115e8; box-shadow: 0 8px 22px #00000033; font-size: 11px; pointer-events: none; }
 .financial-chart-tooltip span { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.financial-chart-tooltip .marker-detail { padding-top: 3px; border-top: 1px solid #293b44; color: #c8d3d8; }
 .financial-chart-tooltip i, .financial-chart-legend i { display: inline-block; flex: 0 0 auto; width: 10px; height: 3px; }
 .financial-chart-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; color: var(--muted); font-size: 11px; }
 .financial-chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .financial-chart-legend small { color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .financial-chart-legend .is-unavailable { opacity: .65; }
+.marker-legend, .regime-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 16px; margin-top: 11px; color: var(--muted); font-size: 11px; }
+.marker-legend span, .regime-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.marker-legend i { display: inline-grid; place-items: center; width: 17px; height: 17px; border: 1px solid currentColor; border-radius: 50%; font-style: normal; font-size: 9px; }
+.marker-legend .signal-marker { color: #f1c878; }
+.marker-legend .execution-marker { color: #6bd7d0; }
+.regime-strip .financial-chart-canvas { border-bottom: 1px solid #2b3942; }
+.regime-legend i { display: inline-block; width: 13px; height: 7px; border-radius: 2px; }
+.regime-legend .rule-match { background: #58b9b4; }
+.regime-legend .fallback { background: #d2a956; }
+.regime-legend .hold-previous { background: #7f97a3; }
+.regime-legend small { flex: 1 1 240px; color: var(--muted); font-size: 10px; }
 .range-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .range-controls .button { min-width: 48px; padding: 7px 9px; }
 .provenance-panel { display: grid; gap: 12px; }

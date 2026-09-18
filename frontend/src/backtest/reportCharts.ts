@@ -1,4 +1,12 @@
-import type { BacktestReport, BacktestReportSeries, BacktestReportSeriesName, BacktestReportSeriesPayload } from "./types";
+import type {
+  AllocationTimeline,
+  BacktestReport,
+  BacktestReportSeries,
+  BacktestReportSeriesName,
+  BacktestReportSeriesPayload,
+  StrategyProvenanceRecord,
+  StrategyTimelineMarker,
+} from "./types";
 
 export type ChartStatus = "loading" | "available" | "empty" | "not_available" | "not_evaluable" | "error";
 export type ChartUnit = "USD" | "normalized" | "percent";
@@ -19,10 +27,34 @@ export interface ChartSeries {
   reason?: string;
 }
 
+export interface RegimePoint {
+  date: string;
+  label: string;
+  source: string;
+  allocationLabel: string;
+  targetAllocation: Record<string, number>;
+  isContinuity: boolean;
+  color: string;
+}
+
+export interface ChartMarker {
+  date: string;
+  kind: "signal" | "execution";
+  label: string;
+  color: string;
+  details: string[];
+}
+
 export interface ChartBundle {
   portfolio: ChartSeries[];
   performance: ChartSeries[];
   drawdown: ChartSeries[];
+  regime: RegimePoint[];
+  regimeStatus: ChartStatus;
+  regimeReason?: string;
+  targetAllocation: ChartSeries[];
+  actualAllocation: ChartSeries[];
+  strategyMarkers: ChartMarker[];
   anchorDate: string | null;
   range: { from: string; to: string } | null;
 }
@@ -35,7 +67,11 @@ const COLORS = {
   benchmark: "#85d49a",
   drawdown: "#ff8b8b",
   benchmarkDrawdown: "#b993f7",
+  cash: "#aeb8c1",
+  signal: "#f1c878",
+  execution: "#6bd7d0",
 };
+const ASSET_COLORS = ["#63c7c2", "#e3b85f", "#7fa8e8", "#d9879e", "#9fc45f", "#b997d9", "#d58e5c", "#75a9ad", "#c5cf72", "#e29170"];
 
 export function parseReportDate(value: unknown): string | null {
   if (typeof value !== "string" || !ISO_DATE.test(value)) return null;
@@ -89,6 +125,146 @@ export function benchmarkLabel(report: BacktestReport | null): string {
   return "Benchmark unavailable";
 }
 
+function allocationStatus(timeline: AllocationTimeline | undefined): { status: ChartStatus; reason?: string } {
+  if (timeline?.status === "not_available" || timeline?.status === "not_evaluable") {
+    return { status: timeline.status, reason: timeline.reason };
+  }
+  return { status: timeline?.timeline?.length ? "available" : "empty" };
+}
+
+function allocationSeries(timeline: AllocationTimeline | undefined, kind: "target" | "actual"): ChartSeries[] {
+  const state = allocationStatus(timeline);
+  const label = kind === "target" ? "Target Allocation" : "Actual Allocation";
+  if (state.status !== "available") {
+    return [{ key: `${kind}-allocation`, label, unit: "percent", color: COLORS.cash, lineType: kind === "target" ? "step" : "line", points: [], ...state }];
+  }
+  const rows = (timeline?.timeline ?? []).flatMap((item) => {
+    const date = parseReportDate(item?.date);
+    return date ? [{ ...item, date }] : [];
+  });
+  const symbols = new Set((timeline?.asset_symbols ?? []).filter((symbol) => typeof symbol === "string" && symbol.trim()));
+  for (const row of rows) for (const symbol of Object.keys(row.asset_weights ?? {})) symbols.add(symbol);
+  const sortedSymbols = [...symbols].sort();
+  const result = sortedSymbols.map((symbol, index): ChartSeries => ({
+    key: `${kind}-${symbol}`,
+    label: symbol,
+    unit: "percent",
+    color: ASSET_COLORS[index % ASSET_COLORS.length],
+    lineType: kind === "target" ? "step" : "line",
+    points: rows.flatMap((row) => {
+      const value = Number(row.asset_weights?.[symbol] ?? 0);
+      return Number.isFinite(value) ? [{ date: row.date, value }] : [];
+    }),
+    status: "available",
+  }));
+  result.push({
+    key: `${kind}-Cash`,
+    label: "Cash",
+    unit: "percent",
+    color: COLORS.cash,
+    lineType: kind === "target" ? "step" : "line",
+    points: rows.flatMap((row) => {
+      const value = Number(row.cash_weight);
+      return Number.isFinite(value) ? [{ date: row.date, value }] : [];
+    }),
+    status: "available",
+  });
+  return result;
+}
+
+function allocationLabel(record: StrategyProvenanceRecord, target: AllocationTimeline | undefined): string {
+  const row = target?.timeline?.find((item) => item.date === record.signal_date);
+  const active = Object.entries(record.target_allocation ?? {}).filter(([, weight]) => Number(weight) > 1e-12).map(([symbol]) => symbol).sort();
+  if (!active.length) return "Cash";
+  if (active.length > 1 || Number(row?.cash_weight ?? 0) > 1e-12) return "Mixed Allocation";
+  return active[0];
+}
+
+function regimeLabel(record: StrategyProvenanceRecord): string {
+  if (record.allocation_source === "hold_previous") return "Hold Previous";
+  if (record.allocation_source === "fallback") return "Fallback";
+  return record.matched_rule_id?.trim() || "Rule Match";
+}
+
+function regimeColor(source: string): string {
+  if (source === "hold_previous") return "#7f97a3";
+  if (source === "fallback") return "#d2a956";
+  return "#58b9b4";
+}
+
+function regimePoints(report: BacktestReport | null): RegimePoint[] {
+  const records = report?.strategy_provenance?.records;
+  if (!Array.isArray(records)) return [];
+  return records.flatMap((record) => {
+    const date = parseReportDate(record?.signal_date);
+    if (!date || typeof record?.allocation_source !== "string") return [];
+    return [{
+      date,
+      label: regimeLabel(record),
+      source: record.allocation_source,
+      allocationLabel: allocationLabel(record, report?.allocations?.target),
+      targetAllocation: record.target_allocation ?? {},
+      isContinuity: record.allocation_source === "hold_previous",
+      color: regimeColor(record.allocation_source),
+    }];
+  });
+}
+
+function formatAllocation(allocation: Record<string, number> | undefined): string {
+  const entries = Object.entries(allocation ?? {}).filter(([, value]) => Number.isFinite(Number(value))).sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) return "Cash 100.00%";
+  return entries.map(([symbol, value]) => `${symbol} ${(Number(value) * 100).toFixed(2)}%`).join(" · ");
+}
+
+function signalMarker(marker: StrategyTimelineMarker, date: string): ChartMarker {
+  const rule = marker.matched_rule_id?.trim() || (marker.allocation_source === "fallback" ? "Fallback" : "Rule Match");
+  const omitted = marker.execution_status === "omitted" || !marker.execution_date;
+  return {
+    date,
+    kind: "signal",
+    label: `Signal · ${rule}`,
+    color: COLORS.signal,
+    details: [
+      `Signal date: ${marker.signal_date ?? date}`,
+      `Rule: ${rule}`,
+      `Allocation source: ${marker.allocation_source ?? "N/A"}`,
+      `Target: ${formatAllocation(marker.target_allocation)}`,
+      omitted ? "Execution: Not executed" : `Expected execution: ${marker.execution_date}`,
+      `Status: ${marker.execution_status ?? "N/A"}`,
+    ],
+  };
+}
+
+function executionMarker(marker: StrategyTimelineMarker, date: string): ChartMarker {
+  const cause = marker.rebalance_cause?.toUpperCase() || "TARGET";
+  const symbols = marker.symbols?.length ? marker.symbols.join(", ") : "N/A";
+  return {
+    date,
+    kind: "execution",
+    label: `Execution · ${cause}`,
+    color: COLORS.execution,
+    details: [
+      `Execution date: ${marker.execution_date ?? date}`,
+      `Related signal date: ${marker.signal_date ?? "N/A"}`,
+      `Cause: ${cause}`,
+      `Orders / fills: ${marker.order_count ?? 0} / ${marker.fill_count ?? 0}`,
+      `Symbols: ${symbols}`,
+    ],
+  };
+}
+
+function strategyMarkers(report: BacktestReport | null): ChartMarker[] {
+  const markers = report?.strategy_provenance?.markers;
+  if (!Array.isArray(markers)) return [];
+  return markers.flatMap((marker) => {
+    const date = parseReportDate(marker?.date);
+    if (!date) return [];
+    if (marker.marker_type === "signal") return [signalMarker(marker, date)];
+    if (marker.marker_type === "execution") return [executionMarker(marker, date)];
+    return [];
+  }).sort((left, right) => left.date.localeCompare(right.date) || left.kind.localeCompare(right.kind));
+}
+
 export function buildChartBundle(report: BacktestReport | null, series: BacktestReportSeries | null): ChartBundle {
   const equity = makeSeries("equity", "Portfolio Value", "USD", COLORS.equity, reportSeries(series, "equity"));
   const capital = makeSeries("capital", "Capital Invested", "USD", COLORS.capital, reportSeries(series, "capital"), "step");
@@ -96,12 +272,27 @@ export function buildChartBundle(report: BacktestReport | null, series: Backtest
   const benchmark = makeSeries("benchmark_twr", benchmarkLabel(report), "normalized", COLORS.benchmark, reportSeries(series, "benchmark_twr"));
   const drawdown = makeSeries("drawdown", "Strategy Drawdown", "percent", COLORS.drawdown, reportSeries(series, "drawdown"));
   const benchmarkDrawdown = makeSeries("benchmark_drawdown", `${benchmarkLabel(report)} Drawdown`, "percent", COLORS.benchmarkDrawdown, reportSeries(series, "benchmark_drawdown"));
-  const allSeries = [equity, capital, strategy, benchmark, drawdown, benchmarkDrawdown];
-  const dates = [...new Set(allSeries.flatMap((item) => item.points.map((point) => point.date)))].sort();
+  const regime = regimePoints(report);
+  const targetAllocation = allocationSeries(report?.allocations?.target, "target");
+  const actualAllocation = allocationSeries(report?.allocations?.actual, "actual");
+  const markers = strategyMarkers(report);
+  const allSeries = [equity, capital, strategy, benchmark, drawdown, benchmarkDrawdown, ...targetAllocation, ...actualAllocation];
+  const dates = [...new Set([
+    ...allSeries.flatMap((item) => item.points.map((point) => point.date)),
+    ...regime.map((point) => point.date),
+    ...markers.map((marker) => marker.date),
+  ])].sort();
+  const provenanceStatus = report?.strategy_provenance?.status;
   return {
     portfolio: [equity, capital],
     performance: [strategy, benchmark],
     drawdown: [drawdown, benchmarkDrawdown],
+    regime,
+    regimeStatus: provenanceStatus === "not_available" || provenanceStatus === "not_evaluable" ? provenanceStatus : regime.length ? "available" : "empty",
+    regimeReason: report?.strategy_provenance?.reason,
+    targetAllocation,
+    actualAllocation,
+    strategyMarkers: markers,
     anchorDate: dates.at(-1) ?? null,
     range: dates.length ? { from: dates[0], to: dates.at(-1) ?? dates[0] } : null,
   };

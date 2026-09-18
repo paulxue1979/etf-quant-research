@@ -1,9 +1,11 @@
-import type { IChartApi, IRange, ISeriesApi, MouseEventParams, Time } from "lightweight-charts";
+import type { IChartApi, IRange, ISeriesApi, MouseEventParams, SeriesType, Time } from "lightweight-charts";
+
+export type SyncSeries = ISeriesApi<SeriesType>;
 
 export interface SyncedChart {
   chart: IChartApi;
-  series: ISeriesApi<"Line">[];
-  valuesByTime: Map<string, { series: ISeriesApi<"Line">; value: number }>;
+  series: SyncSeries[];
+  valuesByTime: Map<string, { series: SyncSeries; value: number }>;
 }
 
 export class ChartSyncController {

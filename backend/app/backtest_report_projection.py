@@ -188,6 +188,85 @@ class BacktestReportProjectionService:
             for item in records
             if isinstance(item, Mapping) and item.get("execution_status") == "omitted"
         )
+        normalized_records = [
+            {
+                "signal_date": item.get("signal_date"),
+                "matched_rule_id": item.get("matched_rule_id"),
+                "allocation_source": item.get("allocation_source"),
+                "target_allocation": dict(sorted(item.get("target_allocation", {}).items()))
+                if isinstance(item.get("target_allocation"), Mapping)
+                else {},
+                "execution_date": item.get("execution_date"),
+                "execution_status": item.get("execution_status"),
+                "omission_reason": item.get("omission_reason"),
+            }
+            for item in records
+            if isinstance(item, Mapping)
+        ]
+        meaningful = {"rule_match", "fallback"}
+        markers: list[dict[str, Any]] = []
+        previous_decision: tuple[Any, ...] | None = None
+        for item in normalized_records:
+            if item["allocation_source"] not in meaningful:
+                continue
+            decision = (
+                item["allocation_source"],
+                item["matched_rule_id"],
+                tuple(sorted(item["target_allocation"].items())),
+            )
+            if decision == previous_decision:
+                continue
+            previous_decision = decision
+            markers.append(
+                {
+                    "date": item["signal_date"],
+                    "marker_type": "signal",
+                    "signal_date": item["signal_date"],
+                    "allocation_source": item["allocation_source"],
+                    "matched_rule_id": item["matched_rule_id"],
+                    "target_allocation": item["target_allocation"],
+                    "execution_date": item["execution_date"],
+                    "execution_status": item["execution_status"],
+                    "omission_reason": item["omission_reason"],
+                }
+            )
+        records_by_date = {item["signal_date"]: item for item in normalized_records}
+        fills_by_order = Counter(item.order_id for item in run.backtest_result.fills)
+        execution_groups: dict[tuple[str, str, str], list[Any]] = {}
+        for order in run.backtest_result.orders:
+            key = (
+                order.date.isoformat(),
+                order.signal_date.isoformat(),
+                order.rebalance_cause.value,
+            )
+            execution_groups.setdefault(key, []).append(order)
+        for (execution_date, signal_date, cause), orders in execution_groups.items():
+            related = records_by_date.get(signal_date) if cause == "target" else None
+            fill_count = sum(fills_by_order[order.order_id] for order in orders)
+            statuses = sorted({order.status.value for order in orders})
+            markers.append(
+                {
+                    "date": execution_date,
+                    "marker_type": "execution",
+                    "signal_date": signal_date,
+                    "execution_date": execution_date,
+                    "execution_status": "filled" if fill_count else ",".join(statuses),
+                    "rebalance_cause": cause,
+                    "order_count": len(orders),
+                    "fill_count": fill_count,
+                    "symbols": sorted({order.symbol for order in orders}),
+                    "sides": sorted({order.side.value for order in orders}),
+                    "allocation_source": related.get("allocation_source") if related else None,
+                    "matched_rule_id": related.get("matched_rule_id") if related else None,
+                    "target_allocation": related.get("target_allocation", {}) if related else {},
+                }
+            )
+        markers.sort(
+            key=lambda marker: (
+                str(marker["date"]),
+                0 if marker["marker_type"] == "execution" else 1,
+            )
+        )
         return {
             "status": "available",
             "source": persisted.get("source"),
@@ -195,29 +274,75 @@ class BacktestReportProjectionService:
             "allocation_sources": dict(sorted(sources.items())),
             "submitted_count": submitted,
             "omitted_count": omitted,
+            "records": normalized_records,
+            "markers": markers,
         }
 
     @staticmethod
     def _allocations(run: BacktestRun, strategy_provenance: Mapping[str, Any]) -> dict[str, Any]:
         target: dict[str, Any]
         if strategy_provenance["status"] == "available":
+            records = strategy_provenance.get("records", [])
+            target_points = []
+            target_symbols: set[str] = set()
+            for item in records if isinstance(records, list) else []:
+                allocation = item.get("target_allocation", {})
+                if not isinstance(allocation, Mapping):
+                    allocation = {}
+                assets = {str(symbol): float(weight) for symbol, weight in allocation.items()}
+                target_symbols.update(assets)
+                cash_weight = 1.0 - sum(assets.values())
+                target_points.append(
+                    {
+                        "date": item.get("signal_date"),
+                        "asset_weights": dict(sorted(assets.items())),
+                        "cash_weight": 0.0 if abs(cash_weight) <= 1e-12 else max(0.0, cash_weight),
+                        "allocation_source": item.get("allocation_source"),
+                        "matched_rule_id": item.get("matched_rule_id"),
+                    }
+                )
             target = {
                 "status": "available",
                 "source": "BacktestRun.strategy_provenance.records[].target_allocation",
+                "timeline": target_points,
+                "asset_symbols": sorted(target_symbols),
             }
         else:
             target = {
                 "status": "not_available",
                 "reason": "strategy target allocation provenance was not persisted",
             }
+        actual_points: dict[str, dict[str, Any]] = {}
+        actual_symbols: set[str] = set()
+        for item in run.backtest_result.allocation_history:
+            point = actual_points.setdefault(
+                item.date.isoformat(),
+                {"date": item.date.isoformat(), "asset_weights": {}, "target_asset_weights": {}},
+            )
+            point["asset_weights"][item.symbol] = item.actual_weight
+            point["target_asset_weights"][item.symbol] = item.target_weight
+            actual_symbols.add(item.symbol)
+        equity_by_date = {item.date.isoformat(): item for item in run.backtest_result.equity_curve}
+        for point in actual_points.values():
+            equity = equity_by_date.get(point["date"])
+            point["cash_weight"] = (
+                equity.cash / equity.total_equity
+                if equity is not None and equity.total_equity
+                else 0.0
+            )
+            point["asset_weights"] = dict(sorted(point["asset_weights"].items()))
+            point["target_asset_weights"] = dict(sorted(point["target_asset_weights"].items()))
+        actual_timeline = [actual_points[key] for key in sorted(actual_points)]
         return {
             "target": target,
             "actual": {
                 "status": "available",
                 "source": "BacktestResult.allocation_history",
                 "record_count": len(run.backtest_result.allocation_history),
+                "timeline": actual_timeline,
+                "asset_symbols": sorted(actual_symbols),
             },
-            "cash_semantics": "implicit_unallocated_portfolio_weight",
+            "cash_semantics": "cash_weight is ledger cash / total equity; SGOV remains an asset",
         }
 
     @staticmethod

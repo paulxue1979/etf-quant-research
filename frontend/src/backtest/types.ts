@@ -183,6 +183,69 @@ export interface BacktestRun {
 
 export type ReportAvailability = "available" | "not_available" | "not_evaluable";
 
+export interface StrategyProvenanceRecord {
+  signal_date: string;
+  matched_rule_id: string | null;
+  allocation_source: string;
+  target_allocation: Record<string, number>;
+  execution_date: string | null;
+  execution_status: string;
+  omission_reason: string | null;
+}
+
+export interface StrategyTimelineMarker {
+  date: string;
+  marker_type: "signal" | "execution";
+  signal_date?: string | null;
+  allocation_source?: string | null;
+  matched_rule_id?: string | null;
+  target_allocation?: Record<string, number>;
+  execution_date?: string | null;
+  execution_status?: string | null;
+  omission_reason?: string | null;
+  rebalance_cause?: string | null;
+  order_count?: number;
+  fill_count?: number;
+  symbols?: string[];
+  sides?: string[];
+}
+
+export interface StrategyProvenanceReport {
+  status?: ReportAvailability;
+  reason?: string;
+  source?: string;
+  record_count?: number;
+  allocation_sources?: Record<string, number>;
+  submitted_count?: number;
+  omitted_count?: number;
+  records?: StrategyProvenanceRecord[];
+  markers?: StrategyTimelineMarker[];
+}
+
+export interface AllocationTimelinePoint {
+  date: string;
+  asset_weights: Record<string, number>;
+  target_asset_weights?: Record<string, number>;
+  cash_weight: number;
+  allocation_source?: string | null;
+  matched_rule_id?: string | null;
+}
+
+export interface AllocationTimeline {
+  status?: ReportAvailability;
+  reason?: string;
+  source?: string;
+  record_count?: number;
+  timeline?: AllocationTimelinePoint[];
+  asset_symbols?: string[];
+}
+
+export interface ReportAllocations {
+  target?: AllocationTimeline;
+  actual?: AllocationTimeline;
+  cash_semantics?: string;
+}
+
 export interface BacktestReport {
   report_schema_version: "1.0";
   identity: {
@@ -206,8 +269,8 @@ export interface BacktestReport {
   investor_experience: Record<string, unknown>;
   series_metadata: Record<string, unknown>;
   contributions: Array<Record<string, unknown>>;
-  strategy_provenance: Record<string, unknown>;
-  allocations: Record<string, unknown>;
+  strategy_provenance: StrategyProvenanceReport;
+  allocations: ReportAllocations;
   holdings: Record<string, unknown>;
   trades: Record<string, unknown>;
   configuration: Record<string, unknown>;
