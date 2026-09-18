@@ -27,6 +27,8 @@ from backtest.models import (
     EquityPoint,
     ExternalCashFlow,
     Fill,
+    HoldingSegment,
+    HoldingStatus,
     Order,
     OrderSide,
     OrderStatus,
@@ -273,6 +275,57 @@ def serialize_backtest_result(result: BacktestResult) -> dict[str, Any]:
             }
             for item in result.trades
         ],
+        "holding_segments": (
+            [
+                {
+                    "holding_id": item.holding_id,
+                    "lot_id": item.lot_id,
+                    "symbol": item.symbol,
+                    "quantity": item.quantity,
+                    "entry_order_id": item.entry_order_id,
+                    "entry_signal_date": (
+                        item.entry_signal_date.isoformat()
+                        if item.entry_signal_date is not None
+                        else None
+                    ),
+                    "entry_execution_date": item.entry_execution_date.isoformat(),
+                    "entry_price": item.entry_price,
+                    "entry_execution_cause": item.entry_execution_cause.value,
+                    "status": item.status.value,
+                    "holding_days": item.holding_days,
+                    "exit_order_id": item.exit_order_id,
+                    "exit_signal_date": (
+                        item.exit_signal_date.isoformat()
+                        if item.exit_signal_date is not None
+                        else None
+                    ),
+                    "exit_execution_date": (
+                        item.exit_execution_date.isoformat()
+                        if item.exit_execution_date is not None
+                        else None
+                    ),
+                    "exit_price": item.exit_price,
+                    "exit_execution_cause": (
+                        item.exit_execution_cause.value
+                        if item.exit_execution_cause is not None
+                        else None
+                    ),
+                    "report_end_date": (
+                        item.report_end_date.isoformat()
+                        if item.report_end_date is not None
+                        else None
+                    ),
+                    "ending_price": item.ending_price,
+                    "market_value": item.market_value,
+                    "realized_pnl": item.realized_pnl,
+                    "unrealized_pnl": item.unrealized_pnl,
+                    "holding_return": item.holding_return,
+                }
+                for item in result.holding_segments
+            ]
+            if result.holding_segments is not None
+            else None
+        ),
         "positions": [
             {
                 "as_of_date": item.as_of_date.isoformat(),
@@ -420,6 +473,83 @@ def deserialize_backtest_result(payload: Mapping[str, Any]) -> BacktestResult:
                 }
             )
             for item in payload["trades"]
+        ),
+        holding_segments=(
+            tuple(
+                HoldingSegment(
+                    holding_id=str(item["holding_id"]),
+                    lot_id=str(item["lot_id"]),
+                    symbol=str(item["symbol"]),
+                    quantity=int(item["quantity"]),
+                    entry_order_id=str(item["entry_order_id"]),
+                    entry_signal_date=(
+                        _date(item["entry_signal_date"])
+                        if item.get("entry_signal_date") is not None
+                        else None
+                    ),
+                    entry_execution_date=_date(item["entry_execution_date"]),
+                    entry_price=float(item["entry_price"]),
+                    entry_execution_cause=RebalanceCause(item["entry_execution_cause"]),
+                    status=HoldingStatus(item["status"]),
+                    holding_days=int(item["holding_days"]),
+                    exit_order_id=(
+                        str(item["exit_order_id"])
+                        if item.get("exit_order_id") is not None
+                        else None
+                    ),
+                    exit_signal_date=(
+                        _date(item["exit_signal_date"])
+                        if item.get("exit_signal_date") is not None
+                        else None
+                    ),
+                    exit_execution_date=(
+                        _date(item["exit_execution_date"])
+                        if item.get("exit_execution_date") is not None
+                        else None
+                    ),
+                    exit_price=(
+                        float(item["exit_price"]) if item.get("exit_price") is not None else None
+                    ),
+                    exit_execution_cause=(
+                        RebalanceCause(item["exit_execution_cause"])
+                        if item.get("exit_execution_cause") is not None
+                        else None
+                    ),
+                    report_end_date=(
+                        _date(item["report_end_date"])
+                        if item.get("report_end_date") is not None
+                        else None
+                    ),
+                    ending_price=(
+                        float(item["ending_price"])
+                        if item.get("ending_price") is not None
+                        else None
+                    ),
+                    market_value=(
+                        float(item["market_value"])
+                        if item.get("market_value") is not None
+                        else None
+                    ),
+                    realized_pnl=(
+                        float(item["realized_pnl"])
+                        if item.get("realized_pnl") is not None
+                        else None
+                    ),
+                    unrealized_pnl=(
+                        float(item["unrealized_pnl"])
+                        if item.get("unrealized_pnl") is not None
+                        else None
+                    ),
+                    holding_return=(
+                        float(item["holding_return"])
+                        if item.get("holding_return") is not None
+                        else None
+                    ),
+                )
+                for item in payload.get("holding_segments", [])
+            )
+            if payload.get("holding_segments") is not None
+            else None
         ),
         positions=tuple(
             PortfolioSnapshot(

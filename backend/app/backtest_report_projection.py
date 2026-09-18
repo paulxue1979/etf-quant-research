@@ -31,6 +31,7 @@ class BacktestReportProjectionService:
         analysis = run.performance_analysis
         benchmark = self._benchmark(run)
         strategy_provenance = self._strategy_provenance(run)
+        holdings = self._holding_summary(run)
         return {
             "report_schema_version": REPORT_SCHEMA_VERSION,
             "identity": {
@@ -48,7 +49,7 @@ class BacktestReportProjectionService:
                 "performance": "available",
                 "contributions": "available",
                 "strategy_provenance": strategy_provenance["status"],
-                "holdings": "not_available",
+                "holdings": holdings["status"],
                 "benchmark": benchmark["status"],
                 "xirr": _availability_for_metric(analysis.xirr),
             },
@@ -114,10 +115,7 @@ class BacktestReportProjectionService:
             ],
             "strategy_provenance": strategy_provenance,
             "allocations": self._allocations(run, strategy_provenance),
-            "holdings": {
-                "status": "not_available",
-                "reason": "canonical FIFO open-lot provenance is not persisted",
-            },
+            "holdings": holdings,
             "trades": {
                 "closed_trade_count": len(result.trades),
                 "source": "BacktestResult.trades",
@@ -160,6 +158,176 @@ class BacktestReportProjectionService:
             },
             "series": {name: self._series(run, name, start=start, end=end) for name in requested},
         }
+
+    def holdings(
+        self,
+        run: BacktestRun,
+        *,
+        status: str = "ALL",
+        symbol: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str = "entry_date",
+        order: str = "asc",
+    ) -> dict[str, Any]:
+        """Return a bounded view of immutable FIFO holding segments."""
+        segments = run.backtest_result.holding_segments
+        normalized_symbol = symbol.strip().upper() if symbol else None
+        base = {
+            "report_schema_version": REPORT_SCHEMA_VERSION,
+            "identity": {
+                "backtest_run_id": run.backtest_run_id,
+                "strategy_version_id": run.strategy_version_id,
+            },
+            "limit": limit,
+            "offset": offset,
+            "filters": {"status": status, "symbol": normalized_symbol},
+            "sort": {"by": sort_by, "order": order},
+            "duration_basis": "calendar_days_between_execution_dates",
+            "metric_availability": self._holding_metric_availability(),
+        }
+        if segments is None:
+            return {
+                **base,
+                "status": "not_available",
+                "reason": "canonical FIFO holding provenance was not persisted for this legacy run",
+                "summary": {"open_count": None, "closed_count": None},
+                "total": 0,
+                "items": [],
+            }
+        filtered = [
+            item
+            for item in segments
+            if (status == "ALL" or item.status.value == status)
+            and (normalized_symbol is None or item.symbol == normalized_symbol)
+        ]
+        sorted_segments = self._sort_holdings(filtered, sort_by=sort_by, order=order)
+        return {
+            **base,
+            "status": "available",
+            "source": "BacktestResult.holding_segments",
+            "summary": {
+                "open_count": sum(item.status.value == "OPEN" for item in segments),
+                "closed_count": sum(item.status.value == "CLOSED" for item in segments),
+            },
+            "total": len(sorted_segments),
+            "items": [
+                self._holding_item(run, item) for item in sorted_segments[offset : offset + limit]
+            ],
+        }
+
+    @staticmethod
+    def _holding_summary(run: BacktestRun) -> dict[str, Any]:
+        segments = run.backtest_result.holding_segments
+        if segments is None:
+            return {
+                "status": "not_available",
+                "reason": "canonical FIFO holding provenance was not persisted for this legacy run",
+            }
+        return {
+            "status": "available",
+            "source": "BacktestResult.holding_segments",
+            "open_count": sum(item.status.value == "OPEN" for item in segments),
+            "closed_count": sum(item.status.value == "CLOSED" for item in segments),
+            "duration_basis": "calendar_days_between_execution_dates",
+        }
+
+    @staticmethod
+    def _holding_metric_availability() -> dict[str, Any]:
+        reason = "immutable lot-level market price path is not persisted"
+        return {
+            name: {"status": "not_available", "value": None, "reason": reason}
+            for name in ("mfe", "mae", "holding_drawdown")
+        }
+
+    @staticmethod
+    def _sort_holdings(segments: list[Any], *, sort_by: str, order: str) -> list[Any]:
+        def value(item: Any) -> Any:
+            if sort_by == "entry_date":
+                return item.entry_execution_date
+            if sort_by == "exit_date":
+                return item.exit_execution_date
+            if sort_by == "symbol":
+                return item.symbol
+            if sort_by == "holding_return":
+                return item.holding_return
+            if sort_by == "pnl":
+                return item.realized_pnl if item.status.value == "CLOSED" else item.unrealized_pnl
+            return item.holding_days
+
+        available = [item for item in segments if value(item) is not None]
+        unavailable = [item for item in segments if value(item) is None]
+        return sorted(
+            available,
+            key=lambda item: (value(item), item.holding_id),
+            reverse=order == "desc",
+        ) + sorted(unavailable, key=lambda item: item.holding_id)
+
+    @staticmethod
+    def _holding_item(run: BacktestRun, item: Any) -> dict[str, Any]:
+        entry_context = BacktestReportProjectionService._signal_context(run, item.entry_signal_date)
+        exit_context = BacktestReportProjectionService._signal_context(run, item.exit_signal_date)
+        pnl = item.realized_pnl if item.status.value == "CLOSED" else item.unrealized_pnl
+        return {
+            "holding_id": item.holding_id,
+            "lot_id": item.lot_id,
+            "symbol": item.symbol,
+            "status": item.status.value,
+            "quantity": item.quantity,
+            "entry_fill_id": item.entry_order_id,
+            "entry_signal_date": (
+                item.entry_signal_date.isoformat() if item.entry_signal_date is not None else None
+            ),
+            "entry_execution_date": item.entry_execution_date.isoformat(),
+            "entry_price": item.entry_price,
+            "entry_execution_cause": item.entry_execution_cause.value,
+            "entry_matched_rule_id": entry_context.get("matched_rule_id"),
+            "entry_allocation_source": entry_context.get("allocation_source"),
+            "exit_fill_id": item.exit_order_id,
+            "exit_signal_date": (
+                item.exit_signal_date.isoformat() if item.exit_signal_date is not None else None
+            ),
+            "exit_execution_date": (
+                item.exit_execution_date.isoformat()
+                if item.exit_execution_date is not None
+                else None
+            ),
+            "exit_price": item.exit_price,
+            "exit_execution_cause": (
+                item.exit_execution_cause.value if item.exit_execution_cause is not None else None
+            ),
+            "exit_matched_rule_id": exit_context.get("matched_rule_id"),
+            "exit_allocation_source": exit_context.get("allocation_source"),
+            "report_end_date": (
+                item.report_end_date.isoformat() if item.report_end_date is not None else None
+            ),
+            "ending_price": item.ending_price,
+            "market_value": item.market_value,
+            "holding_days": item.holding_days,
+            "holding_days_basis": "calendar_days",
+            "realized_pnl": item.realized_pnl,
+            "unrealized_pnl": item.unrealized_pnl,
+            "pnl": pnl,
+            "pnl_type": "realized" if item.status.value == "CLOSED" else "unrealized",
+            "holding_return": item.holding_return,
+        }
+
+    @staticmethod
+    def _signal_context(run: BacktestRun, signal_date: date | None) -> Mapping[str, Any]:
+        if signal_date is None or run.strategy_provenance is None:
+            return {}
+        records = run.strategy_provenance.get("records")
+        if not isinstance(records, tuple):
+            return {}
+        expected = signal_date.isoformat()
+        return next(
+            (
+                item
+                for item in records
+                if isinstance(item, Mapping) and item.get("signal_date") == expected
+            ),
+            {},
+        )
 
     @staticmethod
     def _strategy_provenance(run: BacktestRun) -> dict[str, Any]:

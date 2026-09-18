@@ -220,7 +220,12 @@ def test_projection_keeps_multi_asset_target_actual_cash_and_sgov_distinct() -> 
 
 
 def test_legacy_run_degrades_to_explicitly_unavailable_strategy_provenance() -> None:
-    report = BacktestReportProjectionService().project(_run())
+    base = _run()
+    run = replace(
+        base,
+        backtest_result=replace(base.backtest_result, holding_segments=None),
+    )
+    report = BacktestReportProjectionService().project(run)
 
     assert report["strategy_provenance"] == {
         "status": "not_available",
@@ -228,7 +233,24 @@ def test_legacy_run_degrades_to_explicitly_unavailable_strategy_provenance() -> 
     }
     assert report["holdings"] == {
         "status": "not_available",
-        "reason": "canonical FIFO open-lot provenance is not persisted",
+        "reason": "canonical FIFO holding provenance was not persisted for this legacy run",
+    }
+
+
+def test_holding_projection_uses_signal_context_and_marks_path_metrics_unavailable() -> None:
+    run = replace(_run(), strategy_provenance=_provenance())
+
+    report = BacktestReportProjectionService().holdings(run)
+
+    assert report["status"] == "available"
+    assert report["items"][0]["entry_signal_date"] == "2026-01-02"
+    assert report["items"][0]["entry_execution_date"] == "2026-01-03"
+    assert report["items"][0]["entry_matched_rule_id"] == "trend-on"
+    assert report["items"][0]["entry_allocation_source"] == "rule_match"
+    assert {name: metric["status"] for name, metric in report["metric_availability"].items()} == {
+        "mfe": "not_available",
+        "mae": "not_available",
+        "holding_drawdown": "not_available",
     }
 
 

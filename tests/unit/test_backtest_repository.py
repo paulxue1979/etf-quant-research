@@ -124,6 +124,24 @@ def test_repository_round_trips_strategy_execution_provenance_and_loads_legacy_r
     assert legacy.strategy_provenance is None
 
 
+def test_repository_round_trips_holding_segments_and_marks_legacy_result_unavailable(
+    tmp_path,
+) -> None:
+    repository = BacktestRepository(tmp_path / "backtests.db")
+    run = _run()
+
+    repository.create(run)
+    restored = repository.get(run.backtest_run_id)
+    legacy_payload = run.to_dict()
+    legacy_payload["backtest_result"].pop("holding_segments")
+    legacy = BacktestRun.from_dict(legacy_payload)
+
+    assert restored is not None
+    assert restored.backtest_result.holding_segments == run.backtest_result.holding_segments
+    assert restored.backtest_result.holding_segments is not run.backtest_result.holding_segments
+    assert legacy.backtest_result.holding_segments is None
+
+
 def test_repository_keeps_distinct_runs_even_for_identical_inputs(tmp_path) -> None:
     repository = BacktestRepository(tmp_path / "backtests.db")
     first = _run()

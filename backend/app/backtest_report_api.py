@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -72,6 +72,30 @@ def get_backtest_report_series(
             status_code=422,
             detail={"code": "INVALID_REPORT_SERIES_INCLUDE", "message": str(exc)},
         ) from exc
+
+
+@router.get("/{backtest_run_id}/report/holdings")
+def get_backtest_report_holdings(
+    backtest_run_id: str,
+    status: Literal["OPEN", "CLOSED", "ALL"] = "ALL",
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort_by: Literal[
+        "entry_date", "exit_date", "symbol", "holding_return", "pnl", "duration"
+    ] = "entry_date",
+    order: Literal["asc", "desc"] = "asc",
+) -> dict[str, Any]:
+    """Return bounded canonical FIFO holding segments without rerunning a backtest."""
+    return _projection.holdings(
+        _run_or_404(backtest_run_id),
+        status=status,
+        symbol=symbol,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        order=order,
+    )
 
 
 __all__ = ["backtest_repository", "router"]

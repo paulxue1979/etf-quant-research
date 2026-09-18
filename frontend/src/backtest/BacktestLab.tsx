@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { BacktestApiError, backtestApi } from "./api";
 import { BacktestReportCharts } from "./BacktestReportCharts";
+import { HoldingPeriodReport } from "./HoldingPeriodReport";
 import { ResearchProtocolPanel } from "./ResearchProtocolPanel";
 import type {
   BacktestRequest,
@@ -273,6 +274,8 @@ function Results({ run, report, reportSeries, reportLoading, reportError }: {
       </section>
 
       <BacktestReportCharts report={report} series={reportSeries} loading={reportLoading} error={reportError} />
+
+      <HoldingPeriodReport backtestRunId={run.backtest_run_id} />
 
       <section className="panel chart-grid">
         <SeriesChart label="Equity curve" items={result.equity_curve} readValue={(item: EquityPoint) => item.total_equity} color="#6bd7d0" />

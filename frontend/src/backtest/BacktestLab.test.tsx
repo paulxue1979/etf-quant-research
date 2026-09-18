@@ -208,6 +208,21 @@ function mockBacktestApi() {
     const url = String(input);
     if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
+    if (url.includes("/report/holdings")) return new Response(JSON.stringify({
+      report_schema_version: "1.0",
+      identity: { backtest_run_id: "backtest-demo-1", strategy_version_id: "demo-v1" },
+      status: "available",
+      source: "BacktestResult.holding_segments",
+      summary: { open_count: 0, closed_count: 0 },
+      total: 0,
+      limit: 25,
+      offset: 0,
+      filters: { status: "ALL", symbol: null },
+      sort: { by: "entry_date", order: "asc" },
+      duration_basis: "calendar_days_between_execution_dates",
+      metric_availability: {},
+      items: [],
+    }), { status: 200 });
     if (url.includes("/research/backtests")) return new Response(JSON.stringify(researchHistory()), { status: 200 });
     if (url.endsWith("/research/protocols") && (!init || !init.method)) return new Response(JSON.stringify([]), { status: 200 });
     if (url.endsWith("/research/protocols") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail()), { status: 201 });

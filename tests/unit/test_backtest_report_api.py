@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +51,49 @@ def test_report_series_rejects_unknown_include_and_invalid_date_range(client: Te
     assert unknown.json()["detail"]["code"] == "INVALID_REPORT_SERIES_INCLUDE"
     assert invalid_range.status_code == 422
     assert invalid_range.json()["detail"]["code"] == "INVALID_REPORT_DATE_RANGE"
+
+
+def test_holding_report_supports_pagination_status_filter_and_sorting(client: TestClient) -> None:
+    response = client.get(
+        "/research/backtests/repo-run/report/holdings"
+        "?status=OPEN&symbol=qqq&limit=1&offset=0&sort_by=entry_date&order=asc"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "available"
+    assert payload["total"] == 1
+    assert payload["limit"] == 1
+    assert payload["offset"] == 0
+    assert payload["filters"] == {"status": "OPEN", "symbol": "QQQ"}
+    assert payload["sort"] == {"by": "entry_date", "order": "asc"}
+    assert payload["items"][0]["status"] == "OPEN"
+    assert payload["items"][0]["symbol"] == "QQQ"
+    assert payload["items"][0]["entry_signal_date"] == "2026-01-02"
+    assert payload["items"][0]["entry_execution_date"] == "2026-01-03"
+
+
+def test_holding_report_rejects_invalid_query_and_returns_legacy_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid = client.get("/research/backtests/repo-run/report/holdings?limit=0")
+    run = _run()
+    legacy = replace(
+        run,
+        backtest_result=replace(run.backtest_result, holding_segments=None),
+    )
+    monkeypatch.setattr(
+        report_api,
+        "backtest_repository",
+        SimpleNamespace(get=lambda run_id: legacy if run_id == legacy.backtest_run_id else None),
+    )
+    unavailable = client.get("/research/backtests/repo-run/report/holdings")
+
+    assert invalid.status_code == 422
+    assert unavailable.status_code == 200
+    assert unavailable.json()["status"] == "not_available"
+    assert unavailable.json()["items"] == []
 
 
 def test_report_returns_structured_not_found_error(client: TestClient) -> None:

@@ -5,6 +5,9 @@ import type {
   BacktestReportSeries,
   BacktestReportSeriesName,
   BacktestRun,
+  HoldingFilterStatus,
+  HoldingReport,
+  HoldingSort,
   ResearchBacktestList,
   ResearchComparison,
   ResearchProtocolCreateRequest,
@@ -96,6 +99,30 @@ export const backtestApi = {
     if (window?.to) query.set("to", window.to);
     return requestJson<BacktestReportSeries>(
       `/research/backtests/${encodeURIComponent(runId)}/report/series?${query.toString()}`,
+    );
+  },
+
+  getHoldingReport(
+    runId: string,
+    query: {
+      status: HoldingFilterStatus;
+      symbol?: string;
+      limit: number;
+      offset: number;
+      sortBy: HoldingSort;
+      order: "asc" | "desc";
+    },
+  ): Promise<HoldingReport> {
+    const params = new URLSearchParams({
+      status: query.status,
+      limit: String(query.limit),
+      offset: String(query.offset),
+      sort_by: query.sortBy,
+      order: query.order,
+    });
+    if (query.symbol) params.set("symbol", query.symbol.trim().toUpperCase());
+    return requestJson<HoldingReport>(
+      `/research/backtests/${encodeURIComponent(runId)}/report/holdings?${params.toString()}`,
     );
   },
 

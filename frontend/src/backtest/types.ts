@@ -246,6 +246,65 @@ export interface ReportAllocations {
   cash_semantics?: string;
 }
 
+export type HoldingStatus = "OPEN" | "CLOSED";
+export type HoldingFilterStatus = HoldingStatus | "ALL";
+export type HoldingSort = "entry_date" | "exit_date" | "symbol" | "holding_return" | "pnl" | "duration";
+
+export interface HoldingMetricAvailability {
+  status: "available" | "not_available" | "not_evaluable";
+  value: number | null;
+  reason: string | null;
+}
+
+export interface HoldingReportItem {
+  holding_id: string;
+  lot_id: string;
+  symbol: string;
+  status: HoldingStatus;
+  quantity: number;
+  entry_fill_id: string;
+  entry_signal_date: string | null;
+  entry_execution_date: string;
+  entry_price: number;
+  entry_execution_cause: string;
+  entry_matched_rule_id: string | null;
+  entry_allocation_source: string | null;
+  exit_fill_id: string | null;
+  exit_signal_date: string | null;
+  exit_execution_date: string | null;
+  exit_price: number | null;
+  exit_execution_cause: string | null;
+  exit_matched_rule_id: string | null;
+  exit_allocation_source: string | null;
+  report_end_date: string | null;
+  ending_price: number | null;
+  market_value: number | null;
+  holding_days: number;
+  holding_days_basis: "calendar_days";
+  realized_pnl: number | null;
+  unrealized_pnl: number | null;
+  pnl: number;
+  pnl_type: "realized" | "unrealized";
+  holding_return: number;
+}
+
+export interface HoldingReport {
+  report_schema_version: "1.0";
+  identity: { backtest_run_id: string; strategy_version_id: string };
+  status: ReportAvailability;
+  source?: string;
+  reason?: string;
+  summary: { open_count: number | null; closed_count: number | null };
+  total: number;
+  limit: number;
+  offset: number;
+  filters: { status: HoldingFilterStatus; symbol: string | null };
+  sort: { by: HoldingSort; order: "asc" | "desc" };
+  duration_basis: string;
+  metric_availability: Record<"mfe" | "mae" | "holding_drawdown", HoldingMetricAvailability>;
+  items: HoldingReportItem[];
+}
+
 export interface BacktestReport {
   report_schema_version: "1.0";
   identity: {

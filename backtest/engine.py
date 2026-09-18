@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from hashlib import sha256
 from types import MappingProxyType
 
 from backtest.contributions import normalize_contribution_schedule
@@ -27,6 +28,8 @@ from backtest.models import (
     EquityPoint,
     ExternalCashFlow,
     Fill,
+    HoldingSegment,
+    HoldingStatus,
     Order,
     OrderSide,
     OrderStatus,
@@ -48,11 +51,21 @@ from portfolio.models import PortfolioSnapshot, Position
 _EPSILON = 1e-10
 
 
+def _stable_identity(kind: str, *parts: str) -> str:
+    digest = sha256("|".join(parts).encode("utf-8")).hexdigest()
+    return f"{kind}-{digest}"
+
+
 @dataclass
 class _Lot:
+    lot_id: str
+    entry_order_id: str
+    entry_signal_date: date | None
     entry_date: date
     entry_price: float
+    entry_cause: RebalanceCause
     quantity: int
+    closed_segment_count: int = 0
 
 
 @dataclass
@@ -112,6 +125,7 @@ class BacktestEngine:
         orders: list[Order] = []
         fills: list[Fill] = []
         trades: list[Trade] = []
+        closed_holdings: list[HoldingSegment] = []
         equity_curve: list[EquityPoint] = []
         snapshots: list[PortfolioSnapshot] = []
         allocation_history: list[AllocationPoint] = []
@@ -132,7 +146,7 @@ class BacktestEngine:
             pending_executed = False
             if pending is not None and pending[1] == current_date:
                 active_target = pending[0]
-                created_orders, created_fills, created_trades = self._rebalance(
+                created_orders, created_fills, created_trades, created_holdings = self._rebalance(
                     ledger=ledger,
                     target=active_target,
                     signal_date=active_target.date,
@@ -145,11 +159,12 @@ class BacktestEngine:
                 orders.extend(created_orders)
                 fills.extend(created_fills)
                 trades.extend(created_trades)
+                closed_holdings.extend(created_holdings)
                 pending = None
                 pending_executed = True
 
             if daily_contributions and not pending_executed:
-                created_orders, created_fills, created_trades = self._rebalance(
+                created_orders, created_fills, created_trades, created_holdings = self._rebalance(
                     ledger=ledger,
                     target=active_target,
                     signal_date=active_target.date,
@@ -162,6 +177,7 @@ class BacktestEngine:
                 orders.extend(created_orders)
                 fills.extend(created_fills)
                 trades.extend(created_trades)
+                closed_holdings.extend(created_holdings)
 
             point_by_symbol = {
                 symbol: normalized_data[symbol].points_by_date[current_date] for symbol in symbols
@@ -203,6 +219,13 @@ class BacktestEngine:
             }
             for symbol in symbols
         }
+        open_holdings = self._open_holding_segments(
+            ledger,
+            normalized_data,
+            symbols,
+            effective_end_date,
+            config.price_field_used,
+        )
         return BacktestResult(
             start_date=effective_start_date,
             end_date=effective_end_date,
@@ -231,6 +254,7 @@ class BacktestEngine:
             contribution_events=contribution_events,
             external_cash_flows=tuple(external_cash_flows),
             cumulative_contributions=sum(float(item.amount) for item in contribution_events),
+            holding_segments=tuple((*closed_holdings, *open_holdings)),
         )
 
     def _validate_config(self, config: BacktestConfig) -> None:
@@ -362,7 +386,7 @@ class BacktestEngine:
         symbols: Sequence[str],
         config: BacktestConfig,
         cause: RebalanceCause,
-    ) -> tuple[list[Order], list[Fill], list[Trade]]:
+    ) -> tuple[list[Order], list[Fill], list[Trade], list[HoldingSegment]]:
         prices = {
             symbol: self._valid_price(
                 data[symbol].points_by_date[execution_date].open_for(config.price_field_used)
@@ -382,7 +406,7 @@ class BacktestEngine:
                 abs(target.weight_for(symbol) - current_weights[symbol]) < threshold
                 for symbol in symbols
             ):
-                return [], [], []
+                return [], [], [], []
         desired = {
             symbol: math.floor(equity_at_open * target.weight_for(symbol) / prices[symbol])
             for symbol in symbols
@@ -401,10 +425,11 @@ class BacktestEngine:
         result_orders: list[Order] = []
         result_fills: list[Fill] = []
         result_trades: list[Trade] = []
+        result_holdings: list[HoldingSegment] = []
         order_number = 0
         for symbol, quantity in sell_orders:
             order_number += 1
-            order, fill, closed = self._execute_order(
+            order, fill, closed, holdings = self._execute_order(
                 ledger=ledger,
                 symbol=symbol,
                 side=OrderSide.SELL,
@@ -420,6 +445,7 @@ class BacktestEngine:
             result_orders.append(order)
             result_fills.append(fill)
             result_trades.extend(closed)
+            result_holdings.extend(holdings)
         for symbol, quantity in buy_orders:
             order_number += 1
             affordable = self._affordable_quantity(
@@ -434,7 +460,7 @@ class BacktestEngine:
                         f"insufficient cash for BUY {symbol} at {execution_date.isoformat()}"
                     )
                 continue
-            order, fill, closed = self._execute_order(
+            order, fill, closed, holdings = self._execute_order(
                 ledger=ledger,
                 symbol=symbol,
                 side=OrderSide.BUY,
@@ -450,7 +476,8 @@ class BacktestEngine:
             result_orders.append(order)
             result_fills.append(fill)
             result_trades.extend(closed)
-        return result_orders, result_fills, result_trades
+            result_holdings.extend(holdings)
+        return result_orders, result_fills, result_trades, result_holdings
 
     def _execute_order(
         self,
@@ -466,7 +493,7 @@ class BacktestEngine:
         config: BacktestConfig,
         order_number: int,
         cause: RebalanceCause,
-    ) -> tuple[Order, Fill, list[Trade]]:
+    ) -> tuple[Order, Fill, list[Trade], list[HoldingSegment]]:
         if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
             raise InvalidQuantityError("order quantity must be a positive integer")
         if side is OrderSide.SELL and quantity > ledger.quantities[symbol]:
@@ -480,6 +507,7 @@ class BacktestEngine:
         notional = quantity * execution_price
         commission = notional * config.commission.rate + config.commission.per_order
         slippage_amount = quantity * abs(execution_price - market_price)
+        order_id = f"{signal_date.isoformat()}-{execution_date.isoformat()}-{order_number:04d}"
         if side is OrderSide.BUY:
             cash_effect = -(notional + commission)
             if ledger.cash + cash_effect < -_EPSILON:
@@ -487,13 +515,20 @@ class BacktestEngine:
             ledger.cash += cash_effect
             ledger.quantities[symbol] += quantity
             ledger.lots[symbol].append(
-                _Lot(execution_date, execution_price + commission / quantity, quantity)
+                _Lot(
+                    lot_id=_stable_identity("lot", symbol, order_id),
+                    entry_order_id=order_id,
+                    entry_signal_date=(signal_date if cause is RebalanceCause.TARGET else None),
+                    entry_date=execution_date,
+                    entry_price=execution_price + commission / quantity,
+                    entry_cause=cause,
+                    quantity=quantity,
+                )
             )
         else:
             cash_effect = notional - commission
             ledger.cash += cash_effect
             ledger.quantities[symbol] -= quantity
-        order_id = f"{signal_date.isoformat()}-{execution_date.isoformat()}-{order_number:04d}"
         order = Order(
             order_id=order_id,
             signal_date=signal_date,
@@ -520,26 +555,38 @@ class BacktestEngine:
             slippage=slippage_amount,
             cash_effect=cash_effect,
         )
-        closed = (
+        closed, holdings = (
             self._close_trades(
-                ledger, symbol, quantity, execution_date, execution_price, commission
+                ledger,
+                symbol,
+                quantity,
+                signal_date,
+                execution_date,
+                execution_price,
+                commission,
+                order_id,
+                cause,
             )
             if side is OrderSide.SELL
-            else []
+            else ([], [])
         )
-        return order, fill, closed
+        return order, fill, closed, holdings
 
     def _close_trades(
         self,
         ledger: _Ledger,
         symbol: str,
         quantity: int,
+        exit_signal_date: date,
         exit_date: date,
         exit_price: float,
         exit_commission: float,
-    ) -> list[Trade]:
+        exit_order_id: str,
+        exit_cause: RebalanceCause,
+    ) -> tuple[list[Trade], list[HoldingSegment]]:
         remaining = quantity
         trades: list[Trade] = []
+        holdings: list[HoldingSegment] = []
         lots = ledger.lots[symbol]
         while remaining:
             if not lots:
@@ -551,24 +598,94 @@ class BacktestEngine:
                 exit_price * closed_quantity - exit_commission * closed_quantity / quantity
             )
             pnl = exit_proceeds - entry_cost
-            trades.append(
-                Trade(
+            holding_return = pnl / entry_cost if entry_cost else 0.0
+            holding_days = (exit_date - lot.entry_date).days
+            trade = Trade(
+                symbol=symbol,
+                entry_date=lot.entry_date,
+                exit_date=exit_date,
+                entry_price=lot.entry_price,
+                exit_price=exit_price,
+                quantity=closed_quantity,
+                pnl=pnl,
+                pnl_pct=holding_return,
+                holding_period=holding_days,
+            )
+            lot.closed_segment_count += 1
+            trades.append(trade)
+            holdings.append(
+                HoldingSegment(
+                    holding_id=_stable_identity(
+                        "holding",
+                        lot.lot_id,
+                        exit_order_id,
+                        str(lot.closed_segment_count),
+                    ),
+                    lot_id=lot.lot_id,
                     symbol=symbol,
-                    entry_date=lot.entry_date,
-                    exit_date=exit_date,
-                    entry_price=lot.entry_price,
-                    exit_price=exit_price,
                     quantity=closed_quantity,
-                    pnl=pnl,
-                    pnl_pct=pnl / entry_cost if entry_cost else 0.0,
-                    holding_period=(exit_date - lot.entry_date).days,
+                    entry_order_id=lot.entry_order_id,
+                    entry_signal_date=lot.entry_signal_date,
+                    entry_execution_date=lot.entry_date,
+                    entry_price=lot.entry_price,
+                    entry_execution_cause=lot.entry_cause,
+                    status=HoldingStatus.CLOSED,
+                    holding_days=holding_days,
+                    exit_order_id=exit_order_id,
+                    exit_signal_date=(
+                        exit_signal_date if exit_cause is RebalanceCause.TARGET else None
+                    ),
+                    exit_execution_date=exit_date,
+                    exit_price=exit_price,
+                    exit_execution_cause=exit_cause,
+                    realized_pnl=pnl,
+                    holding_return=holding_return,
                 )
             )
             lot.quantity -= closed_quantity
             remaining -= closed_quantity
             if lot.quantity == 0:
                 lots.pop(0)
-        return trades
+        return trades, holdings
+
+    def _open_holding_segments(
+        self,
+        ledger: _Ledger,
+        data: Mapping[str, _DataView],
+        symbols: Sequence[str],
+        report_end_date: date,
+        price_field: PriceField,
+    ) -> list[HoldingSegment]:
+        result: list[HoldingSegment] = []
+        for symbol in symbols:
+            ending_price = self._valid_price(
+                data[symbol].points_by_date[report_end_date].close_for(price_field)
+            )
+            for lot in ledger.lots[symbol]:
+                market_value = lot.quantity * ending_price
+                basis = lot.quantity * lot.entry_price
+                unrealized_pnl = market_value - basis
+                result.append(
+                    HoldingSegment(
+                        holding_id=_stable_identity("holding", lot.lot_id, "OPEN"),
+                        lot_id=lot.lot_id,
+                        symbol=symbol,
+                        quantity=lot.quantity,
+                        entry_order_id=lot.entry_order_id,
+                        entry_signal_date=lot.entry_signal_date,
+                        entry_execution_date=lot.entry_date,
+                        entry_price=lot.entry_price,
+                        entry_execution_cause=lot.entry_cause,
+                        status=HoldingStatus.OPEN,
+                        holding_days=(report_end_date - lot.entry_date).days,
+                        report_end_date=report_end_date,
+                        ending_price=ending_price,
+                        market_value=market_value,
+                        unrealized_pnl=unrealized_pnl,
+                        holding_return=unrealized_pnl / basis if basis else 0.0,
+                    )
+                )
+        return result
 
     def _affordable_quantity(
         self,

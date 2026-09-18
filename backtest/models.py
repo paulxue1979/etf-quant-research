@@ -47,6 +47,11 @@ class RebalanceCause(StrEnum):
     CONTRIBUTION = "contribution"
 
 
+class HoldingStatus(StrEnum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+
 def _positive_decimal(value: object, label: str) -> Decimal:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be a positive finite decimal")
@@ -279,6 +284,150 @@ class Trade:
 
 
 @dataclass(frozen=True)
+class HoldingSegment:
+    """One immutable FIFO lot fragment from real entry execution to exit or report end."""
+
+    holding_id: str
+    lot_id: str
+    symbol: str
+    quantity: int
+    entry_order_id: str
+    entry_signal_date: date | None
+    entry_execution_date: date
+    entry_price: float
+    entry_execution_cause: RebalanceCause
+    status: HoldingStatus
+    holding_days: int
+    exit_order_id: str | None = None
+    exit_signal_date: date | None = None
+    exit_execution_date: date | None = None
+    exit_price: float | None = None
+    exit_execution_cause: RebalanceCause | None = None
+    report_end_date: date | None = None
+    ending_price: float | None = None
+    market_value: float | None = None
+    realized_pnl: float | None = None
+    unrealized_pnl: float | None = None
+    holding_return: float | None = None
+
+    def __post_init__(self) -> None:
+        for label in ("holding_id", "lot_id", "entry_order_id"):
+            value = getattr(self, label)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} must be non-empty")
+            object.__setattr__(self, label, value.strip())
+        symbol = self.symbol.strip().upper() if isinstance(self.symbol, str) else ""
+        if not symbol or symbol == "CASH":
+            raise ValueError("holding symbol must identify a non-cash security")
+        if (
+            not isinstance(self.quantity, int)
+            or isinstance(self.quantity, bool)
+            or self.quantity <= 0
+        ):
+            raise ValueError("holding quantity must be a positive integer")
+        if not isinstance(self.entry_execution_date, date):
+            raise TypeError("entry_execution_date must be a date")
+        if self.entry_signal_date is not None and not isinstance(self.entry_signal_date, date):
+            raise TypeError("entry_signal_date must be a date or None")
+        cause = RebalanceCause(self.entry_execution_cause)
+        status = HoldingStatus(self.status)
+        if cause is RebalanceCause.TARGET and self.entry_signal_date is None:
+            raise ValueError("target-caused holding entry requires a signal date")
+        if cause is RebalanceCause.CONTRIBUTION and self.entry_signal_date is not None:
+            raise ValueError("contribution-caused holding entry must not claim a strategy signal")
+        if not math.isfinite(self.entry_price) or self.entry_price <= 0:
+            raise ValueError("entry_price must be finite and positive")
+        if not isinstance(self.holding_days, int) or self.holding_days < 0:
+            raise ValueError("holding_days must be a non-negative integer")
+        if self.holding_return is None:
+            raise ValueError("holding_return is required")
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "entry_execution_cause", cause)
+        object.__setattr__(self, "status", status)
+        self._validate_status_fields()
+        for label in (
+            "exit_price",
+            "ending_price",
+            "market_value",
+            "realized_pnl",
+            "unrealized_pnl",
+            "holding_return",
+        ):
+            value = getattr(self, label)
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{label} must be finite when available")
+
+    def _validate_status_fields(self) -> None:
+        if self.status is HoldingStatus.CLOSED:
+            if (
+                not isinstance(self.exit_order_id, str)
+                or not self.exit_order_id.strip()
+                or not isinstance(self.exit_execution_date, date)
+            ):
+                raise ValueError("closed holding requires exit order and execution date")
+            object.__setattr__(self, "exit_order_id", self.exit_order_id.strip())
+            if self.exit_signal_date is not None and not isinstance(self.exit_signal_date, date):
+                raise TypeError("exit_signal_date must be a date or None")
+            if self.exit_execution_date < self.entry_execution_date:
+                raise ValueError("holding exit cannot precede entry")
+            if self.exit_price is None or self.exit_price <= 0:
+                raise ValueError("closed holding requires a positive exit_price")
+            if self.exit_execution_cause is None or self.realized_pnl is None:
+                raise ValueError("closed holding requires exit cause and realized_pnl")
+            if any(
+                value is not None
+                for value in (
+                    self.report_end_date,
+                    self.ending_price,
+                    self.market_value,
+                    self.unrealized_pnl,
+                )
+            ):
+                raise ValueError("closed holding cannot contain open valuation fields")
+            expected_days = (self.exit_execution_date - self.entry_execution_date).days
+            object.__setattr__(
+                self,
+                "exit_execution_cause",
+                RebalanceCause(self.exit_execution_cause),
+            )
+            if self.exit_execution_cause is RebalanceCause.TARGET and self.exit_signal_date is None:
+                raise ValueError("target-caused holding exit requires a signal date")
+            if (
+                self.exit_execution_cause is RebalanceCause.CONTRIBUTION
+                and self.exit_signal_date is not None
+            ):
+                raise ValueError(
+                    "contribution-caused holding exit must not claim a strategy signal"
+                )
+        else:
+            if any(
+                value is not None
+                for value in (
+                    self.exit_order_id,
+                    self.exit_signal_date,
+                    self.exit_execution_date,
+                    self.exit_price,
+                    self.exit_execution_cause,
+                    self.realized_pnl,
+                )
+            ):
+                raise ValueError("open holding cannot contain exit or realized fields")
+            if not isinstance(self.report_end_date, date):
+                raise ValueError("open holding requires report_end_date")
+            if self.report_end_date < self.entry_execution_date:
+                raise ValueError("report end cannot precede holding entry")
+            if self.ending_price is None or self.ending_price <= 0:
+                raise ValueError("open holding requires a positive ending_price")
+            if self.market_value is None or self.market_value < 0:
+                raise ValueError("open holding requires non-negative market_value")
+            if self.unrealized_pnl is None:
+                raise ValueError("open holding requires unrealized_pnl")
+            expected_days = (self.report_end_date - self.entry_execution_date).days
+        if self.holding_days != expected_days:
+            raise ValueError("holding_days must use calendar days from execution dates")
+
+
+@dataclass(frozen=True)
 class EquityPoint:
     date: date
     cash: float
@@ -393,6 +542,7 @@ class BacktestResult:
     cumulative_contributions: float = 0.0
     total_capital_invested: float | None = None
     investment_profit: float | None = None
+    holding_segments: tuple[HoldingSegment, ...] | None = None
 
     def __post_init__(self) -> None:
         requested_start = self.requested_start_date or self.start_date
@@ -416,6 +566,9 @@ class BacktestResult:
             raise TypeError("contribution_events must contain ContributionEvent values")
         if not all(isinstance(item, ExternalCashFlow) for item in flows):
             raise TypeError("external_cash_flows must contain ExternalCashFlow values")
+        holdings = None if self.holding_segments is None else tuple(self.holding_segments)
+        if holdings is not None and not all(isinstance(item, HoldingSegment) for item in holdings):
+            raise TypeError("holding_segments must contain HoldingSegment values")
         cumulative = float(sum((item.amount for item in contributions), Decimal("0")))
         total_invested = (
             self.initial_capital + cumulative
@@ -431,6 +584,7 @@ class BacktestResult:
             raise ValueError("cumulative_contributions does not match contribution_events")
         object.__setattr__(self, "contribution_events", contributions)
         object.__setattr__(self, "external_cash_flows", flows)
+        object.__setattr__(self, "holding_segments", holdings)
         object.__setattr__(self, "cumulative_contributions", cumulative)
         object.__setattr__(self, "total_capital_invested", total_invested)
         object.__setattr__(self, "investment_profit", profit)
