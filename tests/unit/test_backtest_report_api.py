@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,6 +42,90 @@ def test_report_summary_reads_persisted_run_without_running_backtest(client: Tes
     assert payload["contribution_report"]["status"] == "available"
     assert payload["contribution_report"]["schedule"]["enabled"] is False
     assert payload["contribution_report"]["event_count"] == 0
+
+
+def test_report_summary_serializes_nested_immutable_benchmark_provenance(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = replace(
+        _run(),
+        benchmark_evaluation=MappingProxyType(
+            {
+                "status": "available",
+                "benchmark_symbol": "QQQ",
+                "ending_value": {
+                    "value": 12_000.0,
+                    "status": "available",
+                    "reason": None,
+                },
+                "performance": MappingProxyType(
+                    {
+                        "twr_total_return": {
+                            "value": 0.2,
+                            "status": "available",
+                            "reason": None,
+                        },
+                        "cagr": {
+                            "value": 0.1,
+                            "status": "available",
+                            "reason": None,
+                        },
+                        "max_drawdown": {
+                            "value": -0.1,
+                            "status": "available",
+                            "reason": None,
+                        },
+                        "twr_wealth_curve": (
+                            MappingProxyType({"date": "2026-01-02", "value": 1.0}),
+                            MappingProxyType({"date": "2026-01-04", "value": 1.2}),
+                        ),
+                        "drawdown_curve": (
+                            MappingProxyType({"date": "2026-01-02", "value": 0.0}),
+                            MappingProxyType({"date": "2026-01-04", "value": -0.1}),
+                        ),
+                    }
+                ),
+                "provenance": MappingProxyType(
+                    {
+                        "configuration": MappingProxyType(
+                            {
+                                "price_field": "ADJUSTED_CLOSE",
+                                "api_key": "must-not-leak",
+                            }
+                        )
+                    }
+                ),
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        report_api,
+        "backtest_repository",
+        SimpleNamespace(get=lambda run_id: run if run_id == run.backtest_run_id else None),
+    )
+
+    response = client.get("/research/backtests/repo-run/report")
+
+    assert response.status_code == 200
+    provenance = response.json()["summary"]["benchmark"]["provenance"]
+    assert provenance["configuration"] == {
+        "api_key": "[redacted]",
+        "price_field": "ADJUSTED_CLOSE",
+    }
+
+    series_response = client.get(
+        "/research/backtests/repo-run/report/series?include=benchmark_twr,benchmark_drawdown"
+    )
+
+    assert series_response.status_code == 200
+    series = series_response.json()["series"]
+    assert series["benchmark_twr"]["status"] == "available"
+    assert series["benchmark_twr"]["points"][-1] == {
+        "date": "2026-01-04",
+        "value": 1.2,
+    }
+    assert series["benchmark_drawdown"]["status"] == "available"
 
 
 def test_report_series_rejects_unknown_include_and_invalid_date_range(client: TestClient) -> None:

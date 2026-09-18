@@ -135,6 +135,28 @@ def test_turnover_excludes_external_contribution_notional() -> None:
     assert analysis.turnover_provenance["contribution_cash_is_not_traded"] is True
 
 
+def test_turnover_includes_real_contribution_triggered_fills() -> None:
+    result = _run(
+        contribution=ContributionSchedule(
+            ContributionFrequency.ONE_TIME,
+            100,
+            requested_date=date(2026, 1, 4),
+        )
+    )
+    analysis = analyze_backtest(result)
+    expected_notional = sum(fill.quantity * fill.price for fill in result.fills)
+    average_equity = sum(point.total_equity for point in result.equity_curve) / len(
+        result.equity_curve
+    )
+
+    assert {order.rebalance_cause.value for order in result.orders} == {
+        "target",
+        "contribution",
+    }
+    assert analysis.turnover.value == pytest.approx(expected_notional / average_equity)
+    assert analysis.turnover_provenance["traded_notional_by_cause"]["contribution"] > 0
+
+
 def test_benchmark_reuses_execution_contract_and_is_fair_for_dca() -> None:
     strategy = _run(
         contribution=ContributionSchedule(
@@ -163,3 +185,51 @@ def test_benchmark_reuses_execution_contract_and_is_fair_for_dca() -> None:
     assert artifact.provenance["same_contribution_schedule"] is True
     assert artifact.backtest_result.orders[0].date > artifact.backtest_result.orders[0].signal_date
     assert strategy.total_capital_invested == pytest.approx(1_100)
+
+
+def test_benchmark_is_aligned_to_the_owner_common_trading_timeline() -> None:
+    dataset = _data()
+    required_dates = tuple(point.date for point in dataset.points if point.date != date(2026, 1, 3))
+    config = BacktestConfig(
+        strategy_version_id="benchmark-owner",
+        start_date=dataset.points[0].date,
+        end_date=dataset.points[-1].date,
+        initial_capital=1_000,
+        price_field_used=PriceField.RAW_CLOSE,
+        rebalance_policy=RebalancePolicy(),
+    )
+
+    artifact = BenchmarkEvaluationService().evaluate(
+        "QQQ",
+        dataset,
+        config,
+        required_dates=required_dates,
+    )
+
+    assert artifact.status == "available"
+    assert tuple(point.date for point in artifact.backtest_result.equity_curve) == required_dates
+    assert artifact.provenance["common_timeline_enforced"] is True
+
+
+def test_benchmark_rejects_missing_owner_timeline_dates_without_shortening() -> None:
+    dataset = _data()
+    required_dates = tuple(point.date for point in dataset.points) + (date(2026, 1, 10),)
+    config = BacktestConfig(
+        strategy_version_id="benchmark-owner",
+        start_date=dataset.points[0].date,
+        end_date=date(2026, 1, 10),
+        initial_capital=1_000,
+        price_field_used=PriceField.RAW_CLOSE,
+        rebalance_policy=RebalancePolicy(),
+    )
+
+    artifact = BenchmarkEvaluationService().evaluate(
+        "QQQ",
+        dataset,
+        config,
+        required_dates=required_dates,
+    )
+
+    assert artifact.status == "not_evaluable"
+    assert artifact.backtest_result is None
+    assert "does not cover" in artifact.reason

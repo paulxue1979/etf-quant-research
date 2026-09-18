@@ -33,6 +33,7 @@ export interface BacktestRequest {
   execution_rule: "next_trading_day_open";
   fractional_shares: boolean;
   contribution_schedule?: ContributionScheduleRequest;
+  benchmark_symbol?: string;
 }
 
 export interface MetricValue {

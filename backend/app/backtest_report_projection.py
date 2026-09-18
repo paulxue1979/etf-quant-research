@@ -783,26 +783,28 @@ class BacktestReportProjectionService:
             }
         return {
             "status": "available",
-            "summary": {
-                "status": "available",
-                "benchmark_symbol": benchmark.get("benchmark_symbol"),
-                "ending_value": benchmark.get("ending_value"),
-                "twr_total_return": benchmark_twr,
-                "cagr": performance.get("cagr"),
-                "max_drawdown": performance.get("max_drawdown"),
-                "excess_return": excess
-                or {
-                    "value": None,
-                    "status": "not_evaluable",
-                    "reason": "strategy or benchmark TWR is not evaluable",
-                },
-                "ending_value_difference": {
-                    "value": None,
-                    "status": "not_evaluable",
-                    "reason": "ending strategy value is not paired in benchmark artifact",
-                },
-                "provenance": benchmark.get("provenance", {}),
-            },
+            "summary": _sanitize(
+                {
+                    "status": "available",
+                    "benchmark_symbol": benchmark.get("benchmark_symbol"),
+                    "ending_value": benchmark.get("ending_value"),
+                    "twr_total_return": benchmark_twr,
+                    "cagr": performance.get("cagr"),
+                    "max_drawdown": performance.get("max_drawdown"),
+                    "excess_return": excess
+                    or {
+                        "value": None,
+                        "status": "not_evaluable",
+                        "reason": "strategy or benchmark TWR is not evaluable",
+                    },
+                    "ending_value_difference": {
+                        "value": None,
+                        "status": "not_evaluable",
+                        "reason": "ending strategy value is not paired in benchmark artifact",
+                    },
+                    "provenance": benchmark.get("provenance", {}),
+                }
+            ),
         }
 
     @staticmethod
@@ -824,14 +826,14 @@ class BacktestReportProjectionService:
             return {"status": "not_evaluable", "reason": "benchmark performance is invalid"}
         key = "twr_wealth_curve" if name in {"benchmark", "benchmark_twr"} else "drawdown_curve"
         points = performance.get(key)
-        if not isinstance(points, list):
+        if not isinstance(points, tuple | list):
             return {"status": "not_available", "reason": "benchmark series was not persisted"}
         return {
             "status": "available",
             "series_type": "normalized_wealth" if key == "twr_wealth_curve" else "drawdown",
             "unit": "normalized" if key == "twr_wealth_curve" else "percent",
             "source": "BacktestRun.benchmark_evaluation",
-            "points": _window_points(points, start, end),
+            "points": _window_points((_sanitize(point) for point in points), start, end),
         }
 
 

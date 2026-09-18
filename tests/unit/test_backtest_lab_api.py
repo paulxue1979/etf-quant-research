@@ -78,6 +78,14 @@ def test_backtest_request_validation_rejects_unknown_fields(client: TestClient) 
     assert response.status_code == 422
 
 
+def test_backtest_request_normalizes_an_explicit_benchmark_symbol() -> None:
+    request = backtest_lab.BacktestRequest.model_validate(
+        _request_payload() | {"benchmark_symbol": " spy "}
+    )
+
+    assert request.benchmark_symbol == "SPY"
+
+
 def test_create_backtest_returns_persisted_run(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

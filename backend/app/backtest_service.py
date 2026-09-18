@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
+from analytics.benchmark import BenchmarkEvaluationService
 from analytics.performance import analyze_backtest
 from backend.app.backtest_models import BacktestRun
 from backend.app.backtest_repository import BacktestRepository
@@ -13,6 +14,7 @@ from backend.app.strategy_repository import StrategyRepository
 from backtest.integration import run_strategy_backtest
 from data.cache import DiskCache
 from data.config import TiingoSettings
+from data.exceptions import DataEngineError
 from data.models import HistoricalDataRequest, PriceField
 from data.service import HistoricalDataService
 from data.tiingo import TiingoClient
@@ -35,10 +37,12 @@ class BacktestService:
         strategy_repository: StrategyRepository,
         backtest_repository: BacktestRepository,
         data_service: HistoricalDataService,
+        benchmark_service: BenchmarkEvaluationService | None = None,
     ) -> None:
         self._strategies = strategy_repository
         self._runs = backtest_repository
         self._data = data_service
+        self._benchmarks = benchmark_service or BenchmarkEvaluationService()
 
     def run(self, request: Any) -> BacktestRun:
         """Execute and persist one new run for an immutable strategy version."""
@@ -93,6 +97,34 @@ class BacktestService:
         )
         integration = run_strategy_backtest(strategy_version, timeline, data, config)
         analysis = analyze_backtest(integration.backtest_result)
+        benchmark_evaluation = None
+        benchmark_symbol = getattr(request, "benchmark_symbol", None)
+        if benchmark_symbol is not None:
+            required_dates = tuple(point.date for point in integration.backtest_result.equity_curve)
+            try:
+                benchmark_data = self._data.get_history(
+                    HistoricalDataRequest(
+                        symbol=benchmark_symbol,
+                        start_date=request.start_date,
+                        end_date=request.end_date,
+                        price_field_used=request.price_field_used,
+                    )
+                )
+            except DataEngineError as exc:
+                benchmark = self._benchmarks.unavailable(
+                    benchmark_symbol,
+                    config,
+                    reason=f"benchmark market data unavailable: {type(exc).__name__}",
+                    required_dates=required_dates,
+                )
+            else:
+                benchmark = self._benchmarks.evaluate(
+                    benchmark_symbol,
+                    benchmark_data,
+                    config,
+                    required_dates=required_dates,
+                )
+            benchmark_evaluation = benchmark.to_dict()
         provenance = {
             "source": "BacktestService",
             "data_source_reference": source_reference,
@@ -110,6 +142,15 @@ class BacktestService:
                 }
                 for item in requirements
             ],
+            "benchmark": (
+                {
+                    "symbol": benchmark_symbol,
+                    "status": benchmark_evaluation["status"],
+                    "identity_hash": benchmark_evaluation["identity_hash"],
+                }
+                if benchmark_evaluation is not None
+                else None
+            ),
         }
         run = BacktestRun.create(
             strategy_id=strategy_version.strategy_id,
@@ -119,6 +160,7 @@ class BacktestService:
             performance_analysis=analysis,
             provenance=provenance,
             strategy_provenance=strategy_execution_provenance(integration.signal_records),
+            benchmark_evaluation=benchmark_evaluation,
         )
         return self._runs.create(run)
 

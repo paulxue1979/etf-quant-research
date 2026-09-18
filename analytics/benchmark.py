@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from types import MappingProxyType
 from typing import Any
 
@@ -89,6 +90,8 @@ class BenchmarkEvaluationService:
         benchmark_symbol: str,
         data: HistoricalDataSet,
         config: BacktestConfig,
+        *,
+        required_dates: Sequence[date] | None = None,
     ) -> BenchmarkEvaluation:
         if not isinstance(data, HistoricalDataSet):
             raise TypeError("data must be a HistoricalDataSet")
@@ -97,31 +100,20 @@ class BenchmarkEvaluationService:
         symbol = benchmark_symbol.strip().upper()
         if symbol != data.request.symbol:
             raise ValueError("benchmark symbol must match the supplied data set")
-        provenance = {
-            "source": "BacktestEngine",
-            "benchmark_symbol": symbol,
-            "price_field_used": config.price_field_used.value,
-            "execution_rule": config.execution_rule.value,
-            "same_initial_capital": True,
-            "same_contribution_schedule": True,
-            "requested_start_date": config.start_date.isoformat(),
-            "requested_end_date": config.end_date.isoformat(),
-            "data_source": data.source.value,
-            "data_request": data.request.cache_identity(),
-        }
-        identity_payload = {
-            "benchmark_symbol": symbol,
-            "configuration": config.snapshot({"benchmark": data.request.cache_identity()}),
-            "data_request": data.request.cache_identity(),
-        }
-        identity_hash = hashlib.sha256(
-            json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        timeline = _required_timeline(required_dates)
+        provenance = _benchmark_provenance(symbol, data, config, timeline)
+        identity_hash = _benchmark_identity(symbol, data, config, timeline)
         try:
-            if not data.points:
+            aligned_data = _align_to_timeline(data, timeline)
+            if not aligned_data.points:
                 raise ValueError("benchmark data set is empty")
-            allocation = TargetAllocation.from_weights(data.points[0].date, {symbol: 1.0})
-            result = self._engine.run({symbol: data}, (allocation,), config)
+            allocation = TargetAllocation.from_weights(
+                aligned_data.points[0].date,
+                {symbol: 1.0},
+            )
+            result = self._engine.run({symbol: aligned_data}, (allocation,), config)
+            if timeline and tuple(point.date for point in result.equity_curve) != timeline:
+                raise ValueError("benchmark result does not match the owner common timeline")
             analysis = analyze_backtest(result)
         except (BacktestError, ValueError, RuntimeError) as exc:
             return BenchmarkEvaluation(
@@ -141,6 +133,105 @@ class BenchmarkEvaluationService:
             provenance=provenance,
             identity_hash=identity_hash,
         )
+
+    def unavailable(
+        self,
+        benchmark_symbol: str,
+        config: BacktestConfig,
+        *,
+        reason: str,
+        required_dates: Sequence[date] | None = None,
+    ) -> BenchmarkEvaluation:
+        """Create a deterministic unavailable artifact without hiding the owner run."""
+        symbol = benchmark_symbol.strip().upper()
+        timeline = _required_timeline(required_dates)
+        provenance = _benchmark_provenance(symbol, None, config, timeline)
+        identity_hash = _benchmark_identity(symbol, None, config, timeline)
+        return BenchmarkEvaluation(
+            benchmark_symbol=symbol,
+            status="not_evaluable",
+            backtest_result=None,
+            performance_analysis=None,
+            provenance=provenance,
+            identity_hash=identity_hash,
+            reason=reason,
+        )
+
+
+def _required_timeline(required_dates: Sequence[date] | None) -> tuple[date, ...]:
+    if required_dates is None:
+        return ()
+    timeline = tuple(required_dates)
+    if len(timeline) < 2:
+        raise ValueError("benchmark common timeline requires at least two dates")
+    if not all(isinstance(item, date) for item in timeline):
+        raise TypeError("benchmark common timeline must contain date values")
+    if timeline != tuple(sorted(timeline)) or len(timeline) != len(set(timeline)):
+        raise ValueError("benchmark common timeline must be strictly date ordered")
+    return timeline
+
+
+def _align_to_timeline(
+    data: HistoricalDataSet,
+    timeline: tuple[date, ...],
+) -> HistoricalDataSet:
+    if not timeline:
+        return data
+    points_by_date = {point.date: point for point in data.points}
+    missing = tuple(item for item in timeline if item not in points_by_date)
+    if missing:
+        raise ValueError(
+            "benchmark data does not cover the owner common timeline: "
+            + ", ".join(item.isoformat() for item in missing[:5])
+        )
+    return HistoricalDataSet(
+        request=data.request,
+        points=tuple(points_by_date[item] for item in timeline),
+        source=data.source,
+    )
+
+
+def _benchmark_provenance(
+    symbol: str,
+    data: HistoricalDataSet | None,
+    config: BacktestConfig,
+    timeline: tuple[date, ...],
+) -> dict[str, Any]:
+    return {
+        "source": "BacktestEngine",
+        "benchmark_symbol": symbol,
+        "price_field_used": config.price_field_used.value,
+        "execution_rule": config.execution_rule.value,
+        "same_initial_capital": True,
+        "same_contribution_schedule": True,
+        "same_commission": True,
+        "same_slippage": True,
+        "same_integer_share_policy": True,
+        "common_timeline_enforced": bool(timeline),
+        "common_timeline_count": len(timeline),
+        "requested_start_date": config.start_date.isoformat(),
+        "requested_end_date": config.end_date.isoformat(),
+        "data_source": data.source.value if data is not None else None,
+        "data_request": data.request.cache_identity() if data is not None else None,
+    }
+
+
+def _benchmark_identity(
+    symbol: str,
+    data: HistoricalDataSet | None,
+    config: BacktestConfig,
+    timeline: tuple[date, ...],
+) -> str:
+    data_request = data.request.cache_identity() if data is not None else None
+    identity_payload = {
+        "benchmark_symbol": symbol,
+        "configuration": config.snapshot({"benchmark": data_request}),
+        "data_request": data_request,
+        "required_dates": [item.isoformat() for item in timeline],
+    }
+    return hashlib.sha256(
+        json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 __all__ = ["BenchmarkEvaluation", "BenchmarkEvaluationService"]

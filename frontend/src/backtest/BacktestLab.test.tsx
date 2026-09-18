@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./BacktestReportCharts", () => ({
-  BacktestReportCharts: () => <section aria-label="Core financial charts" />,
+  BacktestReportCharts: ({ error }: { error?: string | null }) => (
+    <section aria-label="Core financial charts">{error}</section>
+  ),
 }));
 
 import { BacktestLab } from "./BacktestLab";
@@ -252,11 +254,12 @@ function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
   };
 }
 
-function mockBacktestApi() {
+function mockBacktestApi(options: { seriesFails?: boolean } = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
+    if (url.includes("/report/series?") && options.seriesFails) return new Response(JSON.stringify({ detail: { message: "report series unavailable" } }), { status: 503 });
     if (url.includes("/report/series?")) return new Response(JSON.stringify(reportSeriesPayload()), { status: 200 });
     if (url.endsWith("/report")) return new Response(JSON.stringify(reportPayload()), { status: 200 });
     if (url.includes("/report/holdings")) return new Response(JSON.stringify({
@@ -301,6 +304,34 @@ describe("Backtest Lab", () => {
     expect(screen.getByRole("img", { name: "Drawdown curve" })).toBeInTheDocument();
     expect(screen.getAllByText("QQQ").length).toBeGreaterThan(0);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/backtests"), expect.objectContaining({ method: "POST" }));
+  });
+
+  it("submits an explicit benchmark symbol with the research run", async () => {
+    const fetchMock = mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: /v1/ })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Benchmark symbol"), { target: { value: "SPY" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
+
+    await waitFor(() => expect(screen.getByText("Capital Summary")).toBeInTheDocument());
+    const request = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).endsWith("/backtests") && init?.method === "POST"
+    );
+    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ benchmark_symbol: "SPY" });
+  });
+
+  it("keeps report summary available when the series endpoint fails", async () => {
+    mockBacktestApi({ seriesFails: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: /v1/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
+
+    await waitFor(() => expect(screen.getByText("Capital Summary")).toBeInTheDocument());
+    expect(screen.getByText("report series unavailable")).toBeInTheDocument();
   });
 
   it("shows N/A with the backend reason for unavailable metrics", async () => {

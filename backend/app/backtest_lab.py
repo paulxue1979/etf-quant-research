@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -21,6 +22,8 @@ from backend.app.research import compare_records, sorted_records, summary_payloa
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
 from backtest.models import ContributionFrequency, ContributionSchedule, ExecutionRule
 from data.models import PriceField
+
+_BENCHMARK_SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,15}$")
 
 
 class CommissionRequest(BaseModel):
@@ -75,6 +78,7 @@ class BacktestRequest(BaseModel):
     execution_rule: ExecutionRule = ExecutionRule.NEXT_TRADING_DAY_OPEN
     fractional_shares: bool = False
     contribution_schedule: ContributionScheduleRequest | None = None
+    benchmark_symbol: str | None = None
 
     @field_validator("initial_capital", "slippage")
     @classmethod
@@ -89,6 +93,16 @@ class BacktestRequest(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("identifier must not be blank")
+        return normalized
+
+    @field_validator("benchmark_symbol")
+    @classmethod
+    def valid_benchmark_symbol(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if not _BENCHMARK_SYMBOL_PATTERN.fullmatch(normalized):
+            raise ValueError("benchmark_symbol must be a valid market ticker")
         return normalized
 
     @field_validator("end_date")

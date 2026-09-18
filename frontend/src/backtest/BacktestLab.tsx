@@ -35,6 +35,7 @@ const EMPTY_FORM = {
   commissionPerOrder: "0",
   slippagePercent: "0",
   priceField: "adjusted_close" as PriceField,
+  benchmarkSymbol: "",
   contributionsEnabled: false,
   contributionFrequency: "monthly" as ContributionFrequency,
   contributionAmount: "",
@@ -220,12 +221,13 @@ function ComparisonView({ comparison }: { comparison: ResearchComparison }) {
   );
 }
 
-function Results({ run, report, reportSeries, reportLoading, reportError }: {
+function Results({ run, report, reportSeries, reportLoading, reportError, reportSeriesError }: {
   run: BacktestRun;
   report: BacktestReport | null;
   reportSeries: BacktestReportSeries | null;
   reportLoading: boolean;
   reportError: string | null;
+  reportSeriesError: string | null;
 }) {
   const analysis = run.performance_analysis;
   const result = run.backtest_result;
@@ -263,7 +265,7 @@ function Results({ run, report, reportSeries, reportLoading, reportError }: {
 
       <CapitalResearchPanel report={report} loading={reportLoading} error={reportError} />
 
-      <BacktestReportCharts report={report} series={reportSeries} loading={reportLoading} error={reportError} />
+      <BacktestReportCharts report={report} series={reportSeries} loading={reportLoading} error={reportError ?? reportSeriesError} />
 
       <HoldingPeriodReport backtestRunId={run.backtest_run_id} />
 
@@ -301,6 +303,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
   const [reportSeries, setReportSeries] = useState<BacktestReportSeries | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
+  const [reportSeriesError, setReportSeriesError] = useState<string | null>(null);
   const [researchRuns, setResearchRuns] = useState<ResearchBacktestSummary[]>([]);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [researchSortBy, setResearchSortBy] = useState<ResearchSortBy>("created_at");
@@ -370,6 +373,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     setReport(null);
     setReportSeries(null);
     setReportError(null);
+    setReportSeriesError(null);
     if (!strategyId || !versionId) {
       setError("Select a strategy and an immutable version before running.");
       return;
@@ -397,6 +401,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       price_field_used: form.priceField,
       execution_rule: "next_trading_day_open",
       fractional_shares: false,
+      ...(form.benchmarkSymbol.trim() ? { benchmark_symbol: form.benchmarkSymbol.trim().toUpperCase() } : {}),
       ...(form.contributionsEnabled ? {
         contribution_schedule: {
           frequency: form.contributionFrequency,
@@ -410,18 +415,15 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       const created = await backtestApi.create(request);
       setRun(created);
       setReportLoading(true);
-      try {
-        const [nextReport, nextSeries] = await Promise.all([
-          backtestApi.getReport(created.backtest_run_id),
-          backtestApi.getReportSeries(created.backtest_run_id, ["equity", "capital", "twr", "drawdown", "benchmark_twr", "benchmark_drawdown"]),
-        ]);
-        setReport(nextReport);
-        setReportSeries(nextSeries);
-      } catch (reason) {
-        setReportError(reason instanceof BacktestApiError ? reason.message : "Unable to load versioned report series.");
-      } finally {
-        setReportLoading(false);
-      }
+      const [reportResult, seriesResult] = await Promise.allSettled([
+        backtestApi.getReport(created.backtest_run_id),
+        backtestApi.getReportSeries(created.backtest_run_id, ["equity", "capital", "twr", "drawdown", "benchmark_twr", "benchmark_drawdown"]),
+      ]);
+      if (reportResult.status === "fulfilled") setReport(reportResult.value);
+      else setReportError(reportResult.reason instanceof BacktestApiError ? reportResult.reason.message : "Unable to load the versioned report summary.");
+      if (seriesResult.status === "fulfilled") setReportSeries(seriesResult.value);
+      else setReportSeriesError(seriesResult.reason instanceof BacktestApiError ? seriesResult.reason.message : "Unable to load versioned report series.");
+      setReportLoading(false);
       void loadResearchRuns();
     } catch (reason) {
       setError(reason instanceof BacktestApiError ? reason.message : "Backtest request failed.");
@@ -471,7 +473,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
           <label>Strategy<select aria-label="Backtest strategy" value={strategyId} onChange={(event) => setStrategyId(event.target.value)} disabled={busy === "catalog"}><option value="">Select strategy</option>{catalog.map((item) => <option key={item.strategy_id} value={item.strategy_id}>{item.name} · {item.strategy_id}</option>)}</select></label>
           <label>Strategy version<select aria-label="Backtest strategy version" value={versionId} onChange={(event) => setVersionId(event.target.value)} disabled={!strategyId || busy === "versions"}><option value="">Select immutable version</option>{versions.map((version) => <option key={version.version_id} value={version.version_id}>v{version.version_number} · {new Date(version.created_at).toLocaleString()}</option>)}</select></label>
           {selectedStrategy && <p className="muted">{selectedStrategy.version_count} saved version{selectedStrategy.version_count === 1 ? "" : "s"}; latest v{selectedStrategy.latest_version ?? "-"}.</p>}
-          <div className="basic-grid"><label>Start date<input type="date" value={form.startDate} onChange={(event) => updateForm("startDate", event.target.value)} /></label><label>End date<input type="date" value={form.endDate} onChange={(event) => updateForm("endDate", event.target.value)} /></label><label>Initial capital<input type="number" min="0.01" step="0.01" value={form.initialCapital} onChange={(event) => updateForm("initialCapital", event.target.value)} /></label><label>Price field<select value={form.priceField} onChange={(event) => updateForm("priceField", event.target.value as PriceField)}><option value="adjusted_close">ADJUSTED_CLOSE</option><option value="raw_close">RAW_CLOSE</option></select></label><label>Commission rate %<input type="number" min="0" step="0.01" value={form.commissionRatePercent} onChange={(event) => updateForm("commissionRatePercent", event.target.value)} /></label><label>Commission per order<input type="number" min="0" step="0.01" value={form.commissionPerOrder} onChange={(event) => updateForm("commissionPerOrder", event.target.value)} /></label><label>Slippage %<input type="number" min="0" max="99.99" step="0.01" value={form.slippagePercent} onChange={(event) => updateForm("slippagePercent", event.target.value)} /></label></div>
+          <div className="basic-grid"><label>Start date<input type="date" value={form.startDate} onChange={(event) => updateForm("startDate", event.target.value)} /></label><label>End date<input type="date" value={form.endDate} onChange={(event) => updateForm("endDate", event.target.value)} /></label><label>Initial capital<input type="number" min="0.01" step="0.01" value={form.initialCapital} onChange={(event) => updateForm("initialCapital", event.target.value)} /></label><label>Price field<select value={form.priceField} onChange={(event) => updateForm("priceField", event.target.value as PriceField)}><option value="adjusted_close">ADJUSTED_CLOSE</option><option value="raw_close">RAW_CLOSE</option></select></label><label>Benchmark symbol<input aria-label="Benchmark symbol" maxLength={16} placeholder="Optional, e.g. SPY" value={form.benchmarkSymbol} onChange={(event) => updateForm("benchmarkSymbol", event.target.value.toUpperCase())} /></label><label>Commission rate %<input type="number" min="0" step="0.01" value={form.commissionRatePercent} onChange={(event) => updateForm("commissionRatePercent", event.target.value)} /></label><label>Commission per order<input type="number" min="0" step="0.01" value={form.commissionPerOrder} onChange={(event) => updateForm("commissionPerOrder", event.target.value)} /></label><label>Slippage %<input type="number" min="0" max="99.99" step="0.01" value={form.slippagePercent} onChange={(event) => updateForm("slippagePercent", event.target.value)} /></label></div>
           <fieldset className="contribution-config">
             <legend>Capital Contributions</legend>
             <label className="checkbox-label"><input aria-label="Enable contributions" type="checkbox" checked={form.contributionsEnabled} onChange={(event) => updateForm("contributionsEnabled", event.target.checked)} />Enable contributions</label>
@@ -485,7 +487,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>
-      {run && <Results run={run} report={report} reportSeries={reportSeries} reportLoading={reportLoading} reportError={reportError} />}
+      {run && <Results run={run} report={report} reportSeries={reportSeries} reportLoading={reportLoading} reportError={reportError} reportSeriesError={reportSeriesError} />}
       <section className="research-workspace">
         {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
         <ResearchProtocolPanel

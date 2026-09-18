@@ -17,7 +17,7 @@ from analytics.models import (
     TradeMetrics,
     WealthPoint,
 )
-from backtest.models import BacktestResult, EquityPoint, RebalanceCause, Trade
+from backtest.models import BacktestResult, EquityPoint, Trade
 from data.models import PriceField
 
 _DAYS_PER_YEAR = 365.0
@@ -417,25 +417,32 @@ def _exposure_analytics(
 
 def _turnover_analytics(backtest: BacktestResult) -> tuple[MetricValue, dict[str, Any]]:
     orders = {item.order_id: item for item in backtest.orders}
-    traded_notional = math.fsum(
-        abs(float(fill.quantity) * float(fill.price))
-        for fill in backtest.fills
-        if orders.get(fill.order_id) is not None
-        and orders[fill.order_id].rebalance_cause is RebalanceCause.TARGET
-    )
+    traded_notional_by_cause: dict[str, float] = {}
+    for fill in backtest.fills:
+        order = orders.get(fill.order_id)
+        if order is None:
+            continue
+        cause = order.rebalance_cause.value
+        traded_notional_by_cause[cause] = traded_notional_by_cause.get(cause, 0.0) + abs(
+            float(fill.quantity) * float(fill.price)
+        )
+    traded_notional = math.fsum(traded_notional_by_cause.values())
     average_equity = math.fsum(float(item.total_equity) for item in backtest.equity_curve) / len(
         backtest.equity_curve
     )
     if average_equity <= 0:
         return MetricValue.not_evaluable("average portfolio equity is not positive"), {
             "contribution_cash_is_not_traded": True,
+            "contribution_triggered_fills_are_traded": True,
             "status": "not_evaluable",
         }
     return MetricValue.available(traded_notional / average_equity), {
         "contribution_cash_is_not_traded": True,
-        "traded_notional_source": "target-cause fills only",
+        "contribution_triggered_fills_are_traded": True,
+        "traded_notional_source": "all canonical fills joined to their orders",
         "denominator": "average raw BacktestResult.equity_curve.total_equity",
         "traded_notional": traded_notional,
+        "traded_notional_by_cause": dict(sorted(traded_notional_by_cause.items())),
     }
 
 
