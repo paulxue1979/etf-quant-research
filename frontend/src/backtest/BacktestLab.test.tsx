@@ -8,6 +8,10 @@ vi.mock("./BacktestReportCharts", () => ({
 }));
 
 import { BacktestLab } from "./BacktestLab";
+
+vi.mock("./MultiStrategyTwrChart", () => ({
+  MultiStrategyTwrChart: ({ visibleSeries }: { visibleSeries: unknown[] }) => <section aria-label="Multi-strategy TWR comparison" data-series-count={visibleSeries.length} />,
+}));
 import { backtestApi } from "./api";
 
 afterEach(() => {
@@ -131,16 +135,27 @@ function researchRun(runId: string, strategyId: string) {
 function researchPayload() {
   const runs = [researchRun("backtest-research-a", "allocation-a"), researchRun("backtest-research-b", "allocation-b")];
   return {
-    comparable: true,
-    incompatibility_reasons: [],
-    runs,
+    comparison_schema_version: "2.0",
+    ordering: "request_order",
+    include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+    compatibility: {
+      twr: { status: "COMPARABLE", reason_codes: [], human_readable_reasons: [], dimensions: {} },
+    },
+    runs: runs.map((run) => ({
+      ...run,
+      strategy_name: run.strategy_id,
+      strategy_version: "v1",
+      short_display_label: `${run.strategy_id} · v1 · ${run.backtest_run_id.slice(-8)}`,
+      asset_universe: ["QQQ"],
+    })),
     series: runs.map((run) => ({
       backtest_run_id: run.backtest_run_id,
-      equity_curve: [
-        { date: "2025-01-01", total_equity: 100000 },
-        { date: "2025-01-03", total_equity: 103000 },
-      ],
-      drawdown_curve: [{ date: "2025-01-01", value: 0 }, { date: "2025-01-03", value: -0.01 }],
+      strategy_version_id: run.strategy_version_id,
+      start_date: run.start_date,
+      end_date: run.end_date,
+      twr: { status: "available", unit: "base_100_wealth_index", points: [{ date: "2025-01-01", value: 100 }, { date: "2025-01-03", value: 103 }] },
+      drawdown: { status: "excluded", points: [] },
+      portfolio_value: { status: "excluded", points: [] },
     })),
     provenance_notice: "Data provenance recorded; complete immutable market-data snapshot versioning is not yet implemented.",
   };
@@ -155,6 +170,10 @@ function researchHistory() {
     researchRun("backtest-research-e", "allocation-e"),
     researchRun("backtest-research-f", "allocation-f"),
     researchRun("backtest-research-g", "allocation-g"),
+    researchRun("backtest-research-h", "allocation-h"),
+    researchRun("backtest-research-i", "allocation-i"),
+    researchRun("backtest-research-j", "allocation-j"),
+    researchRun("backtest-research-k", "allocation-k"),
   ];
   return { items, total: items.length, limit: 50, offset: 0, sort_by: "created_at", order: "desc" };
 }
@@ -345,8 +364,8 @@ describe("Backtest Lab", () => {
     expect(screen.getAllByText("N/A").length).toBeGreaterThan(0);
   });
 
-  it("loads saved history, limits selection to six, and displays a backend comparison", async () => {
-    mockBacktestApi();
+  it("loads saved history, preserves selection order, limits selection to ten, and displays v2 TWR", async () => {
+    const fetchMock = mockBacktestApi();
     render(<BacktestLab onBack={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText("Saved backtest runs")).toBeInTheDocument());
@@ -355,16 +374,20 @@ describe("Backtest Lab", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select research run backtest-research-b" }));
     fireEvent.click(screen.getByRole("button", { name: "Compare selected" }));
 
-    await waitFor(() => expect(screen.getByText("Strictly comparable")).toBeInTheDocument());
-    expect(screen.getByRole("img", { name: "Equity curve comparison" })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Drawdown curve comparison" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Comparable TWR context")).toBeInTheDocument());
+    expect(screen.getByLabelText("Multi-strategy TWR comparison")).toHaveAttribute("data-series-count", "2");
     expect(screen.getByText(/complete immutable market-data snapshot versioning/)).toBeInTheDocument();
-    expect(screen.getAllByText("N/A").length).toBeGreaterThan(0);
+    const comparisonRequest = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/research/comparisons") && init?.method === "POST");
+    expect(JSON.parse(String(comparisonRequest?.[1]?.body))).toEqual({
+      backtest_run_ids: ["backtest-research-a", "backtest-research-b"],
+      include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+    });
 
-    for (const runId of ["backtest-research-c", "backtest-research-d", "backtest-research-e", "backtest-research-f"]) {
+    for (const runId of ["backtest-research-c", "backtest-research-d", "backtest-research-e", "backtest-research-f", "backtest-research-g", "backtest-research-h", "backtest-research-i", "backtest-research-j"]) {
       fireEvent.click(screen.getByRole("checkbox", { name: `Select research run ${runId}` }));
     }
-    expect(screen.getByRole("checkbox", { name: "Select research run backtest-research-g" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Select research run backtest-research-k" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Maximum 10 runs selected");
   });
 
   it("creates and locks an OOS research protocol before IS evaluation", async () => {

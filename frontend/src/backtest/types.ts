@@ -475,24 +475,57 @@ export interface ResearchBacktestList {
   order: "asc" | "desc";
 }
 
-export interface ComparisonIncompatibility {
-  code: string;
-  field: string;
-  reference_backtest_run_id: string;
-  reference_value: unknown;
-  values: Array<{ backtest_run_id: string; value: unknown }>;
+export type ComparisonCompatibilityStatus = "COMPARABLE" | "WARNING" | "INCOMPATIBLE" | "UNKNOWN";
+
+export interface ComparisonCompatibility {
+  status: ComparisonCompatibilityStatus;
+  reason_codes: string[];
+  human_readable_reasons: string[];
+  dimensions: Record<string, unknown>;
+}
+
+export interface ComparisonRunIdentity {
+  backtest_run_id: string;
+  strategy_id: string;
+  strategy_version_id: string;
+  strategy_name: string;
+  strategy_version: string;
+  short_display_label: string;
+  start_date: string;
+  end_date: string;
+  asset_universe: string[];
+}
+
+export interface ComparisonSeriesCapability {
+  status: "available" | "not_available" | "excluded";
+  reason?: string;
+  unit?: string;
+  source?: string;
+  normalization?: Record<string, unknown>;
+  points: Array<{ date: string; value: number }>;
 }
 
 export interface ComparisonSeries {
   backtest_run_id: string;
-  equity_curve: Array<{ date: string; total_equity: number }>;
-  drawdown_curve: DrawdownPoint[];
+  strategy_version_id: string;
+  start_date: string;
+  end_date: string;
+  twr: ComparisonSeriesCapability;
+  drawdown: ComparisonSeriesCapability;
+  portfolio_value: ComparisonSeriesCapability;
 }
 
 export interface ResearchComparison {
-  comparable: boolean;
-  incompatibility_reasons: ComparisonIncompatibility[];
-  runs: ResearchBacktestSummary[];
+  comparison_schema_version: "2.0";
+  ordering: "request_order";
+  include: {
+    twr: true;
+    drawdown: false;
+    portfolio_value: false;
+    metrics: false;
+  };
+  compatibility: { twr: ComparisonCompatibility } & Record<string, ComparisonCompatibility>;
+  runs: ComparisonRunIdentity[];
   series: ComparisonSeries[];
   provenance_notice: string;
 }

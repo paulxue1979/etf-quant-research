@@ -134,7 +134,21 @@ export const backtestApi = {
   compare(runIds: string[]): Promise<ResearchComparison> {
     return requestJson<ResearchComparison>("/research/comparisons", {
       method: "POST",
-      body: JSON.stringify({ backtest_run_ids: runIds }),
+      body: JSON.stringify({
+        backtest_run_ids: runIds,
+        include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+      }),
+    }).then((payload) => {
+      if (
+        payload.comparison_schema_version !== "2.0"
+        || payload.ordering !== "request_order"
+        || !Array.isArray(payload.runs)
+        || !Array.isArray(payload.series)
+        || !payload.compatibility?.twr
+      ) {
+        throw new BacktestApiError("malformed", "Backtest Lab returned an unsupported comparison contract.");
+      }
+      return payload;
     });
   },
 
