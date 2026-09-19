@@ -5,7 +5,6 @@ import type { ComparisonChartSeries } from "./comparisonCharts";
 
 const chartHarness = vi.hoisted(() => ({
   lines: [] as Array<{ setData: ReturnType<typeof vi.fn> }>,
-  crosshairHandler: null as ((event: { time?: string }) => void) | null,
   resize: vi.fn(),
   remove: vi.fn(),
   createChart: vi.fn(),
@@ -19,7 +18,7 @@ vi.mock("lightweight-charts", () => ({
   createChart: chartHarness.createChart,
 }));
 
-import { MultiStrategyTwrChart } from "./MultiStrategyTwrChart";
+import { MultiStrategyDrawdownChart, MultiStrategyTwrChart } from "./MultiStrategyTwrChart";
 
 const allSeries: ComparisonChartSeries[] = [
   { runId: "run-1", label: "Strategy 1", color: "#111111", status: "available", points: [{ date: "2025-01-02", value: 100 }, { date: "2025-01-03", value: 101 }] },
@@ -28,7 +27,6 @@ const allSeries: ComparisonChartSeries[] = [
 
 beforeEach(() => {
   chartHarness.lines = [];
-  chartHarness.crosshairHandler = null;
   chartHarness.resize.mockClear();
   chartHarness.remove.mockClear();
   chartHarness.createChart.mockImplementation(() => ({
@@ -42,7 +40,7 @@ beforeEach(() => {
       subscribeVisibleTimeRangeChange: vi.fn(),
       unsubscribeVisibleTimeRangeChange: vi.fn(),
     }),
-    subscribeCrosshairMove: vi.fn((handler) => { chartHarness.crosshairHandler = handler; }),
+    subscribeCrosshairMove: vi.fn(),
     unsubscribeCrosshairMove: vi.fn(),
     resize: chartHarness.resize,
     remove: chartHarness.remove,
@@ -62,7 +60,7 @@ afterEach(() => {
 
 describe("MultiStrategyTwrChart", () => {
   it("passes two sparse backend series to Lightweight Charts without aligning their indexes", () => {
-    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} onReady={() => () => undefined} />);
+    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} hoverDate={null} onReady={() => () => undefined} />);
 
     expect(chartHarness.lines).toHaveLength(2);
     expect(chartHarness.lines[0].setData).toHaveBeenCalledWith([{ time: "2025-01-02", value: 100 }, { time: "2025-01-03", value: 101 }]);
@@ -70,23 +68,19 @@ describe("MultiStrategyTwrChart", () => {
   });
 
   it("shows a shared exact-date tooltip and reports missing dates as N/A", () => {
-    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} onReady={() => () => undefined} />);
-
-    act(() => chartHarness.crosshairHandler?.({ time: "2025-01-02" }));
+    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} hoverDate="2025-01-02" onReady={() => () => undefined} />);
     expect(screen.getByRole("status")).toHaveTextContent("Strategy 1: 100.00");
     expect(screen.getByRole("status")).toHaveTextContent("Strategy 2: N/A");
   });
 
   it("excludes hidden runs from the tooltip contract", () => {
-    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set(["run-2"])} focusRunId={null} visibleSeries={[allSeries[0]]} onReady={() => () => undefined} />);
-
-    act(() => chartHarness.crosshairHandler?.({ time: "2025-01-03" }));
+    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set(["run-2"])} focusRunId={null} visibleSeries={[allSeries[0]]} hoverDate="2025-01-03" onReady={() => () => undefined} />);
     expect(screen.getByRole("status")).toHaveTextContent("Strategy 1: 101.00");
     expect(screen.getByRole("status")).not.toHaveTextContent("Strategy 2");
   });
 
   it("resizes the date-aware chart through ResizeObserver", () => {
-    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} onReady={() => () => undefined} />);
+    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} hoverDate={null} onReady={() => () => undefined} />);
     expect(chartHarness.resize).toHaveBeenCalledWith(840, 500);
 
     act(() => chartHarness.resizeCallback?.());
@@ -94,9 +88,36 @@ describe("MultiStrategyTwrChart", () => {
   });
 
   it("renders an explicit empty state instead of creating a blank chart", () => {
-    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set(["run-1", "run-2"])} focusRunId={null} visibleSeries={[]} onReady={() => () => undefined} />);
+    render(<MultiStrategyTwrChart allSeries={allSeries} hiddenRunIds={new Set(["run-1", "run-2"])} focusRunId={null} visibleSeries={[]} hoverDate={null} onReady={() => () => undefined} />);
 
     expect(screen.getByRole("status")).toHaveTextContent("No visible canonical TWR series");
     expect(chartHarness.createChart).not.toHaveBeenCalled();
+  });
+
+  it("renders ten canonical drawdown series without changing their exact dates", () => {
+    const drawdownSeries = Array.from({ length: 10 }, (_, index) => ({
+      runId: `run-${index + 1}`,
+      label: `Strategy ${index + 1}`,
+      color: `#00000${index}`,
+      status: "available" as const,
+      points: [{ date: `2025-01-${String(index + 2).padStart(2, "0")}`, value: -index / 100 }],
+    }));
+    render(<MultiStrategyDrawdownChart allSeries={drawdownSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={drawdownSeries} hoverDate={null} onReady={() => () => undefined} />);
+
+    expect(chartHarness.lines).toHaveLength(10);
+    expect(chartHarness.lines[9].setData).toHaveBeenCalledWith([{ time: "2025-01-11", value: -0.09 }]);
+    expect(screen.getByLabelText("Multi-strategy drawdown comparison")).toHaveAttribute("data-series-count", "10");
+    expect(chartHarness.resize).toHaveBeenCalledWith(840, 320);
+  });
+
+  it("formats drawdown at the shared exact date and keeps missing dates as N/A", () => {
+    const drawdownSeries = allSeries.map((item, index) => ({
+      ...item,
+      points: index === 0 ? [{ date: "2025-01-02", value: -0.125 }] : [{ date: "2025-01-03", value: -0.08 }],
+    }));
+    render(<MultiStrategyDrawdownChart allSeries={drawdownSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={drawdownSeries} hoverDate="2025-01-02" onReady={() => () => undefined} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Strategy 1: -12.50%");
+    expect(screen.getByRole("status")).toHaveTextContent("Strategy 2: N/A");
   });
 });

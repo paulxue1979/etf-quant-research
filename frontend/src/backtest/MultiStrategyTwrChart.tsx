@@ -1,27 +1,38 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { ColorType, CrosshairMode, LineSeries, createChart, type Time } from "lightweight-charts";
 
 import { comparisonTooltipRows, type ComparisonChartSeries } from "./comparisonCharts";
 import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
-interface MultiStrategyTwrChartProps {
+interface MultiStrategyChartProps {
+  kind: "twr" | "drawdown";
   allSeries: ComparisonChartSeries[];
   hiddenRunIds: ReadonlySet<string>;
   focusRunId: string | null;
   visibleSeries: ComparisonChartSeries[];
+  hoverDate: string | null;
   onReady: (chart: SyncedChart) => () => void;
 }
 
-export function MultiStrategyTwrChart({ allSeries, hiddenRunIds, focusRunId, visibleSeries, onReady }: MultiStrategyTwrChartProps) {
+function displayValue(kind: MultiStrategyChartProps["kind"], value: number): string {
+  return kind === "drawdown" ? `${(value * 100).toFixed(2)}%` : value.toFixed(2);
+}
+
+function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visibleSeries, hoverDate, onReady }: MultiStrategyChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [hover, setHover] = useState<{ date: string; rows: ReturnType<typeof comparisonTooltipRows> } | null>(null);
+  const height = kind === "twr" ? 500 : 320;
+  const title = kind === "twr" ? "Strategy Performance (TWR)" : "Drawdown";
+  const ariaLabel = kind === "twr" ? "Multi-strategy TWR comparison" : "Multi-strategy drawdown comparison";
+  const description = kind === "twr"
+    ? "Backend base-100 wealth index · exact trading dates"
+    : "Backend canonical drawdown path · exact trading dates";
 
   useEffect(() => {
     if (!containerRef.current || visibleSeries.length === 0) return undefined;
     const container = containerRef.current;
     const gestures = trackViewportGestures(container);
     const chart = createChart(container, {
-      height: 500,
+      height,
       layout: { background: { type: ColorType.Solid, color: "#0f181d" }, textColor: "#8c9aa4", attributionLogo: false },
       grid: { vertLines: { color: "#1d2a31" }, horzLines: { color: "#1d2a31" } },
       crosshair: { mode: CrosshairMode.Normal },
@@ -29,7 +40,7 @@ export function MultiStrategyTwrChart({ allSeries, hiddenRunIds, focusRunId, vis
       timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4 },
     });
     const resize = () => {
-      if (container.clientWidth > 0) chart.resize(container.clientWidth, 500);
+      if (container.clientWidth > 0) chart.resize(container.clientWidth, height);
     };
     resize();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
@@ -41,7 +52,7 @@ export function MultiStrategyTwrChart({ allSeries, hiddenRunIds, focusRunId, vis
         color: item.color,
         lineWidth: focusRunId === item.runId ? 3 : 2,
         title: item.label,
-        priceFormat: { type: "custom", formatter: (value: number) => value.toFixed(2) },
+        priceFormat: { type: "custom", formatter: (value: number) => displayValue(kind, value) },
       });
       line.setData(item.points.map((point) => ({ time: point.date as Time, value: point.value })));
       chartSeries.push(line);
@@ -50,29 +61,31 @@ export function MultiStrategyTwrChart({ allSeries, hiddenRunIds, focusRunId, vis
       }
     }
     chart.timeScale().fitContent();
-    const crosshairHandler = (event: { time?: Time }) => {
-      if (typeof event.time !== "string") {
-        setHover(null);
-        return;
-      }
-      setHover({ date: event.time, rows: comparisonTooltipRows(allSeries, event.time, hiddenRunIds, focusRunId) });
-    };
-    chart.subscribeCrosshairMove(crosshairHandler);
     const disposeSync = onReady({ chart, series: chartSeries, valuesByTime, isUserViewportChange: gestures.isUserViewportChange });
     return () => {
       disposeSync();
       gestures.dispose();
       observer?.disconnect();
-      chart.unsubscribeCrosshairMove(crosshairHandler);
       chart.remove();
     };
-  }, [allSeries, focusRunId, hiddenRunIds, onReady, visibleSeries]);
+  }, [focusRunId, height, kind, onReady, visibleSeries]);
 
-  return <section className="comparison-chart" aria-label="Multi-strategy TWR comparison" data-series-count={visibleSeries.length}>
-    <div className="financial-chart-heading"><div><h3>Strategy Performance (TWR)</h3><span className="muted">Backend base-100 wealth index · exact trading dates</span></div><span className="chart-unit">BASE 100</span></div>
+  const hoverRows = hoverDate === null ? [] : comparisonTooltipRows(allSeries, hoverDate, hiddenRunIds, focusRunId);
+  return <section className={`comparison-chart comparison-chart-${kind}`} aria-label={ariaLabel} data-series-count={visibleSeries.length} data-runs={visibleSeries.map((item) => item.runId).join(",")}>
+    <div className="financial-chart-heading"><div><h3>{title}</h3><span className="muted">{description}</span></div><span className="chart-unit">{kind === "twr" ? "BASE 100" : "%"}</span></div>
     {visibleSeries.length === 0
-      ? <div className="comparison-empty" role="status">No visible canonical TWR series.</div>
-      : <div className="comparison-chart-canvas" ref={containerRef} />}
-    {hover && <div className="financial-chart-tooltip comparison-tooltip" role="status"><strong>{hover.date}</strong>{hover.rows.map((row) => <span key={row.runId}><i style={{ background: row.color }} />{row.label}: {row.value === null ? "N/A" : row.value.toFixed(2)}</span>)}</div>}
+      ? <div className="comparison-empty" role="status">No visible canonical {kind === "twr" ? "TWR" : "drawdown"} series.</div>
+      : <div className="comparison-chart-canvas" style={{ minHeight: height }} ref={containerRef} />}
+    {hoverDate && <div className="financial-chart-tooltip comparison-tooltip" role="status"><strong>{hoverDate}</strong>{hoverRows.map((row) => <span key={row.runId}><i style={{ background: row.color }} />{row.label}: {row.value === null ? "N/A" : displayValue(kind, row.value)}</span>)}</div>}
   </section>;
+}
+
+type SharedChartProps = Omit<MultiStrategyChartProps, "kind">;
+
+export function MultiStrategyTwrChart(props: SharedChartProps) {
+  return <MultiStrategyChart {...props} kind="twr" />;
+}
+
+export function MultiStrategyDrawdownChart(props: SharedChartProps) {
+  return <MultiStrategyChart {...props} kind="drawdown" />;
 }

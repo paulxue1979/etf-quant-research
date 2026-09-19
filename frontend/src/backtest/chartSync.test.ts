@@ -79,6 +79,22 @@ describe("ChartSyncController", () => {
     expect(setCrosshair).toHaveBeenCalledWith(0.98, "2025-01-02", targetSeries);
   });
 
+  it("publishes the exact shared crosshair date and clears it when the pointer leaves", () => {
+    const source = fakeChart();
+    const target = fakeChart();
+    const changed = vi.fn();
+    const controller = new ChartSyncController();
+    controller.register("source", synced(source, new Map()));
+    controller.register("target", synced(target, new Map()));
+    controller.subscribeCrosshairChange(changed);
+
+    source.triggerCrosshair({ time: "2025-01-02", seriesData: new Map() });
+    source.triggerCrosshair({ time: null, seriesData: new Map() });
+
+    expect(changed).toHaveBeenNthCalledWith(1, "2025-01-02", "source");
+    expect(changed).toHaveBeenNthCalledWith(2, null, "source");
+  });
+
   it("clears a sibling crosshair when the date has no point or the pointer leaves", () => {
     const source = fakeChart();
     const target = fakeChart();

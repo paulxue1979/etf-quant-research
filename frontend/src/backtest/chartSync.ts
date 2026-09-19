@@ -10,10 +10,12 @@ export interface SyncedChart {
 }
 
 export type ViewportChangeHandler = (range: IRange<Time>, sourceId: string) => void;
+export type CrosshairChangeHandler = (time: string | null, sourceId: string) => void;
 
 export class ChartSyncController {
   private readonly charts = new Map<string, SyncedChart>();
   private readonly viewportChangeHandlers = new Set<ViewportChangeHandler>();
+  private readonly crosshairChangeHandlers = new Set<CrosshairChangeHandler>();
   private syncing = false;
 
   register(id: string, chart: SyncedChart): () => void {
@@ -33,6 +35,8 @@ export class ChartSyncController {
     };
     const crosshairHandler = (event: MouseEventParams<Time>) => {
       if (this.syncing) return;
+      const time = typeof event.time === "string" ? event.time : null;
+      for (const handler of this.crosshairChangeHandlers) handler(time, id);
       this.runSynchronized((otherId, other) => {
         if (otherId === id) return;
         if (event.time === undefined || event.time === null) {
@@ -56,6 +60,11 @@ export class ChartSyncController {
   subscribeViewportChange(handler: ViewportChangeHandler): () => void {
     this.viewportChangeHandlers.add(handler);
     return () => this.viewportChangeHandlers.delete(handler);
+  }
+
+  subscribeCrosshairChange(handler: CrosshairChangeHandler): () => void {
+    this.crosshairChangeHandlers.add(handler);
+    return () => this.crosshairChangeHandlers.delete(handler);
   }
 
   setRange(range: IRange<Time>): void {

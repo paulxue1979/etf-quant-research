@@ -494,6 +494,14 @@ export interface ComparisonRunIdentity {
   start_date: string;
   end_date: string;
   asset_universe: string[];
+  metrics_status: "included" | "excluded";
+  metrics: Record<string, ComparisonMetricValue>;
+}
+
+export interface ComparisonMetricValue {
+  value: unknown;
+  status: "available" | "not_available" | "not_evaluable";
+  reason: string | null;
 }
 
 export interface ComparisonSeriesCapability {
@@ -520,9 +528,9 @@ export interface ResearchComparison {
   ordering: "request_order";
   include: {
     twr: true;
-    drawdown: false;
+    drawdown: true;
     portfolio_value: false;
-    metrics: false;
+    metrics: true;
   };
   compatibility: { twr: ComparisonCompatibility } & Record<string, ComparisonCompatibility>;
   runs: ComparisonRunIdentity[];

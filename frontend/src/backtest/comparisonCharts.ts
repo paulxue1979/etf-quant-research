@@ -14,16 +14,22 @@ export interface ComparisonChartSeries {
   points: Array<{ date: string; value: number }>;
 }
 
-export function buildComparisonSeries(comparison: ResearchComparison): ComparisonChartSeries[] {
+export function buildComparisonSeries(
+  comparison: ResearchComparison,
+  capability: "twr" | "drawdown" = "twr",
+): ComparisonChartSeries[] {
   const identities = new Map(comparison.runs.map((run) => [run.backtest_run_id, run]));
-  return comparison.series.map((series, index) => ({
-    runId: series.backtest_run_id,
-    label: displayLabel(identities.get(series.backtest_run_id), series.backtest_run_id),
-    color: COMPARISON_COLORS[index % COMPARISON_COLORS.length],
-    status: series.twr.status,
-    reason: series.twr.reason,
-    points: series.twr.points,
-  }));
+  return comparison.series.map((series, index) => {
+    const selected = series[capability];
+    return {
+      runId: series.backtest_run_id,
+      label: displayLabel(identities.get(series.backtest_run_id), series.backtest_run_id),
+      color: COMPARISON_COLORS[index % COMPARISON_COLORS.length],
+      status: selected.status,
+      reason: selected.reason,
+      points: selected.points,
+    };
+  });
 }
 
 function displayLabel(identity: ComparisonRunIdentity | undefined, fallback: string): string {

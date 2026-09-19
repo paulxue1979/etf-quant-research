@@ -11,6 +11,7 @@ import { BacktestLab } from "./BacktestLab";
 
 vi.mock("./MultiStrategyTwrChart", () => ({
   MultiStrategyTwrChart: ({ visibleSeries }: { visibleSeries: unknown[] }) => <section aria-label="Multi-strategy TWR comparison" data-series-count={visibleSeries.length} />,
+  MultiStrategyDrawdownChart: ({ visibleSeries }: { visibleSeries: unknown[] }) => <section aria-label="Multi-strategy drawdown comparison" data-series-count={visibleSeries.length} />,
 }));
 import { backtestApi } from "./api";
 
@@ -137,7 +138,7 @@ function researchPayload() {
   return {
     comparison_schema_version: "2.0",
     ordering: "request_order",
-    include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+    include: { twr: true, drawdown: true, portfolio_value: false, metrics: true },
     compatibility: {
       twr: { status: "COMPARABLE", reason_codes: [], human_readable_reasons: [], dimensions: {} },
     },
@@ -147,6 +148,20 @@ function researchPayload() {
       strategy_version: "v1",
       short_display_label: `${run.strategy_id} · v1 · ${run.backtest_run_id.slice(-8)}`,
       asset_universe: ["QQQ"],
+      metrics_status: "included",
+      metrics: {
+        cagr: run.metrics.cagr,
+        total_twr_return: run.metrics.total_return,
+        max_drawdown: run.metrics.max_drawdown,
+        sharpe_ratio: run.metrics.sharpe_ratio,
+        sortino_ratio: run.metrics.sortino_ratio,
+        calmar_ratio: run.metrics.calmar_ratio,
+        exposure: { value: { average_gross_exposure: 0.75 }, status: "available", reason: null },
+        portfolio_turnover: run.metrics.turnover,
+        xirr: { value: 0.08, status: "available", reason: null },
+        trade_count: { value: 2, status: "available", reason: null },
+        holding_period_count: { value: 2, status: "available", reason: null },
+      },
     })),
     series: runs.map((run) => ({
       backtest_run_id: run.backtest_run_id,
@@ -154,7 +169,7 @@ function researchPayload() {
       start_date: run.start_date,
       end_date: run.end_date,
       twr: { status: "available", unit: "base_100_wealth_index", points: [{ date: "2025-01-01", value: 100 }, { date: "2025-01-03", value: 103 }] },
-      drawdown: { status: "excluded", points: [] },
+      drawdown: { status: "available", unit: "decimal", points: [{ date: "2025-01-01", value: 0 }, { date: "2025-01-03", value: -0.05 }] },
       portfolio_value: { status: "excluded", points: [] },
     })),
     provenance_notice: "Data provenance recorded; complete immutable market-data snapshot versioning is not yet implemented.",
@@ -380,7 +395,7 @@ describe("Backtest Lab", () => {
     const comparisonRequest = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/research/comparisons") && init?.method === "POST");
     expect(JSON.parse(String(comparisonRequest?.[1]?.body))).toEqual({
       backtest_run_ids: ["backtest-research-a", "backtest-research-b"],
-      include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+      include: { twr: true, drawdown: true, portfolio_value: false, metrics: true },
     });
 
     for (const runId of ["backtest-research-c", "backtest-research-d", "backtest-research-e", "backtest-research-f", "backtest-research-g", "backtest-research-h", "backtest-research-i", "backtest-research-j"]) {

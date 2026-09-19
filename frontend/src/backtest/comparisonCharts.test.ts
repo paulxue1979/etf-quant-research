@@ -15,7 +15,7 @@ function comparison(count = 2, status: ComparisonCompatibilityStatus = "COMPARAB
   return {
     comparison_schema_version: "2.0",
     ordering: "request_order",
-    include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+    include: { twr: true, drawdown: true, portfolio_value: false, metrics: true },
     compatibility: { twr: { status, reason_codes: [], human_readable_reasons: [], dimensions: {} } },
     runs: runIds.map((runId, index) => ({
       backtest_run_id: runId,
@@ -27,6 +27,8 @@ function comparison(count = 2, status: ComparisonCompatibilityStatus = "COMPARAB
       start_date: index === 1 ? "2020-01-03" : "2020-01-02",
       end_date: "2025-01-03",
       asset_universe: ["QQQ"],
+      metrics_status: "included",
+      metrics: {},
     })),
     series: runIds.map((runId, index) => ({
       backtest_run_id: runId,
@@ -36,7 +38,9 @@ function comparison(count = 2, status: ComparisonCompatibilityStatus = "COMPARAB
       twr: { status: "available", points: index === 1
         ? [{ date: "2020-01-03", value: 100 }, { date: "2025-01-03", value: 110 }]
         : [{ date: "2020-01-02", value: 100 }, { date: "2025-01-03", value: 120 }] },
-      drawdown: { status: "excluded", points: [] },
+      drawdown: { status: "available", points: index === 1
+        ? [{ date: "2020-01-03", value: 0 }, { date: "2025-01-03", value: -0.1 }]
+        : [{ date: "2020-01-02", value: 0 }, { date: "2025-01-03", value: -0.2 }] },
       portfolio_value: { status: "excluded", points: [] },
     })),
     provenance_notice: "Immutable persisted runs.",
@@ -51,6 +55,16 @@ describe("multi-strategy comparison chart projection", () => {
     expect(projected.map((item) => item.color)).toEqual(COMPARISON_COLORS.slice(0, 2));
     expect(projected[0].points[0]).toEqual({ date: "2020-01-02", value: 100 });
     expect(projected[1].points[0]).toEqual({ date: "2020-01-03", value: 100 });
+  });
+
+  it("projects canonical drawdown dates and shares run colors with TWR", () => {
+    const value = comparison();
+    const twr = buildComparisonSeries(value, "twr");
+    const drawdown = buildComparisonSeries(value, "drawdown");
+
+    expect(drawdown.map((item) => item.color)).toEqual(twr.map((item) => item.color));
+    expect(drawdown[0].points).toEqual([{ date: "2020-01-02", value: 0 }, { date: "2025-01-03", value: -0.2 }]);
+    expect(drawdown[1].points[0].date).toBe("2020-01-03");
   });
 
   it("shows N/A for a missing real date and excludes hidden or focused-out runs", () => {

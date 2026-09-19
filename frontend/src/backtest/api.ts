@@ -136,7 +136,7 @@ export const backtestApi = {
       method: "POST",
       body: JSON.stringify({
         backtest_run_ids: runIds,
-        include: { twr: true, drawdown: false, portfolio_value: false, metrics: false },
+        include: { twr: true, drawdown: true, portfolio_value: false, metrics: true },
       }),
     }).then((payload) => {
       if (
