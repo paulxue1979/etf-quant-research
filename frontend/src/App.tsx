@@ -707,7 +707,7 @@ export function App() {
                   checked={state.noMatchBehavior === "hold_previous_allocation"}
                   onChange={() => dispatch({ type: "noMatchBehavior", value: "hold_previous_allocation" })}
                 />
-                <span><strong>Hold Previous Allocation</strong><small>Keep the last resolved strategy target.</small></span>
+                <span><strong>Hold Previous Allocation</strong><small>Continue using the most recently resolved target allocation.</small></span>
               </label>
             </fieldset>
 
@@ -732,25 +732,29 @@ export function App() {
               </div>
             ) : (
               <div className="allocation-block no-match-allocation">
+                <div className="strategy-semantics-note">
+                  <strong>Hold Previous</strong>
+                  <span>If no rule matches, the strategy keeps its most recently resolved target. You do not re-enter that allocation.</span>
+                </div>
                 <div className="subsection-heading">
-                  <div><span className="eyebrow">STARTING TARGET</span><h3>Initial allocation</h3></div>
+                  <div><span className="eyebrow">SEED TARGET</span><h3>Starting Allocation</h3></div>
                   <strong className={allocationTotalPercent(state.initialAllocations) > 100 ? "invalid-number" : "valid-number"}>
                     Cash {percent(100 - allocationTotalPercent(state.initialAllocations))}
                   </strong>
                 </div>
-                <p className="help-text">When no rule matches, keep the previously resolved target allocation.</p>
+                <p className="help-text">Used only before the strategy has resolved its first target. It is not reapplied on every Hold Previous decision.</p>
                 {state.initialAllocations.map((allocation) => (
                   <AllocationEditor
                     key={allocation.id}
                     allocation={allocation}
                     assets={state.assets}
-                    labelPrefix="Initial allocation"
+                    labelPrefix="Starting allocation"
                     onChange={(next) => dispatch({ type: "initialAllocation", allocation: next })}
                     onRemove={() => dispatch({ type: "removeInitialAllocation", allocationId: allocation.id })}
                   />
                 ))}
-                <button className="button button-quiet" type="button" onClick={() => dispatch({ type: "addInitialAllocation" })}>+ Add initial allocation</button>
-                {allocationTotalPercent(state.initialAllocations) > 100 && <span className="inline-error">Initial allocation exceeds 100%.</span>}
+                <button className="button button-quiet" type="button" onClick={() => dispatch({ type: "addInitialAllocation" })}>+ Add starting allocation</button>
+                {allocationTotalPercent(state.initialAllocations) > 100 && <span className="inline-error">Starting allocation exceeds 100%.</span>}
               </div>
             )}
           </section>

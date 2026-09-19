@@ -324,6 +324,20 @@ function mockBacktestApi(options: { seriesFails?: boolean } = {}) {
 }
 
 describe("Backtest Lab", () => {
+  it("keeps capital contributions off and hides schedule inputs by default", async () => {
+    mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
+    const toggle = screen.getByRole("checkbox", { name: "Enable contributions" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText("Contributions = Off")).toBeInTheDocument();
+    expect(screen.getByText("No external cash flows will be added. Backtest configuration remains unchanged.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Contribution frequency")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Contribution amount USD")).not.toBeInTheDocument();
+    expect(toggle).toHaveAccessibleDescription("Add external cash flows during this backtest.");
+  });
+
   it("loads strategies and versions, submits inputs, and renders backend results", async () => {
     const fetchMock = mockBacktestApi();
     render(<BacktestLab onBack={vi.fn()} />);
@@ -454,8 +468,16 @@ describe("Backtest Lab", () => {
     await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("option", { name: /v1/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("checkbox", { name: "Enable contributions" }));
+    expect(screen.getByText("Contributions = On")).toBeInTheDocument();
+    expect(screen.getByText("Contribution is external cash flow, not a strategy signal.")).toBeInTheDocument();
+    expect(screen.getByText(/It enters Cash, then the current strategy target determines rebalance and execution/)).toBeInTheDocument();
+    expect(screen.getByText(/It does not automatically buy QQQ/)).toBeInTheDocument();
+    expect(screen.getByText(/Under a Cash 100% target, it remains cash/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Contribution frequency"), { target: { value: "monthly" } });
     fireEvent.change(screen.getByLabelText("Contribution amount USD"), { target: { value: "500" } });
+    expect(screen.getByText(/Monthly requests use month start and map to the next common trading date/)).toBeInTheDocument();
+    expect(screen.getByText(/Effective Date is produced by the backtest and is not an editable input/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Contribution requested date")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
 
     await waitFor(() => expect(screen.getByText("Capital Summary")).toBeInTheDocument());
@@ -467,6 +489,30 @@ describe("Backtest Lab", () => {
     });
     expect(screen.getByText("Cumulative Contributions")).toBeInTheDocument();
     expect(screen.getByText("Investment Profit")).toBeInTheDocument();
+  });
+
+  it("shows one-time date semantics and preserves schedule values across toggles and rerenders", async () => {
+    mockBacktestApi();
+    const view = render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /Demo strategy/ })).toBeInTheDocument());
+    const toggle = screen.getByRole("checkbox", { name: "Enable contributions" });
+    toggle.focus();
+    expect(toggle).toHaveFocus();
+    fireEvent.click(toggle);
+    fireEvent.change(screen.getByLabelText("Contribution frequency"), { target: { value: "one_time" } });
+    fireEvent.change(screen.getByLabelText("Contribution amount USD"), { target: { value: "750" } });
+    fireEvent.change(screen.getByLabelText("Contribution requested date"), { target: { value: "2025-02-01" } });
+
+    expect(screen.getByText(/A Requested Date that is not a common trading date maps to the next common trading date/)).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.queryByLabelText("Contribution amount USD")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    view.rerender(<BacktestLab onBack={vi.fn()} />);
+
+    expect(screen.getByLabelText("Contribution frequency")).toHaveValue("one_time");
+    expect(screen.getByLabelText("Contribution amount USD")).toHaveValue(750);
+    expect(screen.getByLabelText("Contribution requested date")).toHaveValue("2025-02-01");
   });
 
   it("rejects invalid enabled contribution input before calling the backend", async () => {

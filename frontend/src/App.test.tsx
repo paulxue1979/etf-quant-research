@@ -46,16 +46,37 @@ describe("Strategy Lab", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Fallback allocation" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Initial allocation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Starting Allocation" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/You do not re-enter that allocation/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("radio", { name: "Hold Previous Allocation" }));
 
     expect(screen.queryByRole("heading", { name: "Fallback allocation" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Initial allocation" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Starting Allocation" })).toBeInTheDocument();
     expect(
-      screen.getByText("When no rule matches, keep the previously resolved target allocation."),
+      screen.getByText(/If no rule matches, the strategy keeps its most recently resolved target/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Used only before the strategy has resolved its first target/)).toBeInTheDocument();
+    expect(screen.getByText(/It is not reapplied on every Hold Previous decision/)).toBeInTheDocument();
     expect(screen.getByText("Cash 100.00%")).toBeInTheDocument();
+  });
+
+  it("preserves the starting allocation while switching no-match behavior", () => {
+    mockApi();
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Hold Previous Allocation" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add starting allocation/ }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Starting allocation asset" }), { target: { value: "SGOV" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Starting allocation weight percent" }), { target: { value: "35" } });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Use Fallback Allocation" }));
+    expect(screen.queryByText(/You do not re-enter that allocation/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Hold Previous Allocation" }));
+
+    expect(screen.getByRole("combobox", { name: "Starting allocation asset" })).toHaveValue("SGOV");
+    expect(screen.getByRole("textbox", { name: "Starting allocation weight percent" })).toHaveValue("35");
+    expect(screen.getByText("Cash 65.00%")).toBeInTheDocument();
   });
 
   it("saves hold-previous behavior with a cash-only initial allocation", async () => {

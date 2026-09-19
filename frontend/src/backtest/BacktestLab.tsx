@@ -410,13 +410,32 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
           <label>Strategy version<select aria-label="Backtest strategy version" value={versionId} onChange={(event) => setVersionId(event.target.value)} disabled={!strategyId || busy === "versions"}><option value="">Select immutable version</option>{versions.map((version) => <option key={version.version_id} value={version.version_id}>v{version.version_number} · {new Date(version.created_at).toLocaleString()}</option>)}</select></label>
           {selectedStrategy && <p className="muted">{selectedStrategy.version_count} saved version{selectedStrategy.version_count === 1 ? "" : "s"}; latest v{selectedStrategy.latest_version ?? "-"}.</p>}
           <div className="basic-grid"><label>Start date<input type="date" value={form.startDate} onChange={(event) => updateForm("startDate", event.target.value)} /></label><label>End date<input type="date" value={form.endDate} onChange={(event) => updateForm("endDate", event.target.value)} /></label><label>Initial capital<input type="number" min="0.01" step="0.01" value={form.initialCapital} onChange={(event) => updateForm("initialCapital", event.target.value)} /></label><label>Price field<select value={form.priceField} onChange={(event) => updateForm("priceField", event.target.value as PriceField)}><option value="adjusted_close">ADJUSTED_CLOSE</option><option value="raw_close">RAW_CLOSE</option></select></label><label>Benchmark symbol<input aria-label="Benchmark symbol" maxLength={16} placeholder="Optional, e.g. SPY" value={form.benchmarkSymbol} onChange={(event) => updateForm("benchmarkSymbol", event.target.value.toUpperCase())} /></label><label>Commission rate %<input type="number" min="0" step="0.01" value={form.commissionRatePercent} onChange={(event) => updateForm("commissionRatePercent", event.target.value)} /></label><label>Commission per order<input type="number" min="0" step="0.01" value={form.commissionPerOrder} onChange={(event) => updateForm("commissionPerOrder", event.target.value)} /></label><label>Slippage %<input type="number" min="0" max="99.99" step="0.01" value={form.slippagePercent} onChange={(event) => updateForm("slippagePercent", event.target.value)} /></label></div>
-          <fieldset className="contribution-config">
-            <legend>Capital Contributions</legend>
-            <label className="checkbox-label"><input aria-label="Enable contributions" type="checkbox" checked={form.contributionsEnabled} onChange={(event) => updateForm("contributionsEnabled", event.target.checked)} />Enable contributions</label>
-            {form.contributionsEnabled && <div className="basic-grid">
-              <label>Frequency<select aria-label="Contribution frequency" value={form.contributionFrequency} onChange={(event) => updateForm("contributionFrequency", event.target.value as ContributionFrequency)}><option value="one_time">One Time</option><option value="monthly">Monthly</option></select></label>
-              <label>Amount USD<input aria-label="Contribution amount USD" type="number" min="0.01" step="0.01" value={form.contributionAmount} onChange={(event) => updateForm("contributionAmount", event.target.value)} /></label>
-              {form.contributionFrequency === "one_time" ? <label>Requested date<input aria-label="Contribution requested date" type="date" value={form.contributionDate} onChange={(event) => updateForm("contributionDate", event.target.value)} /></label> : <p className="muted">Monthly contribution on month start</p>}
+          <fieldset className={`contribution-config ${form.contributionsEnabled ? "is-enabled" : "is-disabled"}`}>
+            <legend className="sr-only">Capital Contributions</legend>
+            <div className="contribution-header">
+              <div><span className="eyebrow">EXTERNAL CASH FLOW</span><h3>Capital Contributions</h3></div>
+              <span className={`contribution-status ${form.contributionsEnabled ? "is-on" : "is-off"}`}>Contributions = {form.contributionsEnabled ? "On" : "Off"}</span>
+            </div>
+            <label className="contribution-toggle">
+              <input aria-label="Enable contributions" aria-describedby="contribution-toggle-help" type="checkbox" checked={form.contributionsEnabled} onChange={(event) => updateForm("contributionsEnabled", event.target.checked)} />
+              <span className="contribution-toggle-track" aria-hidden="true"><span /></span>
+              <span><strong>Enable contributions</strong><small id="contribution-toggle-help">Add external cash flows during this backtest.</small></span>
+            </label>
+            {!form.contributionsEnabled && <p className="contribution-off-copy">No external cash flows will be added. Backtest configuration remains unchanged.</p>}
+            {form.contributionsEnabled && <div className="contribution-details">
+              <div className="contribution-principle" role="note">
+                <strong>Contribution is external cash flow, not a strategy signal.</strong>
+                <span>It enters Cash, then the current strategy target determines rebalance and execution. It does not automatically buy QQQ. Under a Cash 100% target, it remains cash until the strategy and rebalance policy deploys it.</span>
+              </div>
+              <div className="basic-grid contribution-fields">
+                <label>Frequency<select aria-label="Contribution frequency" value={form.contributionFrequency} onChange={(event) => updateForm("contributionFrequency", event.target.value as ContributionFrequency)}><option value="one_time">One Time</option><option value="monthly">Monthly</option></select></label>
+                <label>Amount USD<input aria-label="Contribution amount USD" type="number" min="0.01" step="0.01" value={form.contributionAmount} onChange={(event) => updateForm("contributionAmount", event.target.value)} /></label>
+                {form.contributionFrequency === "one_time" && <label>Requested Date<input aria-label="Contribution requested date" aria-describedby="one-time-date-help" type="date" value={form.contributionDate} onChange={(event) => updateForm("contributionDate", event.target.value)} /></label>}
+              </div>
+              <p className="contribution-date-help" id={form.contributionFrequency === "one_time" ? "one-time-date-help" : undefined}>
+                {form.contributionFrequency === "monthly" ? "Monthly requests use month start and map to the next common trading date when necessary." : "A Requested Date that is not a common trading date maps to the next common trading date."}{" "}
+                Effective Date is produced by the backtest and is not an editable input.
+              </p>
             </div>}
           </fieldset>
           <button className="button button-primary run-button" type="submit" disabled={busy !== null || !strategyId || !versionId}>{busy === "run" ? "Running backtest..." : "Run backtest"}</button>

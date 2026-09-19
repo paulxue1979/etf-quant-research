@@ -109,6 +109,9 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
 .behavior-option small { color: var(--muted); font-size: 10px; line-height: 1.4; }
 .no-match-allocation { margin-top: 16px; }
 .help-text { margin: -2px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.strategy-semantics-note { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: baseline; margin-bottom: 16px; padding: 11px 12px; border-left: 3px solid var(--cyan); background: #102124; }
+.strategy-semantics-note strong { color: var(--cyan); font-size: 11px; }
+.strategy-semantics-note span { color: #c7d1d6; font-size: 11px; line-height: 1.5; }
 .validation-errors { display: grid; gap: 4px; margin: 9px 0 0; padding-left: 18px; color: var(--red); font-size: 11px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .preview-panel { background: #111d22; }
@@ -153,6 +156,7 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
   .action-buttons .button { flex: 1; }
   .version-list { grid-template-columns: 1fr; }
   .behavior-options { grid-template-columns: 1fr; }
+  .strategy-semantics-note { grid-template-columns: 1fr; }
 }
 
 .backtest-shell { width: min(1500px, 100%); margin: 0 auto; padding: 30px 34px 60px; }
@@ -163,10 +167,28 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
 .backtest-layout > * { min-width: 0; }
 .backtest-form { display: grid; gap: 14px; }
 .backtest-form .basic-grid { margin-top: 2px; }
-.contribution-config { display: grid; gap: 12px; margin: 0; padding: 14px; border: 1px solid #2b444c; border-radius: 5px; }
-.contribution-config legend { padding: 0 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; }
-.checkbox-label { display: flex; flex-direction: row; align-items: center; gap: 8px; }
-.checkbox-label input { width: 16px; height: 16px; margin: 0; }
+.contribution-config { display: grid; gap: 14px; margin: 4px 0 0; padding: 16px; border: 1px solid #36515b; border-left: 4px solid #4d747b; border-radius: 6px; background: #10191e; }
+.contribution-config.is-enabled { border-left-color: var(--cyan); background: #102024; }
+.contribution-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.contribution-header h3 { margin-top: 3px; font-size: 17px; }
+.contribution-status { flex: 0 0 auto; border: 1px solid #44545d; border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: 10px; }
+.contribution-status.is-on { border-color: #397b79; color: var(--cyan); }
+.contribution-toggle { display: flex; grid-template-columns: none; flex-direction: row; align-items: center; gap: 10px; width: fit-content; cursor: pointer; }
+.contribution-toggle > input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.contribution-toggle-track { display: block; flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 1px solid #53616a; border-radius: 999px; background: #1b272d; transition: background 120ms ease, border-color 120ms ease; }
+.contribution-toggle-track span { display: block; width: 14px; height: 14px; border-radius: 50%; background: #84929a; transition: transform 120ms ease, background 120ms ease; }
+.contribution-toggle > input:checked + .contribution-toggle-track { border-color: #4faaa5; background: #254c4d; }
+.contribution-toggle > input:checked + .contribution-toggle-track span { transform: translateX(16px); background: var(--cyan); }
+.contribution-toggle > input:focus-visible + .contribution-toggle-track { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.contribution-toggle > span:last-child { display: grid; gap: 2px; }
+.contribution-toggle strong { color: var(--text); font-size: 12px; }
+.contribution-toggle small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.contribution-off-copy, .contribution-date-help { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.contribution-details { display: grid; gap: 14px; padding-top: 14px; border-top: 1px solid #2b444c; }
+.contribution-principle { display: grid; gap: 5px; padding: 11px 12px; border: 1px solid #356365; border-radius: 5px; background: #13292b; }
+.contribution-principle strong { color: var(--cyan); font-size: 12px; }
+.contribution-principle span { color: #c7d1d6; font-size: 11px; line-height: 1.5; }
+.contribution-fields { align-items: end; }
 .backtest-context { background: #111d22; }
 .backtest-context dl { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
 .backtest-context dt { color: var(--muted); font-size: 11px; }
@@ -358,7 +380,7 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .oos-provenance-list > div { display: contents; }
 .oos-provenance-list dd { white-space: pre-wrap; }
 @media (max-width: 900px) { .backtest-layout, .chart-grid, .result-tables { grid-template-columns: minmax(0, 1fr); } .backtest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-item { border-bottom: 1px solid var(--line); } .comparison-legend-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } }
-@media (max-width: 600px) { .backtest-shell { padding: 22px 14px 40px; } .backtest-topbar, .result-header, .financial-charts-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .result-equity { text-align: left; } .backtest-metrics, .capital-summary-grid, .capital-return-grid, .contribution-schedule-summary { grid-template-columns: minmax(0, 1fr); } .capital-summary-item, .contribution-schedule-summary div { border-right: 0; border-bottom: 1px solid var(--line); } .research-controls { align-items: stretch; } .research-controls label, .research-controls .button { width: 100%; } .provenance-panel dl, .protocol-summary { grid-template-columns: minmax(0, 1fr); gap: 4px; } .financial-charts-toolbar { align-items: start; } .financial-chart-controls { justify-content: flex-start; } .range-controls { min-width: 0; justify-content: flex-start; } .holding-controls, .holding-controls form { display: grid; align-items: stretch; } .holding-controls label { width: 100%; } .holding-pagination { justify-content: space-between; } .benchmark-capital-note { display: grid; } .benchmark-capital-note > div:last-child { justify-items: start; } .comparison-legend-item { max-width: 100%; } .comparison-metrics .subsection-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .comparison-metrics-table .strategy-column { min-width: 220px; max-width: 220px; } }
+@media (max-width: 600px) { .backtest-shell { padding: 22px 14px 40px; } .backtest-topbar, .result-header, .financial-charts-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .result-equity { text-align: left; } .backtest-metrics, .capital-summary-grid, .capital-return-grid, .contribution-schedule-summary { grid-template-columns: minmax(0, 1fr); } .capital-summary-item, .contribution-schedule-summary div { border-right: 0; border-bottom: 1px solid var(--line); } .research-controls { align-items: stretch; } .research-controls label, .research-controls .button { width: 100%; } .provenance-panel dl, .protocol-summary { grid-template-columns: minmax(0, 1fr); gap: 4px; } .financial-charts-toolbar { align-items: start; } .financial-chart-controls { justify-content: flex-start; } .range-controls { min-width: 0; justify-content: flex-start; } .holding-controls, .holding-controls form { display: grid; align-items: stretch; } .holding-controls label { width: 100%; } .holding-pagination { justify-content: space-between; } .benchmark-capital-note { display: grid; } .benchmark-capital-note > div:last-child { justify-items: start; } .comparison-legend-item { max-width: 100%; } .comparison-metrics .subsection-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .comparison-metrics-table .strategy-column { min-width: 220px; max-width: 220px; } .contribution-header { align-items: flex-start; flex-direction: column; } .contribution-config { min-width: 0; padding: 14px 12px; } .contribution-toggle { max-width: 100%; } }
 
 .research-shell { width: min(1500px, 100%); margin: 0 auto; padding: 30px 34px 60px; }
 .research-loader { margin-top: 22px; }
