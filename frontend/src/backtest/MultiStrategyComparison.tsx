@@ -90,9 +90,9 @@ export function MultiStrategyComparison({ comparison }: { comparison: ResearchCo
     if (fullRange) sync.showFullHistory(fullRange);
   };
   const resetView = () => {
-    setSelectedRange("MAX");
     setHoverDate(null);
     sync.resetView(fullRange ?? undefined);
+    setSelectedRange("MAX");
   };
 
   return <section className="research-comparison" aria-label="Multi-strategy comparison workspace">

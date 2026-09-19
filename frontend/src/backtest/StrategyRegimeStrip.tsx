@@ -68,6 +68,7 @@ export function StrategyRegimeStrip({ points, status, reason, height, onReady }:
       series: [syncSeries],
       valuesByTime,
       isUserViewportChange: viewportGestures.isUserViewportChange,
+      clearPendingViewportGesture: viewportGestures.clearPendingViewportGesture,
     });
     return () => {
       disposeSync();

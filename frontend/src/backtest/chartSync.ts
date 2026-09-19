@@ -7,6 +7,7 @@ export interface SyncedChart {
   series: SyncSeries[];
   valuesByTime: Map<string, { series: SyncSeries; value: number }>;
   isUserViewportChange?: () => boolean;
+  clearPendingViewportGesture?: () => void;
 }
 
 export type ViewportChangeHandler = (range: IRange<Time>, sourceId: string) => void;
@@ -68,11 +69,15 @@ export class ChartSyncController {
   }
 
   setRange(range: IRange<Time>): void {
-    this.runSynchronized((_id, chart) => chart.chart.timeScale().setVisibleRange(range));
+    this.runSynchronized((_id, chart) => {
+      chart.clearPendingViewportGesture?.();
+      chart.chart.timeScale().setVisibleRange(range);
+    });
   }
 
   showFullHistory(range?: IRange<Time>): void {
     this.runSynchronized((_id, chart) => {
+      chart.clearPendingViewportGesture?.();
       chart.chart.timeScale().fitContent();
       if (range) chart.chart.timeScale().setVisibleRange(range);
     });
@@ -81,6 +86,7 @@ export class ChartSyncController {
   resetView(range?: IRange<Time>): void {
     try {
       this.runSynchronized((_id, chart) => {
+        chart.clearPendingViewportGesture?.();
         chart.chart.clearCrosshairPosition();
         chart.chart.timeScale().resetTimeScale();
       });
@@ -109,6 +115,7 @@ export class ChartSyncController {
 
 export function trackViewportGestures(element: HTMLElement): {
   isUserViewportChange: () => boolean;
+  clearPendingViewportGesture: () => void;
   dispose: () => void;
 } {
   let pointerActive = false;
@@ -129,6 +136,7 @@ export function trackViewportGestures(element: HTMLElement): {
       viewportGesturePending = false;
       return userInitiated;
     },
+    clearPendingViewportGesture: () => { viewportGesturePending = false; },
     dispose: () => {
       element.removeEventListener("pointerdown", pointerDown);
       element.removeEventListener("pointermove", pointerMove);

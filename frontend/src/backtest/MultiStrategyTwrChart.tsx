@@ -61,7 +61,13 @@ function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visible
       }
     }
     chart.timeScale().fitContent();
-    const disposeSync = onReady({ chart, series: chartSeries, valuesByTime, isUserViewportChange: gestures.isUserViewportChange });
+    const disposeSync = onReady({
+      chart,
+      series: chartSeries,
+      valuesByTime,
+      isUserViewportChange: gestures.isUserViewportChange,
+      clearPendingViewportGesture: gestures.clearPendingViewportGesture,
+    });
     return () => {
       disposeSync();
       gestures.dispose();

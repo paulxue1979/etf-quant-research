@@ -111,6 +111,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       series: chartSeries,
       valuesByTime,
       isUserViewportChange: viewportGestures.isUserViewportChange,
+      clearPendingViewportGesture: viewportGestures.clearPendingViewportGesture,
     });
     return () => {
       disposeSync();

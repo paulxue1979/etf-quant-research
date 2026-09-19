@@ -171,6 +171,9 @@ describe("BacktestReportCharts", () => {
     act(() => {
       for (const listener of syncHarness.listeners) listener();
     });
+    syncHarness.resetView.mockImplementationOnce(() => {
+      for (const listener of syncHarness.listeners) listener();
+    });
     await user.click(screen.getByRole("button", { name: "Reset View" }));
     expect(syncHarness.resetView).toHaveBeenCalledWith({
       from: "2025-01-02",

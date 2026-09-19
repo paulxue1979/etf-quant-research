@@ -43,8 +43,8 @@ export function BacktestReportCharts({ report, series, loading = false, error = 
     sync.showFullHistory(fullRange);
   };
   const resetView = () => {
-    setSelectedRange("MAX");
     sync.resetView(fullRange);
+    setSelectedRange("MAX");
   };
   if (loading) return <section className="panel financial-charts" aria-label="Financial charts"><p className="muted">Loading report charts...</p></section>;
   if (error) return <section className="panel financial-charts" aria-label="Financial charts"><p className="research-error">{error}</p></section>;

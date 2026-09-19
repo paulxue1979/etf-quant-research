@@ -36,12 +36,14 @@ function synced(
   fake: ReturnType<typeof fakeChart>,
   valuesByTime: Map<string, { series: object; value: number }>,
   isUserViewportChange?: () => boolean,
+  clearPendingViewportGesture?: () => void,
 ): SyncedChart {
   return {
     chart: fake.chart as never,
     series: [],
     valuesByTime: valuesByTime as never,
     isUserViewportChange,
+    clearPendingViewportGesture,
   };
 }
 
@@ -132,9 +134,11 @@ describe("ChartSyncController", () => {
   it("resets transient chart state before restoring full history", () => {
     const first = fakeChart();
     const second = fakeChart();
+    const clearFirstGesture = vi.fn();
+    const clearSecondGesture = vi.fn();
     const controller = new ChartSyncController();
-    controller.register("first", synced(first, new Map()));
-    controller.register("second", synced(second, new Map()));
+    controller.register("first", synced(first, new Map(), undefined, clearFirstGesture));
+    controller.register("second", synced(second, new Map(), undefined, clearSecondGesture));
 
     controller.resetView({ from: "2020-01-02", to: "2025-12-31" });
 
@@ -143,6 +147,8 @@ describe("ChartSyncController", () => {
       expect(chart.chart.timeScale().resetTimeScale).toHaveBeenCalledTimes(1);
       expect(chart.chart.timeScale().fitContent).toHaveBeenCalledTimes(1);
     }
+    expect(clearFirstGesture).toHaveBeenCalled();
+    expect(clearSecondGesture).toHaveBeenCalled();
   });
 
   it("reports manual viewport changes but ignores programmatic synchronization", () => {
@@ -192,6 +198,9 @@ describe("ChartSyncController", () => {
     element.dispatchEvent(new Event("pointerdown"));
     element.dispatchEvent(new Event("pointermove"));
     expect(gestures.isUserViewportChange()).toBe(true);
+    element.dispatchEvent(new WheelEvent("wheel"));
+    gestures.clearPendingViewportGesture();
+    expect(gestures.isUserViewportChange()).toBe(false);
     element.dispatchEvent(new Event("pointerup"));
     gestures.dispose();
   });

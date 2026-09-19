@@ -114,8 +114,12 @@ describe("MultiStrategyComparison", () => {
     await user.click(screen.getByRole("button", { name: "MAX" }));
     expect(harness.showFullHistory).toHaveBeenLastCalledWith({ from: "2000-01-03", to: "2025-01-03" });
     await user.dblClick(screen.getByRole("button", { name: /Strategy 1/ }));
+    harness.resetView.mockImplementationOnce(() => {
+      for (const listener of harness.listeners) listener();
+    });
     await user.click(screen.getByRole("button", { name: "Reset View" }));
     expect(harness.resetView).toHaveBeenCalledWith({ from: "2000-01-03", to: "2025-01-03" });
+    expect(screen.queryByText("Custom view")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Exit Focus" })).toBeInTheDocument();
 
     act(() => { for (const listener of harness.listeners) listener(); });
