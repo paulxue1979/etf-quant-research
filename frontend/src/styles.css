@@ -305,6 +305,7 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .contribution-marker { background: #d2a956; color: #0b1216; }
 .range-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .range-controls .button { min-width: 48px; padding: 7px 9px; }
+.custom-range-label { align-self: center; padding: 0 4px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
 .provenance-panel { display: grid; gap: 12px; }
 .provenance-panel p { margin: 0; }
 .provenance-panel details { border-top: 1px solid var(--line); padding-top: 10px; }

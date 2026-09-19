@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ColorType, CrosshairMode, HistogramSeries, createChart, type Time } from "lightweight-charts";
 
 import type { ChartStatus, RegimePoint } from "./reportCharts";
-import type { SyncedChart, SyncSeries } from "./chartSync";
+import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
 interface StrategyRegimeStripProps {
   points: RegimePoint[];
@@ -33,6 +33,7 @@ export function StrategyRegimeStrip({ points, status, reason, height, onReady }:
   useEffect(() => {
     if (!containerRef.current || !points.length) return undefined;
     const container = containerRef.current;
+    const viewportGestures = trackViewportGestures(container);
     const chart = createChart(container, {
       height,
       layout: { background: { type: ColorType.Solid, color: "#0f181d" }, textColor: "#8c9aa4", attributionLogo: false },
@@ -62,9 +63,15 @@ export function StrategyRegimeStrip({ points, status, reason, height, onReady }:
     chart.subscribeCrosshairMove(crosshairHandler);
     const syncSeries = strip as SyncSeries;
     const valuesByTime = new Map(points.map((point) => [point.date, { series: syncSeries, value: 1 }]));
-    const disposeSync = onReady({ chart, series: [syncSeries], valuesByTime });
+    const disposeSync = onReady({
+      chart,
+      series: [syncSeries],
+      valuesByTime,
+      isUserViewportChange: viewportGestures.isUserViewportChange,
+    });
     return () => {
       disposeSync();
+      viewportGestures.dispose();
       resizeObserver?.disconnect();
       chart.unsubscribeCrosshairMove(crosshairHandler);
       chart.remove();

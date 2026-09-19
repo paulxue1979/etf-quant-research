@@ -1,8 +1,28 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BacktestReport, BacktestReportSeries } from "./types";
+
+const syncHarness = vi.hoisted(() => ({
+  listeners: new Set<() => void>(),
+  setRange: vi.fn(),
+  showFullHistory: vi.fn(),
+  resetView: vi.fn(),
+}));
+
+vi.mock("./chartSync", () => ({
+  ChartSyncController: class {
+    register() { return () => undefined; }
+    subscribeViewportChange(handler: () => void) {
+      syncHarness.listeners.add(handler);
+      return () => syncHarness.listeners.delete(handler);
+    }
+    setRange = syncHarness.setRange;
+    showFullHistory = syncHarness.showFullHistory;
+    resetView = syncHarness.resetView;
+  },
+}));
 
 vi.mock("./FinancialChart", () => ({
   FinancialChart: ({ title, markers = [], showDollarDifference = false }: { title: string; markers?: unknown[]; showDollarDifference?: boolean }) => <section aria-label={title} data-marker-count={markers.length} data-dollar-difference={showDollarDifference}><h3>{title}</h3></section>,
@@ -14,7 +34,13 @@ vi.mock("./StrategyRegimeStrip", () => ({
 
 import { BacktestReportCharts } from "./BacktestReportCharts";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  syncHarness.listeners.clear();
+  syncHarness.setRange.mockClear();
+  syncHarness.showFullHistory.mockClear();
+  syncHarness.resetView.mockClear();
+});
 
 function report(): BacktestReport {
   return {
@@ -113,5 +139,43 @@ describe("BacktestReportCharts", () => {
     expect(chart).toHaveAttribute("data-dollar-difference", "true");
     await user.click(screen.getByRole("checkbox", { name: "Show contributions" }));
     expect(chart).toHaveAttribute("data-marker-count", "1");
+  });
+
+  it("restores full history through MAX, Fit All, and Reset View after a custom viewport", async () => {
+    const user = userEvent.setup();
+    render(<BacktestReportCharts report={report()} series={reportSeries()} />);
+
+    await user.click(screen.getByRole("button", { name: "1Y" }));
+    expect(syncHarness.setRange).toHaveBeenCalledWith({
+      from: "2025-01-02",
+      to: "2025-01-03",
+    });
+
+    await user.click(screen.getByRole("button", { name: "MAX" }));
+    expect(syncHarness.showFullHistory).toHaveBeenLastCalledWith({
+      from: "2025-01-02",
+      to: "2025-01-03",
+    });
+
+    act(() => {
+      for (const listener of syncHarness.listeners) listener();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Custom view");
+    expect(screen.getByRole("button", { name: "MAX" })).toHaveClass("button-secondary");
+
+    await user.click(screen.getByRole("button", { name: "Fit All" }));
+    expect(syncHarness.showFullHistory).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Custom view")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "MAX" })).toHaveClass("button-primary");
+
+    act(() => {
+      for (const listener of syncHarness.listeners) listener();
+    });
+    await user.click(screen.getByRole("button", { name: "Reset View" }));
+    expect(syncHarness.resetView).toHaveBeenCalledWith({
+      from: "2025-01-02",
+      to: "2025-01-03",
+    });
+    expect(screen.queryByText("Custom view")).not.toBeInTheDocument();
   });
 });

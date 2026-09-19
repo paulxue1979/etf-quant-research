@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ColorType, CrosshairMode, LineSeries, LineType, createChart, createSeriesMarkers, type SeriesMarker, type Time } from "lightweight-charts";
 
 import { availabilityText, formatChartValue, type ChartMarker, type ChartSeries } from "./reportCharts";
-import type { SyncedChart, SyncSeries } from "./chartSync";
+import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
 interface FinancialChartProps {
   title: string;
@@ -27,6 +27,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
   useEffect(() => {
     if (!containerRef.current || !series.some((item) => item.points.length)) return undefined;
     const container = containerRef.current;
+    const viewportGestures = trackViewportGestures(container);
     const chart = createChart(container, {
       height,
       layout: { background: { type: ColorType.Solid, color: "#0f181d" }, textColor: "#8c9aa4", attributionLogo: false },
@@ -105,9 +106,15 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       });
     };
     chart.subscribeCrosshairMove(crosshairHandler);
-    const disposeSync = onReady({ chart, series: chartSeries, valuesByTime });
+    const disposeSync = onReady({
+      chart,
+      series: chartSeries,
+      valuesByTime,
+      isUserViewportChange: viewportGestures.isUserViewportChange,
+    });
     return () => {
       disposeSync();
+      viewportGestures.dispose();
       resizeObserver?.disconnect();
       chart.unsubscribeCrosshairMove(crosshairHandler);
       chart.remove();
