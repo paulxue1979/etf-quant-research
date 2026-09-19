@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from backend.app.backtest_models import BacktestRun
 from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
@@ -18,7 +18,12 @@ from backend.app.backtest_service import (
     BacktestServiceError,
     create_default_backtest_service,
 )
-from backend.app.research import compare_records, sorted_records, summary_payload
+from backend.app.research import (
+    ComparisonInclude,
+    compare_records,
+    sorted_records,
+    summary_payload,
+)
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
 from backtest.models import ContributionFrequency, ContributionSchedule, ExecutionRule
 from data.models import PriceField
@@ -156,11 +161,32 @@ class BacktestRunSummary(BaseModel):
     price_field_used: PriceField
 
 
+class ResearchComparisonIncludeRequest(BaseModel):
+    """Series and metric capabilities to include in the comparison payload."""
+
+    model_config = ConfigDict(extra="forbid")
+    twr: StrictBool = True
+    drawdown: StrictBool = True
+    portfolio_value: StrictBool = False
+    metrics: StrictBool = True
+
+    def to_domain(self) -> ComparisonInclude:
+        return ComparisonInclude(
+            twr=self.twr,
+            drawdown=self.drawdown,
+            portfolio_value=self.portfolio_value,
+            metrics=self.metrics,
+        )
+
+
 class ResearchComparisonRequest(BaseModel):
     """A bounded set of immutable run identifiers for a read-only comparison."""
 
     model_config = ConfigDict(extra="forbid")
-    backtest_run_ids: list[str] = Field(min_length=2, max_length=6)
+    backtest_run_ids: list[str] = Field(min_length=2, max_length=10)
+    include: ResearchComparisonIncludeRequest = Field(
+        default_factory=ResearchComparisonIncludeRequest
+    )
 
     @field_validator("backtest_run_ids")
     @classmethod
@@ -191,6 +217,26 @@ def _legacy_run_payload(run: BacktestRun) -> dict[str, Any]:
     payload = run.to_dict()
     payload.pop("strategy_provenance", None)
     return payload
+
+
+def _comparison_strategy_metadata(records: tuple[Any, ...]) -> dict[str, dict[str, Any]]:
+    """Resolve optional labels without making version metadata a critical result dependency."""
+    getter = getattr(strategy_repository, "get_any_version", None)
+    if not callable(getter):
+        return {}
+    metadata: dict[str, dict[str, Any]] = {}
+    for record in records:
+        version_id = record.run.strategy_version_id
+        try:
+            version = getter(version_id)
+        except StrategyPersistenceError:
+            continue
+        if version is not None:
+            metadata[version_id] = {
+                "strategy_name": version.configuration.name,
+                "version_number": version.version_number,
+            }
+    return metadata
 
 
 strategy_repository = StrategyRepository()
@@ -305,12 +351,17 @@ def compare_research_backtests(request: ResearchComparisonRequest) -> dict[str, 
         raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
     if len(records) != len(run_ids):
         raise HTTPException(status_code=404, detail="one or more backtest runs were not found")
-    return compare_records(records).to_dict()
+    return compare_records(
+        records,
+        include=request.include.to_domain(),
+        strategy_metadata=_comparison_strategy_metadata(records),
+    ).to_dict()
 
 
 __all__ = [
     "BacktestRequest",
     "ContributionScheduleRequest",
+    "ResearchComparisonIncludeRequest",
     "ResearchComparisonRequest",
     "backtest_repository",
     "backtest_service",

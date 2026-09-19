@@ -233,9 +233,12 @@ def test_research_comparison_reads_existing_runs_and_reports_compatibility(
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["comparison_schema_version"] == "2.0"
     assert payload["comparable"] is True
     assert [item["backtest_run_id"] for item in payload["runs"]] == ["repo-run-a", "repo-run-b"]
-    assert payload["series"][0]["equity_curve"]
+    assert payload["series"][0]["equity_curve"] == []
+    assert payload["series"][0]["portfolio_value"]["status"] == "excluded"
+    assert payload["series"][0]["twr"]["status"] == "available"
     assert payload["runs"][0]["metrics"]["cagr"]["value"] is None
 
 
@@ -261,9 +264,17 @@ def test_research_comparison_surfaces_configuration_mismatches(
     "payload, status_code",
     [
         ({"backtest_run_ids": ["one"]}, 422),
-        ({"backtest_run_ids": ["1", "2", "3", "4", "5", "6", "7"]}, 422),
+        ({"backtest_run_ids": [str(index) for index in range(11)]}, 422),
         ({"backtest_run_ids": ["same", "same"]}, 422),
         ({"backtest_run_ids": ["one", "two"], "unexpected": True}, 422),
+        (
+            {
+                "backtest_run_ids": ["one", "two"],
+                "include": {"twr": True, "unexpected": True},
+            },
+            422,
+        ),
+        ({"backtest_run_ids": ["one", "two"], "include": {"twr": "yes"}}, 422),
     ],
 )
 def test_research_comparison_validates_request_shape(
