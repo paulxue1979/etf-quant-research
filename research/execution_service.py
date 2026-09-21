@@ -26,8 +26,7 @@ from data.exceptions import (
     TiingoTimeoutError,
 )
 from data.models import HistoricalDataRequest, HistoricalDataSet, PriceField
-from indicators import exponential_moving_average, moving_average
-from indicators.models import IndicatorKind, IndicatorSeries
+from indicators.preparation import PreparedStrategyInputs, prepare_strategy_inputs
 from research.canonical import sha256_hash
 from research.enums import ExperimentStatus
 from research.execution import CandidateExecution, CandidateExecutionStatus, candidate_id_for
@@ -142,8 +141,12 @@ class ExperimentExecutionService:
 
         try:
             data = self._load_is_data(prepared)
-            indicators = self._calculate_indicators(prepared.derived_strategy, data)
-            context = EvaluationContext.from_components(data, indicators)
+            prepared_inputs = self._calculate_inputs(prepared.derived_strategy, data)
+            context = EvaluationContext.from_components(
+                data,
+                prepared_inputs.indicators,
+                weekly_market_data=prepared_inputs.weekly_market_data,
+            )
             timeline = evaluate_strategy(
                 prepared.derived_strategy,
                 context,
@@ -444,28 +447,18 @@ class ExperimentExecutionService:
         if any(point.date < request.start_date for point in dataset.points):
             raise _RuntimeFailure("MISSING_MARKET_DATA", retryable=False)
 
-    def _calculate_indicators(
+    def _calculate_inputs(
         self, strategy_version: Any, data: Mapping[str, HistoricalDataSet]
-    ) -> tuple[tuple[str, IndicatorSeries], ...]:
-        series: list[tuple[str, IndicatorSeries]] = []
-        for item in required_indicators(strategy_version):
-            if item.timeframe.value != "daily":
-                raise _RuntimeFailure("UNSUPPORTED_TIMEFRAME", retryable=False)
-            dataset = data.get(item.symbol)
-            if dataset is None:
-                raise _RuntimeFailure("MISSING_MARKET_DATA", retryable=False)
-            if item.price_field is not dataset.price_field_used:
-                raise _RuntimeFailure("PRICE_FIELD_MISMATCH", retryable=False)
-            if item.kind is IndicatorKind.MOVING_AVERAGE:
-                value = moving_average(dataset, period=item.period, price_field=item.price_field)
-            elif item.kind is IndicatorKind.EXPONENTIAL_MOVING_AVERAGE:
-                value = exponential_moving_average(
-                    dataset, period=item.period, price_field=item.price_field
-                )
-            else:
-                raise _RuntimeFailure("INDICATOR_NOT_EVALUABLE", retryable=False)
-            series.append((item.symbol, value))
-        return tuple(series)
+    ) -> PreparedStrategyInputs:
+        try:
+            return prepare_strategy_inputs(
+                strategy_version,
+                data,
+                price_field=strategy_version.configuration.price_field,
+                cutoff=max(dataset.request.end_date for dataset in data.values()),
+            )
+        except ValueError as exc:
+            raise _RuntimeFailure("INDICATOR_NOT_EVALUABLE", retryable=False) from exc
 
     def _validate_is_bounds(self, experiment: Experiment, protocol: Any) -> None:
         if (
@@ -785,8 +778,14 @@ class ExperimentExecutionService:
 
 
 def _warmup_start(is_start: date, strategy_version: Any) -> date:
-    max_period = max((item.period for item in required_indicators(strategy_version)), default=1)
-    return is_start - timedelta(days=max_period * 3 + 10)
+    requirements = required_indicators(strategy_version)
+    daily_period = max(
+        (item.period for item in requirements if item.timeframe.value == "daily"), default=1
+    )
+    weekly_period = max(
+        (item.period for item in requirements if item.timeframe.value == "weekly"), default=0
+    )
+    return is_start - timedelta(days=max(daily_period * 3 + 10, weekly_period * 7 + 21))
 
 
 def _failure_message(code: str) -> str:

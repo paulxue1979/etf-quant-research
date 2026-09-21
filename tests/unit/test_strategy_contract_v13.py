@@ -38,7 +38,6 @@ from strategies import (
     StrategyVersion,
     Threshold,
     ThresholdType,
-    UnsupportedTimeframeError,
     ValidationCode,
     validate_strategy,
 )
@@ -241,16 +240,19 @@ def test_unsupported_future_schema_is_controlled() -> None:
         StrategyDefinition.from_dict({**_definition().to_dict(), "strategy_schema_version": "9.0"})
 
 
-def test_weekly_runtime_is_rejected_before_daily_fallback() -> None:
+def test_weekly_runtime_requires_completed_weekly_inputs() -> None:
     version = _version(_definition(timeframe=Timeframe.WEEKLY))
     data = {symbol: _dataset(symbol) for symbol in ("QQQ", "TQQQ", "SGOV")}
-    with pytest.raises(UnsupportedTimeframeError, match="PHASE 11C"):
-        evaluate_strategy(
-            version,
-            EvaluationContext.from_components(data),
-            date(2026, 1, 1),
-            date(2026, 1, 3),
-        )
+    timeline = evaluate_strategy(
+        version,
+        EvaluationContext.from_components(data),
+        date(2026, 1, 1),
+        date(2026, 1, 3),
+    )
+    assert timeline.evaluations
+    assert {item.failure.code for item in timeline.evaluations if item.failure} == {
+        "MISSING_INDICATOR"
+    }
 
 
 def test_materialization_preserves_schema_roles_and_timeframe() -> None:

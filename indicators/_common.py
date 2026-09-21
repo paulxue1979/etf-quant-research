@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from data.models import HistoricalDataSet, PriceField
+from data.derived import DerivedWeeklyDataSet
+from data.models import HistoricalDataSet, PriceField, Timeframe
 from data.validation import validate_historical_data
 from indicators.exceptions import IndicatorParameterError
 from indicators.models import IndicatorKind, IndicatorPoint, IndicatorSeries
 
 
 def prepare_prices(
-    data: HistoricalDataSet,
+    data: HistoricalDataSet | DerivedWeeklyDataSet,
     period: int,
     price_field: PriceField,
 ) -> tuple[float, ...]:
@@ -19,7 +20,10 @@ def prepare_prices(
     _validate_period(period)
     if not isinstance(price_field, PriceField):
         raise IndicatorParameterError("price_field must be a PriceField value")
-    validate_historical_data(data)
+    if isinstance(data, HistoricalDataSet):
+        validate_historical_data(data)
+    elif not isinstance(data, DerivedWeeklyDataSet):
+        raise IndicatorParameterError("data must be a historical or derived weekly data set")
     return tuple(point.price_for(price_field) for point in data.points)
 
 
@@ -28,7 +32,7 @@ def build_series(
     kind: IndicatorKind,
     period: int,
     price_field: PriceField,
-    data: HistoricalDataSet,
+    data: HistoricalDataSet | DerivedWeeklyDataSet,
     values: Sequence[float | None],
 ) -> IndicatorSeries:
     """Preserve the input date index exactly when returning indicator values."""
@@ -40,6 +44,7 @@ def build_series(
             IndicatorPoint(date=point.date, value=value)
             for point, value in zip(data.points, values)
         ),
+        timeframe=(Timeframe.DAILY if isinstance(data, HistoricalDataSet) else Timeframe.WEEKLY),
     )
 
 

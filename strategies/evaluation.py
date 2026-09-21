@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 
+from data.derived import DerivedWeeklyDataSet
 from data.models import HistoricalDataSet, PriceField, Timeframe
 from indicators.models import IndicatorKind, IndicatorSeries
 from strategies.enums import ComparisonOperator, LogicalOperator, OperandType
@@ -63,6 +64,7 @@ class EvaluationContext:
 
     market_data: Mapping[str, HistoricalDataSet]
     indicators: Mapping[IndicatorKey, IndicatorSeries]
+    weekly_market_data: Mapping[str, DerivedWeeklyDataSet] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         normalized_market: dict[str, HistoricalDataSet] = {}
@@ -85,18 +87,29 @@ class EvaluationContext:
                 raise ValueError("indicator key does not match the indicator series")
             normalized_indicators[key] = series
 
+        normalized_weekly: dict[str, DerivedWeeklyDataSet] = {}
+        for symbol, dataset in self.weekly_market_data.items():
+            normalized_symbol = symbol.strip().upper()
+            if not isinstance(dataset, DerivedWeeklyDataSet):
+                raise TypeError("weekly_market_data values must be DerivedWeeklyDataSet values")
+            if normalized_symbol != dataset.symbol:
+                raise ValueError("weekly market data key must match the dataset symbol")
+            normalized_weekly[normalized_symbol] = dataset
+
         object.__setattr__(self, "market_data", MappingProxyType(normalized_market))
         object.__setattr__(self, "indicators", MappingProxyType(normalized_indicators))
+        object.__setattr__(self, "weekly_market_data", MappingProxyType(normalized_weekly))
 
     @classmethod
     def from_components(
         cls,
         market_data: Mapping[str, HistoricalDataSet],
         indicators: Iterable[tuple[AssetReference | str, IndicatorSeries]] = (),
+        weekly_market_data: Mapping[str, DerivedWeeklyDataSet] = MappingProxyType({}),
     ) -> EvaluationContext:
         """Build a context from asset-qualified indicator series."""
         keyed = {IndicatorKey.from_series(asset, series): series for asset, series in indicators}
-        return cls(market_data=market_data, indicators=keyed)
+        return cls(market_data=market_data, indicators=keyed, weekly_market_data=weekly_market_data)
 
 
 @dataclass(frozen=True)
@@ -108,10 +121,18 @@ class OperandValue:
     operand_type: OperandType
     price_field_used: PriceField | None
     date: date
+    timeframe: Timeframe = Timeframe.DAILY
+    source_date: date | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.date, date):
             raise TypeError("operand result date must be a date")
+        if not isinstance(self.timeframe, Timeframe):
+            object.__setattr__(self, "timeframe", Timeframe(self.timeframe))
+        if self.source_date is not None and (
+            not isinstance(self.source_date, date) or self.source_date > self.date
+        ):
+            raise ValueError("operand source_date must be on or before evaluation date")
         if not isinstance(self.operand_type, OperandType):
             object.__setattr__(self, "operand_type", OperandType(self.operand_type))
         if self.price_field_used is not None and not isinstance(self.price_field_used, PriceField):

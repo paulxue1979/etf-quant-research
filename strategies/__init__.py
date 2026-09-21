@@ -52,6 +52,7 @@ from strategies.strategy_evaluation import (
     StrategyEvaluationTimeline,
     evaluate_strategy,
     required_indicators,
+    required_weekly_assets,
 )
 from strategies.validation import (
     StrategyValidator,
@@ -115,4 +116,5 @@ __all__ = [
     "resolve_allocations",
     "evaluate_strategy",
     "required_indicators",
+    "required_weekly_assets",
 ]

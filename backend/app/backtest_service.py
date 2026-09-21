@@ -15,11 +15,10 @@ from backtest.integration import run_strategy_backtest
 from data.cache import DiskCache
 from data.config import TiingoSettings
 from data.exceptions import DataEngineError
-from data.models import HistoricalDataRequest, PriceField
+from data.models import HistoricalDataRequest
 from data.service import HistoricalDataService
 from data.tiingo import TiingoClient
-from indicators import exponential_moving_average, moving_average
-from indicators.models import IndicatorKind
+from indicators.preparation import prepare_strategy_inputs
 from strategies.evaluation import EvaluationContext
 from strategies.strategy_evaluation import evaluate_strategy, required_indicators
 
@@ -38,11 +37,13 @@ class BacktestService:
         backtest_repository: BacktestRepository,
         data_service: HistoricalDataService,
         benchmark_service: BenchmarkEvaluationService | None = None,
+        calendar: Any | None = None,
     ) -> None:
         self._strategies = strategy_repository
         self._runs = backtest_repository
         self._data = data_service
         self._benchmarks = benchmark_service or BenchmarkEvaluationService()
+        self._calendar = calendar
 
     def run(self, request: Any) -> BacktestRun:
         """Execute and persist one new run for an immutable strategy version."""
@@ -72,23 +73,19 @@ class BacktestService:
             for asset in strategy.assets
         }
         requirements = required_indicators(strategy_version)
-        if any(item.timeframe.value != "daily" for item in requirements):
-            raise BacktestServiceError(
-                "WEEKLY indicator timeframe is not executable before PHASE 11C"
+        try:
+            prepared = prepare_strategy_inputs(
+                strategy_version,
+                data,
+                price_field=request.price_field_used,
+                calendar=self._calendar,
+                cutoff=request.end_date,
             )
-        indicators = tuple(
-            (
-                requirement.asset,
-                _calculate_indicator(
-                    data[requirement.symbol],
-                    requirement.kind,
-                    requirement.period,
-                    requirement.price_field,
-                ),
-            )
-            for requirement in requirements
+        except (ValueError, DataEngineError) as exc:
+            raise BacktestServiceError(str(exc)) from exc
+        context = EvaluationContext.from_components(
+            data, prepared.indicators, weekly_market_data=prepared.weekly_market_data
         )
-        context = EvaluationContext.from_components(data, indicators)
         source_reference = (
             f"historical-data:{warmup_start.isoformat()}:{request.end_date.isoformat()}"
         )
@@ -143,6 +140,7 @@ class BacktestService:
                     "kind": item.kind.value,
                     "period": item.period,
                     "price_field": item.price_field.value,
+                    "timeframe": item.timeframe.value,
                 }
                 for item in requirements
             ],
@@ -181,18 +179,14 @@ def create_default_backtest_service() -> BacktestService:
 
 def _warmup_start(start_date: date, strategy_version: Any) -> date:
     requirements = required_indicators(strategy_version)
-    max_period = max((item.period for item in requirements), default=1)
-    return start_date - timedelta(days=max_period * 3 + 10)
-
-
-def _calculate_indicator(
-    data: Any, kind: IndicatorKind, period: int, price_field: PriceField
-) -> Any:
-    if kind is IndicatorKind.MOVING_AVERAGE:
-        return moving_average(data, period=period, price_field=price_field)
-    if kind is IndicatorKind.EXPONENTIAL_MOVING_AVERAGE:
-        return exponential_moving_average(data, period=period, price_field=price_field)
-    raise BacktestServiceError(f"unsupported indicator kind: {kind.value}")
+    daily_period = max(
+        (item.period for item in requirements if item.timeframe.value == "daily"), default=1
+    )
+    weekly_period = max(
+        (item.period for item in requirements if item.timeframe.value == "weekly"), default=0
+    )
+    lookback = max(daily_period * 3 + 10, weekly_period * 7 + 21)
+    return start_date - timedelta(days=lookback)
 
 
 __all__ = ["BacktestService", "BacktestServiceError", "create_default_backtest_service"]

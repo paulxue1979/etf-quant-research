@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from data.derived import DerivedWeeklyDataSet
 from data.models import HistoricalDataSet, PriceField
 from indicators._common import build_series, prepare_prices
 from indicators.models import IndicatorKind, IndicatorSeries
 
 
 def moving_average(
-    data: HistoricalDataSet,
+    data: HistoricalDataSet | DerivedWeeklyDataSet,
     *,
     period: int,
     price_field: PriceField,

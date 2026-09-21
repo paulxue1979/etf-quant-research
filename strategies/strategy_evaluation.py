@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
+from data.derived import DerivedWeeklyDataSet
 from data.exceptions import DataValidationError
 from data.models import HistoricalDataSet, PriceField, Timeframe
 from data.validation import validate_historical_data
@@ -24,7 +25,6 @@ from strategies.evaluation import (
 from strategies.exceptions import (
     EvaluationError,
     StrategyEvaluationInputError,
-    UnsupportedTimeframeError,
 )
 from strategies.models import (
     AllocationSpecification,
@@ -262,13 +262,6 @@ def _validate_inputs(
     if not validation.is_valid:
         details = "; ".join(f"{item.code}: {item.message}" for item in validation.errors)
         raise StrategyEvaluationInputError(f"strategy definition is invalid: {details}")
-    if any(
-        item.timeframe is not Timeframe.DAILY for item in _indicator_requirements(strategy_version)
-    ):
-        raise UnsupportedTimeframeError(
-            "WEEKLY timeframe contract is defined but runtime support will be introduced "
-            "in PHASE 11C"
-        )
     for dataset in context.market_data.values():
         try:
             validate_historical_data(dataset)
@@ -276,10 +269,8 @@ def _validate_inputs(
             raise StrategyEvaluationInputError(f"market data is invalid: {exc}") from exc
     for series in context.indicators.values():
         _validate_indicator_series(series)
-        if series.timeframe is not Timeframe.DAILY:
-            raise UnsupportedTimeframeError(
-                "WEEKLY indicator series are not executable before PHASE 11C"
-            )
+    for dataset in context.weekly_market_data.values():
+        _validate_weekly_data(dataset)
 
 
 def _required_asset_data(
@@ -355,6 +346,20 @@ def required_indicators(strategy_version: StrategyVersion) -> tuple[IndicatorKey
     if not isinstance(strategy_version, StrategyVersion):
         raise StrategyEvaluationInputError("strategy_version must be a StrategyVersion")
     return _indicator_requirements(strategy_version)
+
+
+def required_weekly_assets(strategy_version: StrategyVersion) -> tuple[str, ...]:
+    """Return symbols referenced by any weekly PRICE, MA, or EMA operand."""
+    if not isinstance(strategy_version, StrategyVersion):
+        raise StrategyEvaluationInputError("strategy_version must be a StrategyVersion")
+    symbols = {
+        operand.symbol
+        for rule in strategy_version.configuration.rules
+        if rule.condition is not None
+        for operand in _operands(rule.condition)
+        if getattr(operand, "timeframe", Timeframe.DAILY) is Timeframe.WEEKLY
+    }
+    return tuple(sorted(symbols))
 
 
 def _operands(node: RuleNode) -> tuple[object, ...]:
@@ -463,7 +468,11 @@ def _indicator_availability(
                     "evaluation context",
                 ),
             )
-        point = next((item for item in series.points if item.date == as_of_date), None)
+        point = (
+            next((item for item in reversed(series.points) if item.date <= as_of_date), None)
+            if key.timeframe is Timeframe.WEEKLY
+            else next((item for item in series.points if item.date == as_of_date), None)
+        )
         if point is None:
             return (
                 StrategyEvaluationStatus.ERROR,
@@ -497,6 +506,7 @@ def _indicator_price_fields(
             and key.kind is requirement.kind
             and key.period == requirement.period
             and key.price_field is not requirement.price_field
+            and key.timeframe is requirement.timeframe
         )
     }
     return tuple(sorted(fields, key=lambda field: field.value))
@@ -611,7 +621,19 @@ def _operand_to_dict(result: OperandValue) -> dict[str, object]:
             result.price_field_used.value if result.price_field_used is not None else None
         ),
         "date": result.date.isoformat(),
+        "timeframe": result.timeframe.value,
+        "source_date": result.source_date.isoformat() if result.source_date is not None else None,
     }
+
+
+def _validate_weekly_data(data: DerivedWeeklyDataSet) -> None:
+    previous: date | None = None
+    for point in data.points:
+        if point.available_on < point.period_start or point.available_on != point.period_end:
+            raise StrategyEvaluationInputError("weekly data has invalid completion provenance")
+        if previous is not None and point.available_on <= previous:
+            raise StrategyEvaluationInputError("weekly data dates must be strictly ascending")
+        previous = point.available_on
 
 
 def _target_allocation_to_dict(result: TargetAllocationResult) -> dict[str, object]:

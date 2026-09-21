@@ -26,11 +26,7 @@ class PriceField(StrEnum):
 
 
 class Timeframe(StrEnum):
-    """Timeframes expressible by strategy contracts in V1.3.
-
-    WEEKLY is intentionally a contract-only value until PHASE 11C adds
-    completed-week data preparation.
-    """
+    """Timeframes supported by the strategy contract and runtime preparation."""
 
     DAILY = "daily"
     WEEKLY = "weekly"

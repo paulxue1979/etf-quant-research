@@ -21,8 +21,7 @@ from data.exceptions import (
 )
 from data.models import HistoricalDataRequest, HistoricalDataSet, PriceField
 from data.validation import validate_historical_data
-from indicators import exponential_moving_average, moving_average
-from indicators.models import IndicatorKind
+from indicators.preparation import PreparedStrategyInputs, prepare_strategy_inputs
 from research.exceptions import (
     OosConfigurationMismatchError,
     OosExecutionError,
@@ -45,7 +44,7 @@ from research.oos import (
 from research.oos_execution import OosExecution
 from research.oos_execution_outcome import OosExecutionOutcome
 from strategies.evaluation import EvaluationContext
-from strategies.strategy_evaluation import evaluate_strategy, required_indicators
+from strategies.strategy_evaluation import evaluate_strategy
 
 ANALYTICS_VERSION = "phase-4i.0"
 _RETRYABLE_DATA_ERRORS = (
@@ -185,12 +184,16 @@ class OosExecutionService:
         )
         validate_oos_configuration(expected_config, resolved_spec.configuration)
         data, actual_provenance = self._load_data(strategy, resolved_spec)
-        indicators = self._prepare_indicators(
-            strategy, data, resolved_spec.configuration.price_field_used
-        )
-        context = EvaluationContext.from_components(data, indicators)
         oos_start = resolved_spec.evaluation_range.oos_start
         oos_end = resolved_spec.evaluation_range.oos_end
+        prepared_inputs = self._prepare_inputs(
+            strategy, data, resolved_spec.configuration.price_field_used, oos_end=oos_end
+        )
+        context = EvaluationContext.from_components(
+            data,
+            prepared_inputs.indicators,
+            weekly_market_data=prepared_inputs.weekly_market_data,
+        )
         source_reference = (
             f"oos-data:{protocol_id}:{resolved_spec.evaluation_range.warmup_start.isoformat()}"
             f":{oos_end.isoformat()}"
@@ -344,40 +347,21 @@ class OosExecutionService:
         return clipped
 
     @staticmethod
-    def _prepare_indicators(
-        strategy: Any, data: Mapping[str, HistoricalDataSet], price_field: PriceField
-    ) -> tuple[tuple[Any, Any], ...]:
-        prepared: list[tuple[Any, Any]] = []
-        for requirement in required_indicators(strategy):
-            if requirement.timeframe.value != "daily":
-                raise OosResultIntegrityError(
-                    "WEEKLY indicator timeframe is not executable before PHASE 11C",
-                    code="OOS_TIMEFRAME_UNSUPPORTED",
-                )
-            if requirement.price_field is not price_field:
-                raise OosConfigurationMismatchError(
-                    "indicator price field does not match frozen price field",
-                    code="PRICE_FIELD_MISMATCH",
-                )
-            dataset = data.get(requirement.symbol)
-            if dataset is None:
-                raise OosResultIntegrityError(
-                    f"indicator data is missing for {requirement.symbol}",
-                    code="OOS_DATA_MISSING",
-                )
-            if requirement.kind is IndicatorKind.MOVING_AVERAGE:
-                series = moving_average(dataset, period=requirement.period, price_field=price_field)
-            elif requirement.kind is IndicatorKind.EXPONENTIAL_MOVING_AVERAGE:
-                series = exponential_moving_average(
-                    dataset, period=requirement.period, price_field=price_field
-                )
-            else:
-                raise OosResultIntegrityError(
-                    f"unsupported indicator {requirement.kind.value}",
-                    code="OOS_INDICATOR_UNSUPPORTED",
-                )
-            prepared.append((requirement.asset, series))
-        return tuple(prepared)
+    def _prepare_inputs(
+        strategy: Any,
+        data: Mapping[str, HistoricalDataSet],
+        price_field: PriceField,
+        oos_end: date | None,
+    ) -> PreparedStrategyInputs:
+        try:
+            return prepare_strategy_inputs(
+                strategy,
+                data,
+                price_field=price_field,
+                cutoff=oos_end or max(dataset.request.end_date for dataset in data.values()),
+            )
+        except (ValueError, DataValidationError) as exc:
+            raise OosResultIntegrityError(str(exc), code="OOS_INDICATOR_UNSUPPORTED") from exc
 
     @staticmethod
     def _backtest_config(strategy_version_id: str, spec: OosEvaluationSpec) -> BacktestConfig:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from data.models import Timeframe
 from strategies.enums import OperandType
 from strategies.evaluation import EvaluationContext, IndicatorKey, OperandValue
 from strategies.exceptions import (
@@ -54,8 +55,17 @@ def evaluate_operand(
             raise MissingMarketDataError(
                 f"market data is missing for {operand.symbol} on {as_of_date.isoformat()}"
             )
-        dataset = context.market_data[operand.symbol]
-        point = next((item for item in dataset.points if item.date == as_of_date), None)
+        if operand.timeframe is Timeframe.WEEKLY:
+            dataset = context.weekly_market_data.get(operand.symbol)
+            if dataset is None:
+                raise MissingMarketDataError(
+                    f"weekly market data is missing for {operand.symbol} on "
+                    f"{as_of_date.isoformat()}"
+                )
+            point = dataset.latest_as_of(as_of_date)
+        else:
+            dataset = context.market_data[operand.symbol]
+            point = next((item for item in dataset.points if item.date == as_of_date), None)
         if point is None:
             raise MissingOperandValueError(
                 f"price is missing for {operand.symbol} on {as_of_date.isoformat()}"
@@ -67,6 +77,8 @@ def evaluate_operand(
             operand.operand_type,
             operand.price_field,
             as_of_date,
+            operand.timeframe,
+            point.available_on if operand.timeframe is Timeframe.WEEKLY else point.date,
         )
 
     if operand.operand_type in (OperandType.MA, OperandType.EMA):
@@ -83,7 +95,12 @@ def evaluate_operand(
                 f"{operand.operand_type.value.upper()}({operand.symbol},{operand.period}) "
                 f"is missing from the evaluation context"
             )
-        point = next((item for item in series.points if item.date == as_of_date), None)
+        if operand.timeframe is Timeframe.WEEKLY:
+            point = next(
+                (item for item in reversed(series.points) if item.date <= as_of_date), None
+            )
+        else:
+            point = next((item for item in series.points if item.date == as_of_date), None)
         if point is None or point.value is None:
             raise MissingOperandValueError(
                 f"{operand.operand_type.value.upper()}({operand.symbol},{operand.period}) "
@@ -95,6 +112,8 @@ def evaluate_operand(
             operand_type=operand.operand_type,
             price_field_used=operand.price_field,
             date=as_of_date,
+            timeframe=operand.timeframe,
+            source_date=point.date,
         )
 
     raise InvalidConditionConfigurationError(
