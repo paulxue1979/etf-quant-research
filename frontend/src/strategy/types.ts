@@ -1,4 +1,7 @@
 export type PriceField = "raw_close" | "adjusted_close";
+export type AssetRole = "signal_source" | "execution_asset" | "both";
+export type Timeframe = "daily" | "weekly";
+export type StrategySchemaVersion = "1.0" | "2.0";
 export type OperandType = "price" | "ma" | "ema" | "constant";
 export type ComparisonOperator =
   | "greater_than"
@@ -16,6 +19,7 @@ export interface EditorOperand {
   asset: string;
   period: string;
   value: string;
+  timeframe: Timeframe;
 }
 
 export interface EditorCondition {
@@ -72,6 +76,7 @@ export interface StrategyOperandPayload {
   period?: number;
   price_field?: PriceField;
   value?: number;
+  timeframe?: Timeframe;
 }
 
 export interface StrategyConditionPayload {
@@ -94,10 +99,11 @@ export interface StrategyAllocationPayload {
 }
 
 export interface StrategyPayload {
+  strategy_schema_version?: StrategySchemaVersion;
   strategy_id: string;
   name: string;
   description: string;
-  assets: Array<{ symbol: string }>;
+  assets: Array<{ symbol: string; role?: AssetRole }>;
   price_field: PriceField;
   rules: Array<{
     rule_id: string;

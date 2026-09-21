@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from data.exceptions import DataValidationError
-from data.models import HistoricalDataSet, PriceField
+from data.models import HistoricalDataSet, PriceField, Timeframe
 from data.validation import validate_historical_data
 from indicators.models import IndicatorPoint, IndicatorSeries
 from strategies.allocation_resolver import resolve_allocations
@@ -21,7 +21,11 @@ from strategies.evaluation import (
     RuleGroupResult,
     TargetAllocationResult,
 )
-from strategies.exceptions import EvaluationError, StrategyEvaluationInputError
+from strategies.exceptions import (
+    EvaluationError,
+    StrategyEvaluationInputError,
+    UnsupportedTimeframeError,
+)
 from strategies.models import (
     AllocationSpecification,
     Condition,
@@ -258,6 +262,13 @@ def _validate_inputs(
     if not validation.is_valid:
         details = "; ".join(f"{item.code}: {item.message}" for item in validation.errors)
         raise StrategyEvaluationInputError(f"strategy definition is invalid: {details}")
+    if any(
+        item.timeframe is not Timeframe.DAILY for item in _indicator_requirements(strategy_version)
+    ):
+        raise UnsupportedTimeframeError(
+            "WEEKLY timeframe contract is defined but runtime support will be introduced "
+            "in PHASE 11C"
+        )
     for dataset in context.market_data.values():
         try:
             validate_historical_data(dataset)
@@ -265,6 +276,10 @@ def _validate_inputs(
             raise StrategyEvaluationInputError(f"market data is invalid: {exc}") from exc
     for series in context.indicators.values():
         _validate_indicator_series(series)
+        if series.timeframe is not Timeframe.DAILY:
+            raise UnsupportedTimeframeError(
+                "WEEKLY indicator series are not executable before PHASE 11C"
+            )
 
 
 def _required_asset_data(
@@ -319,9 +334,20 @@ def _indicator_requirements(strategy_version: StrategyVersion) -> tuple[Indicato
                         "ma" if operand.operand_type is OperandType.MA else "ema",
                         operand.period,
                         operand.price_field,
+                        operand.timeframe,
                     )
                 )
-    return tuple(sorted(requirements, key=lambda item: (item.symbol, item.kind.value, item.period)))
+    return tuple(
+        sorted(
+            requirements,
+            key=lambda item: (
+                item.symbol,
+                item.kind.value,
+                item.period,
+                item.timeframe.value,
+            ),
+        )
+    )
 
 
 def required_indicators(strategy_version: StrategyVersion) -> tuple[IndicatorKey, ...]:

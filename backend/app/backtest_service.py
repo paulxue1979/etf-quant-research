@@ -72,6 +72,10 @@ class BacktestService:
             for asset in strategy.assets
         }
         requirements = required_indicators(strategy_version)
+        if any(item.timeframe.value != "daily" for item in requirements):
+            raise BacktestServiceError(
+                "WEEKLY indicator timeframe is not executable before PHASE 11C"
+            )
         indicators = tuple(
             (
                 requirement.asset,

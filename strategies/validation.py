@@ -16,6 +16,7 @@ from typing import Any
 
 from data.models import PriceField
 from strategies.enums import (
+    AssetRole,
     ComparisonOperator,
     LogicalOperator,
     NoMatchBehavior,
@@ -45,6 +46,7 @@ from strategies.models import (
     RebalancePolicy,
     RemainingAllocation,
     RuleGroup,
+    StrategyAssetReference,
     StrategyDefinition,
 )
 
@@ -56,6 +58,9 @@ class ValidationCode(StrEnum):
     INVALID_STRATEGY = "InvalidStrategy"
     EMPTY_ASSETS = "EmptyAssets"
     DUPLICATE_ASSET = "DuplicateAsset"
+    INVALID_ASSET_ROLE = "InvalidAssetRole"
+    SIGNAL_SOURCE_REQUIRED = "SignalSourceRequired"
+    EXECUTION_ASSET_REQUIRED = "ExecutionAssetRequired"
     UNKNOWN_ASSET_REFERENCE = "UnknownAssetReference"
     DUPLICATE_ALLOCATION = "DuplicateAllocation"
     INVALID_ALLOCATION = "InvalidAllocation"
@@ -201,7 +206,7 @@ class StrategyValidator:
     def _validate_initial_allocation(
         self,
         strategy: StrategyDefinition,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         behavior = getattr(strategy, "no_match_behavior", None)
@@ -236,18 +241,18 @@ class StrategyValidator:
 
     def _validate_assets(
         self, strategy: StrategyDefinition, errors: list[ValidationIssue]
-    ) -> set[str]:
+    ) -> dict[str, AssetRole]:
         assets = getattr(strategy, "assets", ())
         if not isinstance(assets, Sequence) or isinstance(assets, (str, bytes)):
             errors.append(
                 self._issue(ValidationCode.INVALID_STRATEGY, "assets", "assets must be a sequence")
             )
-            return set()
+            return {}
         if not assets:
             errors.append(
                 self._issue(ValidationCode.EMPTY_ASSETS, "assets", "assets must not be empty")
             )
-        symbols: set[str] = set()
+        symbols: dict[str, AssetRole] = {}
         for index, asset in enumerate(assets):
             if not isinstance(asset, AssetReference):
                 errors.append(
@@ -267,7 +272,9 @@ class StrategyValidator:
                         f"asset {symbol} is declared more than once",
                     )
                 )
-            symbols.add(symbol)
+            symbols[symbol] = (
+                asset.role if isinstance(asset, StrategyAssetReference) else AssetRole.BOTH
+            )
         return symbols
 
     def _validate_price_field(
@@ -285,7 +292,7 @@ class StrategyValidator:
     def _validate_rules(
         self,
         strategy: StrategyDefinition,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         rules = getattr(strategy, "rules", ())
@@ -329,7 +336,7 @@ class StrategyValidator:
     def _validate_fallback(
         self,
         strategy: StrategyDefinition,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         fallback = getattr(strategy, "fallback", None)
@@ -357,7 +364,7 @@ class StrategyValidator:
         self,
         allocations: object,
         path: str,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
         *,
         allow_empty: bool = False,
@@ -403,6 +410,14 @@ class StrategyValidator:
                         ValidationCode.UNKNOWN_ASSET_REFERENCE,
                         f"{item_path}.symbol",
                         f"asset {symbol} is not declared in strategy assets",
+                    )
+                )
+            elif not assets[symbol].execution_capable:
+                errors.append(
+                    self._issue(
+                        ValidationCode.EXECUTION_ASSET_REQUIRED,
+                        f"{item_path}.symbol",
+                        f"asset {symbol} is not declared as an execution-capable asset",
                     )
                 )
             if not self._valid_weight(allocation.target_weight):
@@ -475,7 +490,7 @@ class StrategyValidator:
         self,
         rule: AllocationRule,
         path: str,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         remaining = rule.remaining
@@ -499,6 +514,14 @@ class StrategyValidator:
                     f"remaining asset {symbol} is not declared in strategy assets",
                 )
             )
+        elif not assets[symbol].execution_capable:
+            errors.append(
+                self._issue(
+                    ValidationCode.EXECUTION_ASSET_REQUIRED,
+                    f"{path}.remaining.symbol",
+                    f"remaining asset {symbol} is not declared as an execution-capable asset",
+                )
+            )
         if symbol in {allocation.symbol.symbol for allocation in rule.allocations}:
             errors.append(
                 self._issue(
@@ -513,7 +536,7 @@ class StrategyValidator:
         node: object,
         path: str,
         strategy: StrategyDefinition,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         if isinstance(node, Condition):
@@ -546,7 +569,7 @@ class StrategyValidator:
         condition: Condition,
         path: str,
         strategy: StrategyDefinition,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         if not isinstance(condition.operator, ComparisonOperator):
@@ -581,7 +604,7 @@ class StrategyValidator:
         operand: object,
         path: str,
         strategy: StrategyDefinition,
-        assets: set[str],
+        assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
     ) -> None:
         if not isinstance(operand, Operand):
@@ -593,6 +616,17 @@ class StrategyValidator:
                     ValidationCode.UNKNOWN_ASSET_REFERENCE,
                     f"{path}.asset",
                     f"asset {operand.symbol} is not declared in strategy assets",
+                )
+            )
+        elif (
+            operand.operand_type is not OperandType.CONSTANT
+            and not assets[operand.symbol].signal_capable
+        ):
+            errors.append(
+                self._issue(
+                    ValidationCode.SIGNAL_SOURCE_REQUIRED,
+                    f"{path}.asset",
+                    f"asset {operand.symbol} is not declared as a signal-capable asset",
                 )
             )
         if not isinstance(operand.operand_type, OperandType):

@@ -41,6 +41,7 @@ export function createOperand(
     asset: firstAsset(assets),
     period: type === "ma" || type === "ema" ? "20" : "",
     value: type === "constant" ? "0" : "",
+    timeframe: "daily",
   };
 }
 
@@ -339,16 +340,27 @@ function toWeightPayload(allocation: EditorAllocation): StrategyAllocationPayloa
 
 function toOperandPayload(operand: EditorOperand, priceField: PriceField): StrategyOperandPayload {
   if (operand.type === "constant") {
-    return { type: "constant", asset: operand.asset, value: toNumber(operand.value, "constant") };
+    return {
+      type: "constant",
+      asset: operand.asset,
+      value: toNumber(operand.value, "constant"),
+      timeframe: "daily",
+    };
   }
   if (operand.type === "price") {
-    return { type: "price", asset: operand.asset, price_field: priceField };
+    return {
+      type: "price",
+      asset: operand.asset,
+      price_field: priceField,
+      timeframe: operand.timeframe,
+    };
   }
   return {
     type: operand.type,
     asset: operand.asset,
     period: toNumber(operand.period, "indicator period"),
     price_field: priceField,
+    timeframe: operand.timeframe,
   };
 }
 
@@ -386,10 +398,11 @@ function toRuleGroupPayload(group: EditorRuleGroup, priceField: PriceField): Str
 
 export function toStrategyPayload(state: EditorState): StrategyPayload {
   const payload: StrategyPayload = {
+    strategy_schema_version: "2.0",
     strategy_id: state.strategyId.trim(),
     name: state.name,
     description: state.description,
-    assets: state.assets.map((symbol) => ({ symbol })),
+    assets: state.assets.map((symbol) => ({ symbol, role: "both" })),
     price_field: state.priceField,
     rules: state.rules.map((rule) => ({
       rule_id: rule.ruleId,
@@ -424,6 +437,7 @@ function fromOperandPayload(payload: StrategyOperandPayload): EditorOperand {
     asset: payload.asset,
     period: payload.period === undefined ? "" : String(payload.period),
     value: payload.value === undefined ? "" : String(payload.value),
+    timeframe: payload.timeframe ?? "daily",
   };
 }
 

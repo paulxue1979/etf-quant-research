@@ -3,6 +3,22 @@
 from enum import StrEnum
 
 
+class AssetRole(StrEnum):
+    """Capabilities granted to a strategy-declared asset."""
+
+    SIGNAL_SOURCE = "signal_source"
+    EXECUTION_ASSET = "execution_asset"
+    BOTH = "both"
+
+    @property
+    def signal_capable(self) -> bool:
+        return self in (self.SIGNAL_SOURCE, self.BOTH)
+
+    @property
+    def execution_capable(self) -> bool:
+        return self in (self.EXECUTION_ASSET, self.BOTH)
+
+
 class OperandType(StrEnum):
     """Supported value-reference types."""
 

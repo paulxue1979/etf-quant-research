@@ -75,6 +75,7 @@ def evaluate_operand(
             "ma" if operand.operand_type is OperandType.MA else "ema",
             operand.period,
             operand.price_field,
+            operand.timeframe,
         )
         series = context.indicators.get(key)
         if series is None:

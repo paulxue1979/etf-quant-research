@@ -449,6 +449,8 @@ class ExperimentExecutionService:
     ) -> tuple[tuple[str, IndicatorSeries], ...]:
         series: list[tuple[str, IndicatorSeries]] = []
         for item in required_indicators(strategy_version):
+            if item.timeframe.value != "daily":
+                raise _RuntimeFailure("UNSUPPORTED_TIMEFRAME", retryable=False)
             dataset = data.get(item.symbol)
             if dataset is None:
                 raise _RuntimeFailure("MISSING_MARKET_DATA", retryable=False)

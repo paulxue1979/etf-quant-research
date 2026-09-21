@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from data.models import PriceField
+from data.models import PriceField, Timeframe
 from strategies.enums import (
+    AssetRole,
     ComparisonOperator,
     LogicalOperator,
     NoMatchBehavior,
@@ -41,6 +42,12 @@ from strategies.exceptions import (
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,15}$")
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+LEGACY_STRATEGY_SCHEMA_VERSION = "1.0"
+CURRENT_STRATEGY_SCHEMA_VERSION = "2.0"
+SUPPORTED_STRATEGY_SCHEMA_VERSIONS = frozenset(
+    {LEGACY_STRATEGY_SCHEMA_VERSION, CURRENT_STRATEGY_SCHEMA_VERSION}
+)
 
 
 def _require_mapping(payload: object, label: str) -> Mapping[str, Any]:
@@ -98,6 +105,26 @@ class AssetReference:
 
 
 @dataclass(frozen=True)
+class StrategyAssetReference(AssetReference):
+    """One declared asset and its generic strategy capabilities."""
+
+    role: AssetRole = AssetRole.BOTH
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        role = _validate_enum(self.role, AssetRole, InvalidAssetError, "asset role")
+        object.__setattr__(self, "role", role)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"symbol": self.symbol, "role": self.role.value}
+
+    @classmethod
+    def from_dict(cls, payload: object) -> StrategyAssetReference:
+        data = _require_mapping(payload, "strategy asset")
+        return cls(symbol=data.get("symbol", ""), role=data.get("role", ""))
+
+
+@dataclass(frozen=True)
 class Operand:
     """A price, indicator, or asset-qualified constant reference."""
 
@@ -106,12 +133,16 @@ class Operand:
     period: int | None = None
     price_field: PriceField | None = None
     value: float | None = None
+    timeframe: Timeframe = Timeframe.DAILY
 
     def __post_init__(self) -> None:
         asset = self.asset if isinstance(self.asset, AssetReference) else AssetReference(self.asset)
         operand_type = _validate_enum(
             self.operand_type, OperandType, InvalidOperandError, "operand_type"
         )
+        timeframe = _validate_enum(self.timeframe, Timeframe, InvalidOperandError, "timeframe")
+        if operand_type is OperandType.CONSTANT and timeframe is not Timeframe.DAILY:
+            raise InvalidOperandError("CONSTANT operand timeframe must be DAILY")
         if operand_type is OperandType.PRICE and self.period is not None:
             raise InvalidOperandError("PRICE operand must not have a period")
         if operand_type in (OperandType.MA, OperandType.EMA):
@@ -137,6 +168,7 @@ class Operand:
             object.__setattr__(self, "price_field", price_field)
         object.__setattr__(self, "asset", asset)
         object.__setattr__(self, "operand_type", operand_type)
+        object.__setattr__(self, "timeframe", timeframe)
         if operand_type is OperandType.CONSTANT:
             object.__setattr__(self, "value", float(self.value))
 
@@ -150,7 +182,7 @@ class Operand:
         """Expose the wire-level operand type without changing the field name."""
         return self.operand_type
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_timeframe: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "type": self.operand_type.value,
             "asset": self.asset.symbol,
@@ -161,6 +193,8 @@ class Operand:
             payload["price_field"] = self.price_field.value
         if self.value is not None:
             payload["value"] = self.value
+        if include_timeframe:
+            payload["timeframe"] = self.timeframe.value
         return payload
 
     @classmethod
@@ -172,6 +206,7 @@ class Operand:
             period=data.get("period"),
             price_field=data.get("price_field"),
             value=data.get("value"),
+            timeframe=data.get("timeframe", Timeframe.DAILY.value),
         )
 
 
@@ -223,12 +258,12 @@ class Condition:
             raise InvalidConditionError("condition threshold must be a Threshold value")
         object.__setattr__(self, "operator", operator)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_timeframe: bool = False) -> dict[str, Any]:
         return {
             "type": "condition",
-            "left": self.left.to_dict(),
+            "left": self.left.to_dict(include_timeframe=include_timeframe),
             "operator": self.operator.value,
-            "right": self.right.to_dict(),
+            "right": self.right.to_dict(include_timeframe=include_timeframe),
             "threshold": self.threshold.to_dict() if self.threshold else None,
         }
 
@@ -261,11 +296,13 @@ class RuleGroup:
         object.__setattr__(self, "operator", operator)
         object.__setattr__(self, "children", children)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_timeframe: bool = False) -> dict[str, Any]:
         return {
             "type": "group",
             "operator": self.operator.value,
-            "children": [child.to_dict() for child in self.children],
+            "children": [
+                child.to_dict(include_timeframe=include_timeframe) for child in self.children
+            ],
         }
 
     @classmethod
@@ -387,12 +424,16 @@ class AllocationRule:
         object.__setattr__(self, "name", self.name.strip())
         object.__setattr__(self, "allocations", allocations)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_timeframe: bool = False) -> dict[str, Any]:
         return {
             "rule_id": self.rule_id,
             "name": self.name,
             "priority": self.priority,
-            "condition": self.condition.to_dict() if self.condition else None,
+            "condition": (
+                self.condition.to_dict(include_timeframe=include_timeframe)
+                if self.condition
+                else None
+            ),
             "allocations": [allocation.to_dict() for allocation in self.allocations],
             "remaining": self.remaining.to_dict() if self.remaining else None,
         }
@@ -554,13 +595,14 @@ class StrategyDefinition:
     strategy_id: str
     name: str
     description: str
-    assets: tuple[AssetReference, ...]
+    assets: tuple[AssetReference | StrategyAssetReference, ...]
     price_field: PriceField
     rules: tuple[AllocationRule, ...]
     fallback: FallbackAllocation
     rebalance_policy: RebalancePolicy
     no_match_behavior: NoMatchBehavior = NoMatchBehavior.USE_FALLBACK
     initial_allocation: AllocationSpecification | None = None
+    strategy_schema_version: str = LEGACY_STRATEGY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
@@ -569,11 +611,27 @@ class StrategyDefinition:
             raise InvalidStrategyError("strategy name must not be empty")
         if not isinstance(self.description, str):
             raise InvalidStrategyError("strategy description must be a string")
+        if (
+            not isinstance(self.strategy_schema_version, str)
+            or self.strategy_schema_version not in SUPPORTED_STRATEGY_SCHEMA_VERSIONS
+        ):
+            raise InvalidStrategyError(
+                f"unsupported strategy schema version: {self.strategy_schema_version}"
+            )
         assets = _normalize_sequence(self.assets, "assets")
-        if not assets or not all(isinstance(item, AssetReference) for item in assets):
+        if not assets or not all(
+            isinstance(item, (AssetReference, StrategyAssetReference)) for item in assets
+        ):
             raise InvalidStrategyError("assets must contain at least one AssetReference")
         if len({item.symbol for item in assets}) != len(assets):
             raise InvalidStrategyError("strategy assets must not contain duplicate symbols")
+        if self.strategy_schema_version == CURRENT_STRATEGY_SCHEMA_VERSION:
+            assets = tuple(
+                item
+                if isinstance(item, StrategyAssetReference)
+                else StrategyAssetReference(item.symbol, AssetRole.BOTH)
+                for item in assets
+            )
         price_field = _validate_enum(
             self.price_field, PriceField, InvalidStrategyError, "price_field"
         )
@@ -602,18 +660,25 @@ class StrategyDefinition:
         object.__setattr__(self, "price_field", price_field)
         object.__setattr__(self, "rules", rules)
         object.__setattr__(self, "no_match_behavior", no_match_behavior)
+        object.__setattr__(self, "strategy_schema_version", self.strategy_schema_version)
 
     def to_dict(self) -> dict[str, Any]:
+        current_schema = self.strategy_schema_version == CURRENT_STRATEGY_SCHEMA_VERSION
         payload = {
             "strategy_id": self.strategy_id,
             "name": self.name,
             "description": self.description,
-            "assets": [asset.to_dict() for asset in self.assets],
+            "assets": [
+                asset.to_dict() if current_schema else {"symbol": asset.symbol}
+                for asset in self.assets
+            ],
             "price_field": self.price_field.value,
-            "rules": [rule.to_dict() for rule in self.rules],
+            "rules": [rule.to_dict(include_timeframe=current_schema) for rule in self.rules],
             "fallback": self.fallback.to_dict(),
             "rebalance_policy": self.rebalance_policy.to_dict(),
         }
+        if current_schema:
+            payload["strategy_schema_version"] = CURRENT_STRATEGY_SCHEMA_VERSION
         if self.no_match_behavior is not NoMatchBehavior.USE_FALLBACK:
             payload["no_match_behavior"] = self.no_match_behavior.value
         if self.initial_allocation is not None:
@@ -623,15 +688,39 @@ class StrategyDefinition:
     def to_json(self) -> str:
         return _canonical_json(self.to_dict())
 
+    @property
+    def signal_asset_symbols(self) -> frozenset[str]:
+        """Return assets permitted as indicator/price signal sources."""
+        return frozenset(
+            asset.symbol
+            for asset in self.assets
+            if not isinstance(asset, StrategyAssetReference) or asset.role.signal_capable
+        )
+
+    @property
+    def execution_asset_symbols(self) -> frozenset[str]:
+        """Return assets permitted in target allocations."""
+        return frozenset(
+            asset.symbol
+            for asset in self.assets
+            if not isinstance(asset, StrategyAssetReference) or asset.role.execution_capable
+        )
+
     @classmethod
     def from_dict(cls, payload: object) -> StrategyDefinition:
         data = _require_mapping(payload, "strategy definition")
+        schema_version = data.get("strategy_schema_version", LEGACY_STRATEGY_SCHEMA_VERSION)
+        asset_type = (
+            StrategyAssetReference
+            if schema_version == CURRENT_STRATEGY_SCHEMA_VERSION
+            else AssetReference
+        )
         return cls(
             strategy_id=data.get("strategy_id", ""),
             name=data.get("name", ""),
             description=data.get("description", ""),
             assets=tuple(
-                AssetReference.from_dict(item)
+                asset_type.from_dict(item)
                 for item in _normalize_sequence(data.get("assets", []), "assets")
             ),
             price_field=data.get("price_field", ""),
@@ -647,6 +736,7 @@ class StrategyDefinition:
                 if data.get("initial_allocation") is not None
                 else None
             ),
+            strategy_schema_version=schema_version,
         )
 
     @classmethod

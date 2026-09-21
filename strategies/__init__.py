@@ -1,9 +1,11 @@
 """Strategy Engine V1.0 domain models and evaluation layers."""
 
+from data.models import Timeframe
 from strategies.allocation_resolver import resolve_allocations
 from strategies.condition_evaluator import evaluate_condition
 from strategies.enums import (
     AllocationSource,
+    AssetRole,
     ComparisonOperator,
     LogicalOperator,
     NoMatchBehavior,
@@ -21,7 +23,10 @@ from strategies.evaluation import (
     RuleGroupResult,
     TargetAllocationResult,
 )
+from strategies.exceptions import UnsupportedTimeframeError
 from strategies.models import (
+    CURRENT_STRATEGY_SCHEMA_VERSION,
+    LEGACY_STRATEGY_SCHEMA_VERSION,
     Allocation,
     AllocationRule,
     AllocationSpecification,
@@ -32,6 +37,7 @@ from strategies.models import (
     RebalancePolicy,
     RemainingAllocation,
     RuleGroup,
+    StrategyAssetReference,
     StrategyDefinition,
     StrategyMaterializationProvenance,
     StrategyVersion,
@@ -62,6 +68,12 @@ __all__ = [
     "AllocationSource",
     "AllocationRule",
     "AssetReference",
+    "AssetRole",
+    "StrategyAssetReference",
+    "CURRENT_STRATEGY_SCHEMA_VERSION",
+    "LEGACY_STRATEGY_SCHEMA_VERSION",
+    "Timeframe",
+    "UnsupportedTimeframeError",
     "ComparisonOperator",
     "Condition",
     "ConditionResult",

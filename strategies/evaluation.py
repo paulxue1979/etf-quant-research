@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 
-from data.models import HistoricalDataSet, PriceField
+from data.models import HistoricalDataSet, PriceField, Timeframe
 from indicators.models import IndicatorKind, IndicatorSeries
 from strategies.enums import ComparisonOperator, LogicalOperator, OperandType
 from strategies.exceptions import InvalidEvaluationValueError
@@ -23,6 +23,7 @@ class IndicatorKey:
     kind: IndicatorKind
     period: int
     price_field: PriceField
+    timeframe: Timeframe = Timeframe.DAILY
 
     def __post_init__(self) -> None:
         normalized_asset = (
@@ -34,15 +35,26 @@ class IndicatorKey:
             raise ValueError("indicator period must be a positive integer")
         if not isinstance(self.price_field, PriceField):
             object.__setattr__(self, "price_field", PriceField(self.price_field))
+        if not isinstance(self.timeframe, Timeframe):
+            object.__setattr__(self, "timeframe", Timeframe(self.timeframe))
         object.__setattr__(self, "asset", normalized_asset)
 
     @property
     def symbol(self) -> str:
         return self.asset.symbol
 
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "asset": self.symbol,
+            "kind": self.kind.value,
+            "period": self.period,
+            "price_field": self.price_field.value,
+            "timeframe": self.timeframe.value,
+        }
+
     @classmethod
     def from_series(cls, asset: AssetReference | str, series: IndicatorSeries) -> IndicatorKey:
-        return cls(asset, series.kind, series.period, series.price_field_used)
+        return cls(asset, series.kind, series.period, series.price_field_used, series.timeframe)
 
 
 @dataclass(frozen=True)

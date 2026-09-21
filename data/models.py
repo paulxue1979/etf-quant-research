@@ -25,6 +25,17 @@ class PriceField(StrEnum):
     ADJUSTED_CLOSE = "adjusted_close"
 
 
+class Timeframe(StrEnum):
+    """Timeframes expressible by strategy contracts in V1.3.
+
+    WEEKLY is intentionally a contract-only value until PHASE 11C adds
+    completed-week data preparation.
+    """
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
 class DataSource(StrEnum):
     """Origin of the returned normalized data set."""
 

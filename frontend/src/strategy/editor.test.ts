@@ -17,7 +17,12 @@ describe("strategy editor serialization", () => {
     const conditions = payload.rules[0].condition.children;
 
     expect(payload.price_field).toBe("adjusted_close");
-    expect(payload.assets).toEqual([{ symbol: "QQQ" }, { symbol: "TQQQ" }, { symbol: "SGOV" }]);
+    expect(payload.strategy_schema_version).toBe("2.0");
+    expect(payload.assets).toEqual([
+      { symbol: "QQQ", role: "both" },
+      { symbol: "TQQQ", role: "both" },
+      { symbol: "SGOV", role: "both" },
+    ]);
     expect(conditions[0]).toMatchObject({
       type: "condition",
       operator: "greater_than",
@@ -208,7 +213,7 @@ describe("strategy editor serialization", () => {
 
     const payload = toStrategyPayload(state);
 
-    expect(payload.assets).toEqual([{ symbol: "QQQ" }]);
+    expect(payload.assets).toEqual([{ symbol: "QQQ", role: "both" }]);
     expect(payload.assets).not.toContainEqual({ symbol: "CASH" });
     expect(payload.rules).toHaveLength(2);
     expect(payload.rules[0]).toMatchObject({

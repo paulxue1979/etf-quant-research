@@ -349,6 +349,11 @@ class OosExecutionService:
     ) -> tuple[tuple[Any, Any], ...]:
         prepared: list[tuple[Any, Any]] = []
         for requirement in required_indicators(strategy):
+            if requirement.timeframe.value != "daily":
+                raise OosResultIntegrityError(
+                    "WEEKLY indicator timeframe is not executable before PHASE 11C",
+                    code="OOS_TIMEFRAME_UNSUPPORTED",
+                )
             if requirement.price_field is not price_field:
                 raise OosConfigurationMismatchError(
                     "indicator price field does not match frozen price field",

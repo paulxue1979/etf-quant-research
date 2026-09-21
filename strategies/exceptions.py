@@ -167,3 +167,9 @@ class SignalEvaluationPropagationError(SignalEngineError):
 
 class StrategyEvaluationInputError(ValueError):
     """Raised when PHASE 4G receives invalid static evaluation inputs."""
+
+
+class UnsupportedTimeframeError(StrategyEvaluationInputError):
+    """Raised when a contract timeframe is not implemented by the runtime."""
+
+    code = "UNSUPPORTED_TIMEFRAME"
