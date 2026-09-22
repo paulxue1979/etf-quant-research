@@ -7,6 +7,10 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
+from backend.app.backtest_marker_projection import (
+    BacktestMarkerProjectionError,
+    BacktestMarkerProjectionService,
+)
 from backend.app.backtest_report_projection import (
     BacktestReportProjectionError,
     BacktestReportProjectionService,
@@ -16,6 +20,7 @@ from backend.app.backtest_repository import BacktestPersistenceError, BacktestRe
 router = APIRouter(prefix="/research/backtests", tags=["backtest-report"])
 backtest_repository = BacktestRepository()
 _projection = BacktestReportProjectionService()
+_marker_projection = BacktestMarkerProjectionService()
 
 
 def _run_or_404(backtest_run_id: str) -> Any:
@@ -96,6 +101,35 @@ def get_backtest_report_holdings(
         sort_by=sort_by,
         order=order,
     )
+
+
+@router.get("/{backtest_run_id}/report/markers")
+def get_backtest_report_markers(
+    backtest_run_id: str,
+    types: str | None = Query(default=None),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    group_same_day: bool = True,
+    major_only: bool = False,
+    major_threshold: float | None = Query(default=None, ge=0, le=1),
+) -> dict[str, Any]:
+    """Return an opt-in event-marker projection without changing report payloads."""
+    selected = None if types is None else tuple(item.strip() for item in types.split(","))
+    try:
+        return _marker_projection.project(
+            _run_or_404(backtest_run_id),
+            marker_types=selected,
+            start=from_date,
+            end=to_date,
+            group_same_day=group_same_day,
+            major_only=major_only,
+            major_threshold=major_threshold,
+        )
+    except BacktestMarkerProjectionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_MARKER_REQUEST", "message": str(exc)},
+        ) from exc
 
 
 __all__ = ["backtest_repository", "router"]

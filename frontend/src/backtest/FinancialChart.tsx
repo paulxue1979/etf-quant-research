@@ -79,10 +79,10 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     if (markerAnchor && markerDates) {
       const visibleMarkers: SeriesMarker<Time>[] = markers.flatMap((marker) => markerDates?.has(marker.date) ? [{
         time: marker.date as Time,
-        position: marker.kind === "signal" ? "aboveBar" as const : "belowBar" as const,
-        shape: marker.kind === "signal" ? "arrowDown" as const : marker.kind === "execution" ? "arrowUp" as const : "circle" as const,
+        position: ["signal", "regime", "target-allocation"].includes(marker.kind) ? "aboveBar" as const : "belowBar" as const,
+        shape: marker.kind === "signal" ? "arrowDown" as const : marker.kind === "execution" ? "arrowUp" as const : marker.kind === "rebalance" ? "square" as const : "circle" as const,
         color: marker.color,
-        text: marker.kind === "signal" ? "S" : marker.kind === "execution" ? "E" : "C",
+        text: marker.shortLabel ?? marker.kind.slice(0, 1).toUpperCase(),
         size: 1,
       }] : []);
       createSeriesMarkers(markerAnchor, visibleMarkers);
@@ -128,6 +128,6 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     <ChartState series={series} />
     {hover && <div className="financial-chart-tooltip" role="status"><strong>{hover.date}</strong>{hover.values.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}: {item.value}</span>)}{hover.details.map((detail, index) => <span className="marker-detail" key={`${detail}-${index}`}>{detail}</span>)}</div>}
     <div className="financial-chart-legend">{series.map((item) => <span key={item.key} className={item.status !== "available" ? "is-unavailable" : undefined}><i style={{ background: item.color }} />{item.label}<small>{availabilityText(item)}</small></span>)}</div>
-    {markers.length > 0 && <div className="marker-legend" aria-label="Chart marker legend">{markers.some((item) => item.kind === "signal") && <span><i className="signal-marker">S</i>Signal at close</span>}{markers.some((item) => item.kind === "execution") && <span><i className="execution-marker">E</i>Execution at next open</span>}{markers.some((item) => item.kind === "contribution") && <span><i className="contribution-marker">C</i>External cash flow</span>}</div>}
+    {markers.length > 0 && <div className="marker-legend" aria-label="Chart marker legend">{[...new Map(markers.flatMap((item) => item.categories?.length ? item.categories.map((category) => [category, { label: category.replaceAll("_", " "), color: item.color, shortLabel: category.slice(0, 1) }]) : [[item.kind, { label: item.kind.replaceAll("-", " "), color: item.color, shortLabel: item.shortLabel ?? item.kind.slice(0, 1) }]])).values()].map((item) => <span key={item.label}><i style={{ color: item.color }}>{item.shortLabel}</i>{item.label}</span>)}</div>}
   </section>;
 }

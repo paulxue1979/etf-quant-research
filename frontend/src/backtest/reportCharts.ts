@@ -39,9 +39,11 @@ export interface RegimePoint {
 
 export interface ChartMarker {
   date: string;
-  kind: "signal" | "execution" | "contribution";
+  kind: "signal" | "execution" | "rebalance" | "contribution" | "target-allocation" | "actual-allocation" | "regime" | "group";
   label: string;
+  shortLabel?: string;
   color: string;
+  categories?: string[];
   details: string[];
 }
 

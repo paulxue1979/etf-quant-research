@@ -1,6 +1,8 @@
 import type { StrategyVersionSummary } from "../strategy/types";
 import type {
   BacktestRequest,
+  BacktestMarkerReport,
+  BacktestMarkerType,
   BacktestReport,
   BacktestReportSeries,
   BacktestReportSeriesName,
@@ -99,6 +101,28 @@ export const backtestApi = {
     if (window?.to) query.set("to", window.to);
     return requestJson<BacktestReportSeries>(
       `/research/backtests/${encodeURIComponent(runId)}/report/series?${query.toString()}`,
+    );
+  },
+
+  getReportMarkers(
+    runId: string,
+    options: {
+      types?: BacktestMarkerType[];
+      from?: string;
+      to?: string;
+      majorOnly?: boolean;
+      majorThreshold?: number;
+    } = {},
+  ): Promise<BacktestMarkerReport> {
+    const query = new URLSearchParams();
+    if (options.types) query.set("types", options.types.join(","));
+    if (options.from) query.set("from", options.from);
+    if (options.to) query.set("to", options.to);
+    if (options.majorOnly !== undefined) query.set("major_only", String(options.majorOnly));
+    if (options.majorThreshold !== undefined) query.set("major_threshold", String(options.majorThreshold));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return requestJson<BacktestMarkerReport>(
+      `/research/backtests/${encodeURIComponent(runId)}/report/markers${suffix}`,
     );
   },
 

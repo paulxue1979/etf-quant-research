@@ -327,6 +327,12 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .benchmark-capital-note small { color: var(--muted); }
 .financial-chart-controls { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; }
 .marker-toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.marker-toolbar { display: grid; gap: 10px; margin: 0; padding: 12px 0; border: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.marker-toolbar legend { padding: 0 10px 0 0; color: var(--text); font-size: 12px; font-weight: 700; }
+.marker-filter-grid, .marker-density-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 16px; }
+.marker-density-controls { color: var(--muted); font-size: 11px; }
+.marker-density-controls > label:not(.marker-toggle) { display: inline-flex; align-items: center; gap: 7px; }
+.marker-density-controls input[type="number"] { width: 78px; min-height: 30px; padding: 4px 7px; }
 .contribution-marker { background: #d2a956; color: #0b1216; }
 .range-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .range-controls .button { min-width: 48px; padding: 7px 9px; }

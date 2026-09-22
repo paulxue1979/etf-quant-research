@@ -295,6 +295,16 @@ function mockBacktestApi(options: { seriesFails?: boolean; paginatedHistory?: bo
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
     if (url.includes("/report/series?") && options.seriesFails) return new Response(JSON.stringify({ detail: { message: "report series unavailable" } }), { status: 503 });
     if (url.includes("/report/series?")) return new Response(JSON.stringify(reportSeriesPayload()), { status: 200 });
+    if (url.includes("/report/markers")) return new Response(JSON.stringify({
+      marker_schema_version: "1.0",
+      identity: { backtest_run_id: "backtest-demo-1", strategy_version_id: "demo-v1" },
+      source: "derived_from_immutable_backtest_run",
+      persisted: false,
+      filters: { types: [], from: null, to: null, group_same_day: true, major_only: false, major_threshold: null },
+      counts: { markers: 0, groups: 0, by_type: {}, hidden: 0, truncated: false },
+      markers: [],
+      groups: [],
+    }), { status: 200 });
     if (url.endsWith("/report")) return new Response(JSON.stringify(reportPayload()), { status: 200 });
     if (url.includes("/report/holdings")) return new Response(JSON.stringify({
       report_schema_version: "1.0",

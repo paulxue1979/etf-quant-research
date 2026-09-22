@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { BacktestApiError, backtestApi } from "./api";
 import { BacktestReportCharts } from "./BacktestReportCharts";
 import { CapitalResearchPanel } from "./CapitalResearchPanel";
+import { DEFAULT_MARKER_TYPES } from "./eventMarkers";
 import { HoldingPeriodReport } from "./HoldingPeriodReport";
 import { MultiStrategyComparison } from "./MultiStrategyComparison";
 import { ResearchProtocolPanel } from "./ResearchProtocolPanel";
 import type {
   BacktestRequest,
+  BacktestMarkerReport,
   BacktestReport,
   BacktestReportSeries,
   BacktestRun,
@@ -174,13 +176,17 @@ function ResearchHistory({
   );
 }
 
-function Results({ run, report, reportSeries, reportLoading, reportError, reportSeriesError }: {
+function Results({ run, report, reportSeries, markerReport, markerLoading, reportLoading, reportError, reportSeriesError, markerError, onMarkerTypesChange }: {
   run: BacktestRun;
   report: BacktestReport | null;
   reportSeries: BacktestReportSeries | null;
+  markerReport: BacktestMarkerReport | null;
+  markerLoading: boolean;
   reportLoading: boolean;
   reportError: string | null;
   reportSeriesError: string | null;
+  markerError: string | null;
+  onMarkerTypesChange: (types: BacktestMarkerReport["filters"]["types"]) => void;
 }) {
   const analysis = run.performance_analysis;
   const result = run.backtest_result;
@@ -218,7 +224,7 @@ function Results({ run, report, reportSeries, reportLoading, reportError, report
 
       <CapitalResearchPanel report={report} loading={reportLoading} error={reportError} />
 
-      <BacktestReportCharts report={report} series={reportSeries} loading={reportLoading} error={reportError ?? reportSeriesError} />
+      <BacktestReportCharts report={report} series={reportSeries} markerReport={markerReport} markerLoading={markerLoading} markerError={markerError} onMarkerTypesChange={onMarkerTypesChange} loading={reportLoading} error={reportError ?? reportSeriesError} />
 
       <HoldingPeriodReport backtestRunId={run.backtest_run_id} />
 
@@ -254,9 +260,13 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
   const [run, setRun] = useState<BacktestRun | null>(null);
   const [report, setReport] = useState<BacktestReport | null>(null);
   const [reportSeries, setReportSeries] = useState<BacktestReportSeries | null>(null);
+  const [markerReport, setMarkerReport] = useState<BacktestMarkerReport | null>(null);
+  const [markerLoading, setMarkerLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportSeriesError, setReportSeriesError] = useState<string | null>(null);
+  const [markerError, setMarkerError] = useState<string | null>(null);
+  const markerRequestSequence = useRef(0);
   const [researchRuns, setResearchRuns] = useState<ResearchBacktestSummary[]>([]);
   const [researchTotal, setResearchTotal] = useState(0);
   const [researchOffset, setResearchOffset] = useState(0);
@@ -283,6 +293,22 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to load saved research runs.");
     } finally {
       setResearchBusy(false);
+    }
+  }
+
+  async function loadReportMarkers(runId: string, types: BacktestMarkerReport["filters"]["types"]) {
+    const requestSequence = ++markerRequestSequence.current;
+    setMarkerLoading(true);
+    setMarkerError(null);
+    try {
+      const value = await backtestApi.getReportMarkers(runId, { types });
+      if (requestSequence === markerRequestSequence.current) setMarkerReport(value);
+    } catch (reason) {
+      if (requestSequence === markerRequestSequence.current) {
+        setMarkerError(reason instanceof BacktestApiError ? reason.message : "Unable to load versioned event markers.");
+      }
+    } finally {
+      if (requestSequence === markerRequestSequence.current) setMarkerLoading(false);
     }
   }
 
@@ -330,8 +356,12 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     setRun(null);
     setReport(null);
     setReportSeries(null);
+    setMarkerReport(null);
     setReportError(null);
     setReportSeriesError(null);
+    setMarkerError(null);
+    markerRequestSequence.current += 1;
+    setMarkerLoading(false);
     if (!strategyId || !versionId) {
       setError("Select a strategy and an immutable version before running.");
       return;
@@ -373,14 +403,22 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       const created = await backtestApi.create(request);
       setRun(created);
       setReportLoading(true);
-      const [reportResult, seriesResult] = await Promise.allSettled([
+      setMarkerLoading(true);
+      const markerRequest = ++markerRequestSequence.current;
+      const [reportResult, seriesResult, markerResult] = await Promise.allSettled([
         backtestApi.getReport(created.backtest_run_id),
         backtestApi.getReportSeries(created.backtest_run_id, ["equity", "capital", "twr", "drawdown", "benchmark_twr", "benchmark_drawdown"]),
+        backtestApi.getReportMarkers(created.backtest_run_id, { types: [...DEFAULT_MARKER_TYPES].sort() }),
       ]);
       if (reportResult.status === "fulfilled") setReport(reportResult.value);
       else setReportError(reportResult.reason instanceof BacktestApiError ? reportResult.reason.message : "Unable to load the versioned report summary.");
       if (seriesResult.status === "fulfilled") setReportSeries(seriesResult.value);
       else setReportSeriesError(seriesResult.reason instanceof BacktestApiError ? seriesResult.reason.message : "Unable to load versioned report series.");
+      if (markerRequest === markerRequestSequence.current) {
+        if (markerResult.status === "fulfilled") setMarkerReport(markerResult.value);
+        else setMarkerError(markerResult.reason instanceof BacktestApiError ? markerResult.reason.message : "Unable to load versioned event markers.");
+        setMarkerLoading(false);
+      }
       setReportLoading(false);
       if (researchOffset === 0) void loadResearchRuns();
       else setResearchOffset(0);
@@ -465,7 +503,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>
-      {run && <Results run={run} report={report} reportSeries={reportSeries} reportLoading={reportLoading} reportError={reportError} reportSeriesError={reportSeriesError} />}
+      {run && <Results run={run} report={report} reportSeries={reportSeries} markerReport={markerReport} markerLoading={markerLoading} reportLoading={reportLoading} reportError={reportError} reportSeriesError={reportSeriesError} markerError={markerError} onMarkerTypesChange={(types) => void loadReportMarkers(run.backtest_run_id, types)} />}
       <section className="research-workspace">
         {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
         <ResearchProtocolPanel

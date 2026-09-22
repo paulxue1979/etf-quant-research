@@ -389,6 +389,70 @@ export interface BacktestReport {
   provenance: Record<string, unknown>;
 }
 
+export type BacktestMarkerType =
+  | "SIGNAL"
+  | "EXECUTION"
+  | "REBALANCE_DECISION"
+  | "CONTRIBUTION"
+  | "TARGET_ALLOCATION_TRANSITION"
+  | "ACTUAL_ALLOCATION_TRANSITION"
+  | "REGIME_TRANSITION";
+
+export interface BacktestEventMarker {
+  marker_id: string;
+  marker_type: BacktestMarkerType;
+  event_date: string;
+  display_date: string;
+  strategy_version_id: string;
+  run_id: string;
+  title: string;
+  short_label: string;
+  summary: string;
+  significance: {
+    always_major: boolean;
+    metric_name: string | null;
+    metric_value: number | null;
+    is_major: boolean;
+  };
+  source_event_type: string;
+  source_event_reference: string;
+  details: Record<string, unknown>;
+  group_key: string;
+}
+
+export interface BacktestMarkerGroup {
+  group_id: string;
+  date: string;
+  marker_count: number;
+  marker_types: BacktestMarkerType[];
+  summary: string;
+  marker_ids: string[];
+}
+
+export interface BacktestMarkerReport {
+  marker_schema_version: "1.0";
+  identity: { backtest_run_id: string; strategy_version_id: string };
+  source: "derived_from_immutable_backtest_run";
+  persisted: false;
+  filters: {
+    types: BacktestMarkerType[];
+    from: string | null;
+    to: string | null;
+    group_same_day: boolean;
+    major_only: boolean;
+    major_threshold: number | null;
+  };
+  counts: {
+    markers: number;
+    groups: number;
+    by_type: Record<BacktestMarkerType, number>;
+    hidden: number;
+    truncated: false;
+  };
+  markers: BacktestEventMarker[];
+  groups: BacktestMarkerGroup[];
+}
+
 export type BacktestReportSeriesName =
   | "equity"
   | "capital"

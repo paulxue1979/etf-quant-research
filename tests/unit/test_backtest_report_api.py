@@ -12,6 +12,12 @@ from backend.app.main import app
 from tests.unit.test_backtest_repository import _run
 
 
+def _marker_run():
+    from tests.unit.test_backtest_marker_projection import _marker_run as make_marker_run
+
+    return make_marker_run()
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     run = _run()
@@ -138,6 +144,53 @@ def test_report_series_rejects_unknown_include_and_invalid_date_range(client: Te
     assert unknown.json()["detail"]["code"] == "INVALID_REPORT_SERIES_INCLUDE"
     assert invalid_range.status_code == 422
     assert invalid_range.json()["detail"]["code"] == "INVALID_REPORT_DATE_RANGE"
+
+
+def test_marker_endpoint_is_opt_in_filterable_and_keeps_old_report_compatible(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _marker_run()
+    monkeypatch.setattr(
+        report_api,
+        "backtest_repository",
+        SimpleNamespace(get=lambda run_id: run if run_id == run.backtest_run_id else None),
+    )
+
+    old_report = client.get("/research/backtests/repo-run/report")
+    response = client.get(
+        "/research/backtests/repo-run/report/markers"
+        "?types=REGIME_TRANSITION,EXECUTION&from=2026-01-02&to=2026-01-04"
+    )
+
+    assert old_report.status_code == 200
+    assert "markers" not in old_report.json()
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["marker_schema_version"] == "1.0"
+    assert payload["persisted"] is False
+    assert {item["marker_type"] for item in payload["markers"]} == {
+        "REGIME_TRANSITION",
+        "EXECUTION",
+    }
+    assert payload["counts"]["truncated"] is False
+
+
+def test_marker_endpoint_rejects_invalid_types_ranges_and_implicit_major_threshold(
+    client: TestClient,
+) -> None:
+    invalid_type = client.get("/research/backtests/repo-run/report/markers?types=EXECUTION,UNSAFE")
+    invalid_range = client.get(
+        "/research/backtests/repo-run/report/markers?from=2026-01-04&to=2026-01-02"
+    )
+    implicit_threshold = client.get("/research/backtests/repo-run/report/markers?major_only=true")
+
+    assert invalid_type.status_code == 422
+    assert invalid_type.json()["detail"]["code"] == "INVALID_MARKER_REQUEST"
+    assert invalid_range.status_code == 422
+    assert invalid_range.json()["detail"]["code"] == "INVALID_MARKER_REQUEST"
+    assert implicit_threshold.status_code == 422
+    assert "explicit major_threshold" in implicit_threshold.json()["detail"]["message"]
 
 
 def test_holding_report_supports_pagination_status_filter_and_sorting(client: TestClient) -> None:
