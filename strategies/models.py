@@ -14,6 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 from data.models import PriceField, Timeframe
@@ -24,6 +25,7 @@ from strategies.enums import (
     NoMatchBehavior,
     OperandType,
     RebalanceFrequency,
+    StrategyEvaluationMode,
     StrategyStatus,
     ThresholdType,
 )
@@ -542,6 +544,125 @@ class AllocationSpecification:
         )
 
 
+@dataclass(frozen=True)
+class RegimeDefinition:
+    """One strategy-defined state and its complete target allocation."""
+
+    state_id: str
+    display_name: str
+    target_allocation: AllocationSpecification
+    metadata: Mapping[str, str] = MappingProxyType({})
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state_id, str) or not self.state_id.strip():
+            raise InvalidStrategyError("regime state_id must not be empty")
+        if not isinstance(self.display_name, str) or not self.display_name.strip():
+            raise InvalidStrategyError("regime display_name must not be empty")
+        if not isinstance(self.target_allocation, AllocationSpecification):
+            raise InvalidStrategyError(
+                "regime target_allocation must be an AllocationSpecification"
+            )
+        if not isinstance(self.metadata, Mapping):
+            raise InvalidStrategyError("regime metadata must be a mapping")
+        metadata = dict(self.metadata)
+        if any(
+            not isinstance(key, str) or not key.strip() or not isinstance(value, str)
+            for key, value in metadata.items()
+        ):
+            raise InvalidStrategyError("regime metadata must contain string key/value pairs")
+        object.__setattr__(self, "state_id", self.state_id.strip())
+        object.__setattr__(self, "display_name", self.display_name.strip())
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType({key.strip(): value for key, value in metadata.items()}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state_id": self.state_id,
+            "display_name": self.display_name,
+            "target_allocation": {
+                "allocations": [
+                    item.to_dict()
+                    for item in sorted(
+                        self.target_allocation.allocations,
+                        key=lambda allocation: allocation.symbol.symbol,
+                    )
+                ]
+            },
+            "metadata": {key: self.metadata[key] for key in sorted(self.metadata)},
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> RegimeDefinition:
+        data = _require_mapping(payload, "regime definition")
+        return cls(
+            state_id=data.get("state_id", ""),
+            display_name=data.get("display_name", ""),
+            target_allocation=AllocationSpecification.from_dict(data.get("target_allocation")),
+            metadata=data.get("metadata", {}),
+        )
+
+
+@dataclass(frozen=True)
+class RegimeTransitionDefinition:
+    """One prioritized, condition-driven edge in a strategy-defined graph."""
+
+    transition_id: str
+    from_state: str
+    to_state: str
+    condition: RuleNode
+    priority: int
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        for label in ("transition_id", "from_state", "to_state"):
+            value = getattr(self, label)
+            if not isinstance(value, str) or not value.strip():
+                raise InvalidStrategyError(f"regime {label} must not be empty")
+        if not isinstance(self.condition, (Condition, RuleGroup)):
+            raise InvalidStrategyError("regime transition condition must be a rule node")
+        if isinstance(self.priority, bool) or not isinstance(self.priority, int):
+            raise InvalidStrategyError("regime transition priority must be an integer")
+        if not isinstance(self.description, str):
+            raise InvalidStrategyError("regime transition description must be a string")
+        object.__setattr__(self, "transition_id", self.transition_id.strip())
+        object.__setattr__(self, "from_state", self.from_state.strip())
+        object.__setattr__(self, "to_state", self.to_state.strip())
+        object.__setattr__(self, "description", self.description.strip())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "transition_id": self.transition_id,
+            "from_state": self.from_state,
+            "to_state": self.to_state,
+            "condition": self.condition.to_dict(include_timeframe=True),
+            "priority": self.priority,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> RegimeTransitionDefinition:
+        data = _require_mapping(payload, "regime transition")
+        condition_payload = _require_mapping(data.get("condition"), "transition condition")
+        node_type = condition_payload.get("type")
+        if node_type == "condition":
+            condition: RuleNode = Condition.from_dict(condition_payload)
+        elif node_type == "group":
+            condition = RuleGroup.from_dict(condition_payload)
+        else:
+            raise InvalidStrategyError("transition condition type must be condition or group")
+        return cls(
+            transition_id=data.get("transition_id", ""),
+            from_state=data.get("from_state", ""),
+            to_state=data.get("to_state", ""),
+            condition=condition,
+            priority=data.get("priority"),
+            description=data.get("description", ""),
+        )
+
+
 @dataclass(frozen=True, init=False)
 class RebalancePolicy:
     """Rebalance configuration; execution is owned by PHASE 3."""
@@ -603,6 +724,10 @@ class StrategyDefinition:
     no_match_behavior: NoMatchBehavior = NoMatchBehavior.USE_FALLBACK
     initial_allocation: AllocationSpecification | None = None
     strategy_schema_version: str = LEGACY_STRATEGY_SCHEMA_VERSION
+    strategy_mode: StrategyEvaluationMode = StrategyEvaluationMode.RULE_BASED
+    initial_regime: str | None = None
+    regimes: tuple[RegimeDefinition, ...] = ()
+    transitions: tuple[RegimeTransitionDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
@@ -648,6 +773,12 @@ class StrategyDefinition:
             InvalidStrategyError,
             "no_match_behavior",
         )
+        strategy_mode = _validate_enum(
+            self.strategy_mode,
+            StrategyEvaluationMode,
+            InvalidStrategyError,
+            "strategy_mode",
+        )
         if self.initial_allocation is not None and not isinstance(
             self.initial_allocation, AllocationSpecification
         ):
@@ -661,6 +792,19 @@ class StrategyDefinition:
         object.__setattr__(self, "rules", rules)
         object.__setattr__(self, "no_match_behavior", no_match_behavior)
         object.__setattr__(self, "strategy_schema_version", self.strategy_schema_version)
+        object.__setattr__(self, "strategy_mode", strategy_mode)
+        if self.initial_regime is not None:
+            if not isinstance(self.initial_regime, str) or not self.initial_regime.strip():
+                raise InvalidStrategyError("initial_regime must be a non-empty string or None")
+            object.__setattr__(self, "initial_regime", self.initial_regime.strip())
+        regimes = _normalize_sequence(self.regimes, "regimes")
+        transitions = _normalize_sequence(self.transitions, "transitions")
+        if not all(isinstance(item, RegimeDefinition) for item in regimes):
+            raise InvalidStrategyError("regimes must contain RegimeDefinition values")
+        if not all(isinstance(item, RegimeTransitionDefinition) for item in transitions):
+            raise InvalidStrategyError("transitions must contain RegimeTransitionDefinition values")
+        object.__setattr__(self, "regimes", regimes)
+        object.__setattr__(self, "transitions", transitions)
 
     def to_dict(self) -> dict[str, Any]:
         current_schema = self.strategy_schema_version == CURRENT_STRATEGY_SCHEMA_VERSION
@@ -683,6 +827,20 @@ class StrategyDefinition:
             payload["no_match_behavior"] = self.no_match_behavior.value
         if self.initial_allocation is not None:
             payload["initial_allocation"] = self.initial_allocation.to_dict()
+        if current_schema and self.strategy_mode is not StrategyEvaluationMode.RULE_BASED:
+            payload["strategy_mode"] = self.strategy_mode.value
+        if current_schema and self.strategy_mode is StrategyEvaluationMode.REGIME_STATE_MACHINE:
+            payload["initial_regime"] = self.initial_regime
+            payload["regimes"] = [
+                regime.to_dict() for regime in sorted(self.regimes, key=lambda item: item.state_id)
+            ]
+            payload["transitions"] = [
+                transition.to_dict()
+                for transition in sorted(
+                    self.transitions,
+                    key=lambda item: (item.from_state, item.priority, item.transition_id),
+                )
+            ]
         return payload
 
     def to_json(self) -> str:
@@ -737,6 +895,16 @@ class StrategyDefinition:
                 else None
             ),
             strategy_schema_version=schema_version,
+            strategy_mode=data.get("strategy_mode", StrategyEvaluationMode.RULE_BASED.value),
+            initial_regime=data.get("initial_regime"),
+            regimes=tuple(
+                RegimeDefinition.from_dict(item)
+                for item in _normalize_sequence(data.get("regimes", []), "regimes")
+            ),
+            transitions=tuple(
+                RegimeTransitionDefinition.from_dict(item)
+                for item in _normalize_sequence(data.get("transitions", []), "transitions")
+            ),
         )
 
     @classmethod

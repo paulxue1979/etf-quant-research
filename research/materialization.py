@@ -42,6 +42,19 @@ _ALLOCATION_TARGET = re.compile(
 _FALLBACK_ALLOCATION_TARGET = re.compile(
     rf"^fallback\.allocations\[({_ROOT_INDEX})\]\.target_weight$"
 )
+_REGIME_TRANSITION_CONDITION_TARGET = re.compile(
+    rf"^transitions\[({_ROOT_INDEX})\]\.condition"
+    rf"(?P<children>(?:\.children\[{_ROOT_INDEX}\])*)\."
+    rf"(?P<side>left|right)\.(?P<field>period)$"
+)
+_REGIME_TRANSITION_THRESHOLD_TARGET = re.compile(
+    rf"^transitions\[({_ROOT_INDEX})\]\.condition"
+    rf"(?P<children>(?:\.children\[{_ROOT_INDEX}\])*)\.threshold\.value$"
+)
+_REGIME_ALLOCATION_TARGET = re.compile(
+    rf"^regimes\[({_ROOT_INDEX})\]\.target_allocation\."
+    rf"allocations\[({_ROOT_INDEX})\]\.target_weight$"
+)
 
 MATERIALIZATION_SPEC_VERSION = "phase-8d-1-v1"
 
@@ -361,11 +374,18 @@ def _apply_binding(payload: dict[str, Any], binding: ParameterBinding, value: ob
 
 
 def _target_kind(path: str) -> str:
-    if _CONDITION_TARGET.fullmatch(path):
+    if _CONDITION_TARGET.fullmatch(path) or _REGIME_TRANSITION_CONDITION_TARGET.fullmatch(path):
         return "period"
-    if _THRESHOLD_TARGET.fullmatch(path):
+    if _THRESHOLD_TARGET.fullmatch(path) or _REGIME_TRANSITION_THRESHOLD_TARGET.fullmatch(path):
         return "threshold"
-    if _ALLOCATION_TARGET.fullmatch(path) or _FALLBACK_ALLOCATION_TARGET.fullmatch(path):
+    if any(
+        pattern.fullmatch(path)
+        for pattern in (
+            _ALLOCATION_TARGET,
+            _FALLBACK_ALLOCATION_TARGET,
+            _REGIME_ALLOCATION_TARGET,
+        )
+    ):
         return "allocation"
     raise UnsupportedParameterBindingTargetError(
         f"target path is outside the supported whitelist: {path}"
@@ -373,20 +393,34 @@ def _target_kind(path: str) -> str:
 
 
 def _is_supported_path_syntax(path: str) -> bool:
-    return any(pattern.fullmatch(path) for pattern in (
-        _CONDITION_TARGET,
-        _THRESHOLD_TARGET,
-        _ALLOCATION_TARGET,
-        _FALLBACK_ALLOCATION_TARGET,
-    ))
+    return any(
+        pattern.fullmatch(path)
+        for pattern in (
+            _CONDITION_TARGET,
+            _THRESHOLD_TARGET,
+            _ALLOCATION_TARGET,
+            _FALLBACK_ALLOCATION_TARGET,
+            _REGIME_TRANSITION_CONDITION_TARGET,
+            _REGIME_TRANSITION_THRESHOLD_TARGET,
+            _REGIME_ALLOCATION_TARGET,
+        )
+    )
 
 
 def _resolve_target(payload: dict[str, Any], path: str) -> dict[str, Any]:
     condition_match = _CONDITION_TARGET.fullmatch(path) or _THRESHOLD_TARGET.fullmatch(path)
+    condition_root = "rules"
+    condition_field = "condition"
+    if condition_match is None:
+        condition_match = _REGIME_TRANSITION_CONDITION_TARGET.fullmatch(
+            path
+        ) or _REGIME_TRANSITION_THRESHOLD_TARGET.fullmatch(path)
+        condition_root = "transitions"
+        condition_field = "condition"
     if condition_match is not None:
-        rule_index = int(condition_match.group(1))
+        root_index = int(condition_match.group(1))
         try:
-            node: Any = payload["rules"][rule_index]["condition"]
+            node: Any = payload[condition_root][root_index][condition_field]
             for child_index in re.findall(
                 r"\.children\[(\d+)\]", condition_match.group("children")
             ):
@@ -415,6 +449,16 @@ def _resolve_target(payload: dict[str, Any], path: str) -> dict[str, Any]:
     if fallback_match is not None:
         try:
             return payload["fallback"]["allocations"][int(fallback_match.group(1))]
+        except (IndexError, KeyError, TypeError) as exc:
+            raise UnsupportedParameterBindingTargetError(
+                f"target path does not exist in the base strategy: {path}"
+            ) from exc
+    regime_match = _REGIME_ALLOCATION_TARGET.fullmatch(path)
+    if regime_match is not None:
+        try:
+            return payload["regimes"][int(regime_match.group(1))]["target_allocation"][
+                "allocations"
+            ][int(regime_match.group(2))]
         except (IndexError, KeyError, TypeError) as exc:
             raise UnsupportedParameterBindingTargetError(
                 f"target path does not exist in the base strategy: {path}"

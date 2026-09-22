@@ -22,28 +22,30 @@ def strategy_execution_provenance(
     if not all(isinstance(item, StrategyBacktestAllocation) for item in records):
         raise TypeError("signal_records must contain StrategyBacktestAllocation values")
 
-    payload = tuple(
-        MappingProxyType(
-            {
-                "signal_date": item.signal.date.isoformat(),
-                "matched_rule_id": item.signal.matched_rule_id,
-                "allocation_source": item.signal.allocation_source.value,
-                "target_allocation": dict(sorted(item.target_allocation.as_mapping().items())),
-                "execution_date": (
-                    item.execution_date.isoformat() if item.execution_date is not None else None
-                ),
-                "execution_status": "submitted" if item.submitted_to_backtest else "omitted",
-                "omission_reason": item.omission_reason,
-            }
-        )
-        for item in records
-    )
+    payload = tuple(MappingProxyType(_record_payload(item)) for item in records)
     return MappingProxyType(
         {
             "source": "StrategyBacktestResult.signal_records",
             "records": payload,
         }
     )
+
+
+def _record_payload(item: StrategyBacktestAllocation) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "signal_date": item.signal.date.isoformat(),
+        "matched_rule_id": item.signal.matched_rule_id,
+        "allocation_source": item.signal.allocation_source.value,
+        "target_allocation": dict(sorted(item.target_allocation.as_mapping().items())),
+        "execution_date": (
+            item.execution_date.isoformat() if item.execution_date is not None else None
+        ),
+        "execution_status": "submitted" if item.submitted_to_backtest else "omitted",
+        "omission_reason": item.omission_reason,
+    }
+    if item.signal.regime_provenance is not None:
+        payload["regime_provenance"] = item.signal.regime_provenance
+    return payload
 
 
 __all__ = ["strategy_execution_provenance"]

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
 from data.models import PriceField
-from strategies.enums import AllocationSource, NoMatchBehavior
+from strategies.enums import AllocationSource, NoMatchBehavior, StrategyEvaluationMode
 from strategies.evaluation import (
     ConditionResult,
     OperandValue,
@@ -36,6 +37,7 @@ class StrategySignal:
     price_field_used: PriceField
     explanation: str
     source_data_reference: str | None = None
+    regime_provenance: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.date, date):
@@ -73,6 +75,8 @@ class StrategySignal:
             raise InvalidSignalInputError(
                 "source_data_reference must be a non-empty string or None"
             )
+        if self.regime_provenance is not None and not isinstance(self.regime_provenance, Mapping):
+            raise InvalidSignalInputError("regime_provenance must be a mapping or None")
         if self.condition_results is not None and self.condition_results.date != self.date:
             raise SignalInputConsistencyError("signal date must match condition_results.date")
         if self.target_allocation.date != self.date:
@@ -109,13 +113,16 @@ class StrategySignal:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a deterministic, JSON-compatible provenance snapshot."""
-        return {
+        payload = {
             "date": self.date.isoformat(),
             "strategy_version_id": self.strategy_version_id,
             "matched_rule_id": self.matched_rule_id,
             "allocation_source": self.allocation_source.value,
             "condition_results": (
-                _rule_group_to_dict(self.condition_results)
+                _rule_group_to_dict(
+                    self.condition_results,
+                    include_source_context=self.regime_provenance is not None,
+                )
                 if self.condition_results is not None
                 else None
             ),
@@ -132,6 +139,9 @@ class StrategySignal:
             "explanation": self.explanation,
             "source_data_reference": self.source_data_reference,
         }
+        if self.regime_provenance is not None:
+            payload["regime_provenance"] = dict(self.regime_provenance)
+        return payload
 
 
 def build_signal(
@@ -140,6 +150,7 @@ def build_signal(
     target_allocation: TargetAllocationResult | EvaluationError,
     *,
     source_data_reference: str | None = None,
+    regime_provenance: Mapping[str, object] | None = None,
 ) -> StrategySignal:
     """Assemble a signal without evaluating or resolving any upstream input."""
     if not isinstance(strategy_version, StrategyVersion):
@@ -148,8 +159,10 @@ def build_signal(
         raise SignalEvaluationPropagationError(
             "rule-group evaluation failed before signal assembly", cause=rule_group_result
         ) from rule_group_result
-    if rule_group_result is None and any(
-        rule.condition is not None for rule in strategy_version.configuration.rules
+    if rule_group_result is None and (
+        strategy_version.configuration.strategy_mode
+        is not StrategyEvaluationMode.REGIME_STATE_MACHINE
+        and any(rule.condition is not None for rule in strategy_version.configuration.rules)
     ):
         raise InvalidSignalInputError(
             "rule_group_result is required when a strategy has conditional rules"
@@ -166,6 +179,8 @@ def build_signal(
         not isinstance(source_data_reference, str) or not source_data_reference.strip()
     ):
         raise InvalidSignalInputError("source_data_reference must be a non-empty string or None")
+    if regime_provenance is not None and not isinstance(regime_provenance, Mapping):
+        raise InvalidSignalInputError("regime_provenance must be a mapping or None")
     if rule_group_result is not None and rule_group_result.date != target_allocation.date:
         raise SignalInputConsistencyError(
             "rule_group_result.date must match target_allocation.date"
@@ -193,6 +208,7 @@ def build_signal(
         price_field_used=strategy_version.configuration.price_field,
         explanation=explanation,
         source_data_reference=source_data_reference,
+        regime_provenance=regime_provenance,
     )
 
 
@@ -201,6 +217,13 @@ def _resolve_provenance(
     rule_group_result: RuleGroupResult | None,
     target_allocation: TargetAllocationResult,
 ) -> tuple[str | None, AllocationSource]:
+    if strategy_version.configuration.strategy_mode is StrategyEvaluationMode.REGIME_STATE_MACHINE:
+        state_ids = {regime.state_id for regime in strategy_version.configuration.regimes}
+        if target_allocation.matched_rule_id not in state_ids:
+            raise SignalInputConsistencyError(
+                "regime target allocation must identify a declared state"
+            )
+        return target_allocation.matched_rule_id, AllocationSource.RULE_MATCH
     if target_allocation.used_fallback:
         expected_fallback_id = strategy_version.configuration.fallback.name
         if target_allocation.matched_rule_id != expected_fallback_id:
@@ -273,7 +296,9 @@ def _build_explanation(
     )
 
 
-def _rule_group_to_dict(result: RuleGroupResult) -> dict[str, Any]:
+def _rule_group_to_dict(
+    result: RuleGroupResult, *, include_source_context: bool = False
+) -> dict[str, Any]:
     return {
         "rule_group_id": result.rule_group_id,
         "date": result.date.isoformat(),
@@ -281,9 +306,9 @@ def _rule_group_to_dict(result: RuleGroupResult) -> dict[str, Any]:
         "passed": result.passed,
         "child_results": [
             (
-                _condition_to_dict(child)
+                _condition_to_dict(child, include_source_context=include_source_context)
                 if isinstance(child, ConditionResult)
-                else _rule_group_to_dict(child)
+                else _rule_group_to_dict(child, include_source_context=include_source_context)
             )
             for child in result.child_results
         ],
@@ -291,13 +316,19 @@ def _rule_group_to_dict(result: RuleGroupResult) -> dict[str, Any]:
     }
 
 
-def _condition_to_dict(result: ConditionResult) -> dict[str, Any]:
+def _condition_to_dict(
+    result: ConditionResult, *, include_source_context: bool = False
+) -> dict[str, Any]:
     return {
         "condition_id": result.condition_id,
         "date": result.date.isoformat(),
         "passed": result.passed,
-        "left_operand_result": _operand_to_dict(result.left_operand_result),
-        "right_operand_result": _operand_to_dict(result.right_operand_result),
+        "left_operand_result": _operand_to_dict(
+            result.left_operand_result, include_source_context=include_source_context
+        ),
+        "right_operand_result": _operand_to_dict(
+            result.right_operand_result, include_source_context=include_source_context
+        ),
         "operator": result.operator.value,
         "threshold": result.threshold.to_dict() if result.threshold is not None else None,
         "effective_right_value": result.effective_right_value,
@@ -305,8 +336,10 @@ def _condition_to_dict(result: ConditionResult) -> dict[str, Any]:
     }
 
 
-def _operand_to_dict(operand: OperandValue) -> dict[str, Any]:
-    return {
+def _operand_to_dict(
+    operand: OperandValue, *, include_source_context: bool = False
+) -> dict[str, Any]:
+    payload = {
         "value": operand.value,
         "asset": operand.asset,
         "operand_type": operand.operand_type.value,
@@ -315,6 +348,10 @@ def _operand_to_dict(operand: OperandValue) -> dict[str, Any]:
         ),
         "date": operand.date.isoformat(),
     }
+    if include_source_context:
+        payload["timeframe"] = operand.timeframe.value
+        payload["source_date"] = operand.source_date.isoformat() if operand.source_date else None
+    return payload
 
 
 __all__ = ["StrategySignal", "build_signal"]

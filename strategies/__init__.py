@@ -11,6 +11,7 @@ from strategies.enums import (
     NoMatchBehavior,
     OperandType,
     RebalanceFrequency,
+    StrategyEvaluationMode,
     StrategyEvaluationStatus,
     StrategyStatus,
     ThresholdType,
@@ -35,6 +36,8 @@ from strategies.models import (
     FallbackAllocation,
     Operand,
     RebalancePolicy,
+    RegimeDefinition,
+    RegimeTransitionDefinition,
     RemainingAllocation,
     RuleGroup,
     StrategyAssetReference,
@@ -44,6 +47,12 @@ from strategies.models import (
     Threshold,
 )
 from strategies.operand_evaluator import evaluate_operand
+from strategies.regime import (
+    RegimeRuntimeState,
+    RegimeTransitionEvent,
+    RegimeTransitionEvidence,
+    evaluate_regime_strategy,
+)
 from strategies.rule_group_evaluator import evaluate_rule_group
 from strategies.signal_engine import StrategySignal, build_signal
 from strategies.strategy_evaluation import (
@@ -93,10 +102,13 @@ __all__ = [
     "RebalancePolicy",
     "RemainingAllocation",
     "RuleGroup",
+    "RegimeDefinition",
+    "RegimeTransitionDefinition",
     "StrategyDefinition",
     "StrategyMaterializationProvenance",
     "StrategyEvaluationResult",
     "StrategyEvaluationStatus",
+    "StrategyEvaluationMode",
     "StrategyEvaluationTimeline",
     "StrategyStatus",
     "StrategyVersion",
@@ -117,4 +129,8 @@ __all__ = [
     "evaluate_strategy",
     "required_indicators",
     "required_weekly_assets",
+    "RegimeRuntimeState",
+    "RegimeTransitionEvent",
+    "RegimeTransitionEvidence",
+    "evaluate_regime_strategy",
 ]

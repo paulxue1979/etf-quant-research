@@ -22,6 +22,7 @@ from strategies.enums import (
     NoMatchBehavior,
     OperandType,
     RebalanceFrequency,
+    StrategyEvaluationMode,
     ThresholdType,
 )
 from strategies.exceptions import (
@@ -36,6 +37,7 @@ from strategies.exceptions import (
     InvalidThresholdError,
 )
 from strategies.models import (
+    CURRENT_STRATEGY_SCHEMA_VERSION,
     Allocation,
     AllocationRule,
     AllocationSpecification,
@@ -81,6 +83,13 @@ class ValidationCode(StrEnum):
     INVALID_NO_MATCH_BEHAVIOR = "InvalidNoMatchBehavior"
     INVALID_INITIAL_ALLOCATION = "InvalidInitialAllocation"
     MISSING_INITIAL_ALLOCATION = "MissingInitialAllocation"
+    INVALID_STRATEGY_MODE = "InvalidStrategyMode"
+    INVALID_REGIME_GRAPH = "InvalidRegimeGraph"
+    DUPLICATE_REGIME_STATE = "DuplicateRegimeState"
+    DUPLICATE_TRANSITION_ID = "DuplicateTransitionId"
+    SELF_REGIME_TRANSITION = "SelfRegimeTransition"
+    REGIME_PRIORITY_CONFLICT = "RegimePriorityConflict"
+    MISSING_INITIAL_REGIME = "MissingInitialRegime"
 
 
 @dataclass(frozen=True)
@@ -188,7 +197,127 @@ class StrategyValidator:
         self._validate_initial_allocation(strategy, assets, errors)
         self._validate_rebalance_policy(strategy, errors)
         self._validate_no_match_behavior(strategy, errors)
+        self._validate_regime_graph(strategy, assets, errors)
         return ValidationResult(errors=tuple(errors))
+
+    def _validate_regime_graph(
+        self,
+        strategy: StrategyDefinition,
+        assets: Mapping[str, AssetRole],
+        errors: list[ValidationIssue],
+    ) -> None:
+        mode = getattr(strategy, "strategy_mode", None)
+        if not isinstance(mode, StrategyEvaluationMode):
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_STRATEGY_MODE,
+                    "strategy_mode",
+                    "strategy_mode is invalid",
+                )
+            )
+            return
+        regimes = getattr(strategy, "regimes", ())
+        transitions = getattr(strategy, "transitions", ())
+        if mode is StrategyEvaluationMode.RULE_BASED:
+            if regimes or transitions or strategy.initial_regime is not None:
+                errors.append(
+                    self._issue(
+                        ValidationCode.INVALID_REGIME_GRAPH,
+                        "regimes",
+                        "rule-based strategies must not define regime state-machine fields",
+                    )
+                )
+            return
+        if strategy.strategy_schema_version != CURRENT_STRATEGY_SCHEMA_VERSION:
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_REGIME_GRAPH,
+                    "strategy_schema_version",
+                    "regime state machines require strategy schema 2.0",
+                )
+            )
+        if not regimes:
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_REGIME_GRAPH,
+                    "regimes",
+                    "state-machine strategies require at least one regime",
+                )
+            )
+        state_ids = [item.state_id for item in regimes]
+        if len(state_ids) != len(set(state_ids)):
+            errors.append(
+                self._issue(
+                    ValidationCode.DUPLICATE_REGIME_STATE,
+                    "regimes",
+                    "state_id must be unique within a strategy",
+                )
+            )
+        state_set = set(state_ids)
+        if strategy.initial_regime not in state_set:
+            errors.append(
+                self._issue(
+                    ValidationCode.MISSING_INITIAL_REGIME,
+                    "initial_regime",
+                    "initial_regime must reference a declared regime",
+                )
+            )
+        for index, regime in enumerate(regimes):
+            self._validate_allocations(
+                regime.target_allocation.allocations,
+                f"regimes[{index}].target_allocation.allocations",
+                assets,
+                errors,
+                allow_empty=True,
+            )
+        transition_ids: set[str] = set()
+        priorities_by_state: dict[str, set[int]] = {}
+        for index, transition in enumerate(transitions):
+            path = f"transitions[{index}]"
+            if transition.transition_id in transition_ids:
+                errors.append(
+                    self._issue(
+                        ValidationCode.DUPLICATE_TRANSITION_ID,
+                        f"{path}.transition_id",
+                        "transition_id must be unique",
+                    )
+                )
+            transition_ids.add(transition.transition_id)
+            if transition.from_state not in state_set:
+                errors.append(
+                    self._issue(
+                        ValidationCode.INVALID_REGIME_GRAPH,
+                        f"{path}.from_state",
+                        "from_state must reference a declared regime",
+                    )
+                )
+            if transition.to_state not in state_set:
+                errors.append(
+                    self._issue(
+                        ValidationCode.INVALID_REGIME_GRAPH,
+                        f"{path}.to_state",
+                        "to_state must reference a declared regime",
+                    )
+                )
+            if transition.from_state == transition.to_state:
+                errors.append(
+                    self._issue(
+                        ValidationCode.SELF_REGIME_TRANSITION,
+                        f"{path}.to_state",
+                        "self-transitions are not allowed; no-transition means stay",
+                    )
+                )
+            priorities = priorities_by_state.setdefault(transition.from_state, set())
+            if transition.priority in priorities:
+                errors.append(
+                    self._issue(
+                        ValidationCode.REGIME_PRIORITY_CONFLICT,
+                        f"{path}.priority",
+                        "outgoing transition priorities must be unique per state",
+                    )
+                )
+            priorities.add(transition.priority)
+            self._validate_node(transition.condition, f"{path}.condition", strategy, assets, errors)
 
     def _validate_no_match_behavior(
         self, strategy: StrategyDefinition, errors: list[ValidationIssue]

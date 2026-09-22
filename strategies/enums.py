@@ -90,3 +90,10 @@ class StrategyEvaluationStatus(StrEnum):
     EVALUATED = "evaluated"
     NOT_EVALUABLE = "not_evaluable"
     ERROR = "error"
+
+
+class StrategyEvaluationMode(StrEnum):
+    """Evaluation engines supported by a strategy version."""
+
+    RULE_BASED = "rule_based"
+    REGIME_STATE_MACHINE = "regime_state_machine"

@@ -119,6 +119,27 @@ def resolve_allocations(
     )
 
 
+def resolve_regime_allocation(
+    strategy: StrategyDefinition,
+    state_id: str,
+    allocation: AllocationSpecification,
+    as_of_date: date,
+) -> TargetAllocationResult:
+    """Resolve one complete regime target without evaluating legacy rules."""
+    if not isinstance(allocation, AllocationSpecification):
+        raise InvalidAllocationConfigurationError("regime allocation is invalid")
+    return _build_result(
+        allocation.allocations,
+        None,
+        _declared_asset_symbols(strategy),
+        as_of_date,
+        matched_rule_id=state_id,
+        used_fallback=False,
+        selected_priority=None,
+        source_description=f"regime {state_id}",
+    )
+
+
 def _declared_asset_symbols(strategy: StrategyDefinition) -> tuple[str, ...]:
     assets = getattr(strategy, "assets", None)
     if (
@@ -307,4 +328,4 @@ def _is_valid_bound(value: object) -> bool:
     )
 
 
-__all__ = ["resolve_allocations"]
+__all__ = ["resolve_allocations", "resolve_regime_allocation"]

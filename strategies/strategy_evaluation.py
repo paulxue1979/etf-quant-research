@@ -13,7 +13,12 @@ from data.models import HistoricalDataSet, PriceField, Timeframe
 from data.validation import validate_historical_data
 from indicators.models import IndicatorPoint, IndicatorSeries
 from strategies.allocation_resolver import resolve_allocations
-from strategies.enums import LogicalOperator, OperandType, StrategyEvaluationStatus
+from strategies.enums import (
+    LogicalOperator,
+    OperandType,
+    StrategyEvaluationMode,
+    StrategyEvaluationStatus,
+)
 from strategies.evaluation import (
     ConditionResult,
     EvaluationContext,
@@ -70,6 +75,7 @@ class StrategyEvaluationResult:
     explanation: str
     failure: EvaluationFailure | None = None
     source_data_reference: str | None = None
+    regime_provenance: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.date, date):
@@ -94,6 +100,8 @@ class StrategyEvaluationResult:
             or not self.source_data_reference.strip()
         ):
             raise ValueError("source_data_reference must be a non-empty string or None")
+        if self.regime_provenance is not None and not isinstance(self.regime_provenance, Mapping):
+            raise TypeError("regime_provenance must be a mapping or None")
 
         if self.status is StrategyEvaluationStatus.EVALUATED:
             if self.target_allocation is None or self.signal is None or self.failure is not None:
@@ -124,7 +132,7 @@ class StrategyEvaluationResult:
         return self.signal.matched_rule_id if self.signal is not None else None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "date": self.date.isoformat(),
             "strategy_version_id": self.strategy_version_id,
             "status": self.status.value,
@@ -141,6 +149,9 @@ class StrategyEvaluationResult:
             "failure": self.failure.to_dict() if self.failure is not None else None,
             "source_data_reference": self.source_data_reference,
         }
+        if self.regime_provenance is not None:
+            payload["regime_provenance"] = dict(self.regime_provenance)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -205,6 +216,16 @@ def evaluate_strategy(
     matches only, never fills dates or derives values from future observations.
     """
     _validate_inputs(strategy_version, context, start_date, end_date, source_data_reference)
+    if strategy_version.configuration.strategy_mode is StrategyEvaluationMode.REGIME_STATE_MACHINE:
+        from strategies.regime import evaluate_regime_strategy
+
+        return evaluate_regime_strategy(
+            strategy_version,
+            context,
+            start_date,
+            end_date,
+            source_data_reference=source_data_reference,
+        )
     strategy = strategy_version.configuration
     asset_data = _required_asset_data(strategy_version, context)
     candidate_dates = _aligned_dates(asset_data, start_date, end_date)
@@ -624,6 +645,11 @@ def _operand_to_dict(result: OperandValue) -> dict[str, object]:
         "timeframe": result.timeframe.value,
         "source_date": result.source_date.isoformat() if result.source_date is not None else None,
     }
+
+
+def rule_group_to_dict(result: RuleGroupResult) -> dict[str, object]:
+    """Serialize condition evidence for state-machine provenance consumers."""
+    return _rule_group_to_dict(result)
 
 
 def _validate_weekly_data(data: DerivedWeeklyDataSet) -> None:

@@ -104,8 +104,8 @@ def _service(tmp_path, data_service, *, execution_repository, protocol_repositor
     )
 
 
-def _claimed(tmp_path):
-    version = _version()
+def _claimed(tmp_path, *, version=None):
+    version = version or _version()
     protocol_repository = _protocol_repository(tmp_path)
     candidate_set = CandidateSet(
         candidate_set_id="candidate-set-8f1",
