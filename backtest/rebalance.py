@@ -60,6 +60,7 @@ def evaluate_rebalance_decision(
     previous_target: Mapping[str, float],
     policy: PositionRebalancePolicy,
     contribution_amount: float = 0.0,
+    schedule_eligible: bool = False,
 ) -> RebalanceDecision:
     """Evaluate policy without mutating canonical target or portfolio state."""
 
@@ -69,7 +70,19 @@ def evaluate_rebalance_decision(
     target_change = _metric(target_weights, previous_weights)
     drift = _metric(actual_weights, target_weights)
     turnover = _turnover(actual_weights, target_weights)
-    reasons: list[str] = []
+    target_trigger = target_change > _EPSILON
+    drift_trigger = policy.drift_threshold is not None and drift >= policy.drift_threshold
+    contribution_trigger = contribution_amount > _EPSILON
+    reasons = tuple(
+        reason
+        for reason, enabled in (
+            ("contribution", contribution_trigger),
+            ("target_change", target_trigger),
+            ("drift_threshold", drift_trigger),
+            ("schedule", schedule_eligible),
+        )
+        if enabled
+    )
     suppressed: RebalanceSuppressionReason | None = None
 
     for constraint in policy.allocation_constraints:
@@ -79,14 +92,6 @@ def evaluate_rebalance_decision(
             break
     if target_weights.get("CASH", 0.0) + _EPSILON < policy.minimum_cash_reserve:
         suppressed = RebalanceSuppressionReason.MINIMUM_CASH_RESERVE
-
-    target_trigger = target_change > _EPSILON
-    if target_trigger:
-        reasons.append("target_change")
-    if policy.drift_threshold is not None and drift >= policy.drift_threshold:
-        reasons.append("drift_threshold")
-    if contribution_amount > _EPSILON:
-        reasons.append("contribution")
 
     if suppressed is None and target_trigger:
         if (
@@ -116,7 +121,7 @@ def evaluate_rebalance_decision(
         actual_allocation=actual_weights,
         previous_target_allocation=previous_weights,
         decision=decision,
-        reasons=tuple(reasons),
+        reasons=reasons,
         target_change_metric=target_change,
         drift_metric=drift,
         turnover_estimate=turnover,

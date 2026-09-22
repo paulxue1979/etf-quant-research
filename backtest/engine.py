@@ -123,7 +123,16 @@ class BacktestEngine:
             contributions_by_date[event.effective_date].append(event)
 
         ledger = _Ledger.create(config.initial_capital)
-        pending: tuple[TargetAllocation, date, RebalanceDecision | None] | None = None
+        pending: (
+            tuple[
+                TargetAllocation,
+                date,
+                RebalanceDecision | None,
+                RebalanceCause,
+                date,
+            ]
+            | None
+        ) = None
         active_target = TargetAllocation.from_weights(trading_dates[0], {})
         canonical_target = active_target
         position_policy = config.position_rebalance_policy
@@ -138,29 +147,34 @@ class BacktestEngine:
         external_cash_flows: list[ExternalCashFlow] = []
         rebalance_decisions: list[RebalanceDecision] = []
 
-        for current_date in trading_dates:
-            daily_contributions = contributions_by_date.get(current_date, [])
-            for event in daily_contributions:
+        def apply_contributions(events: Sequence[ContributionEvent], as_of_date: date) -> None:
+            for event in events:
                 ledger.cash += float(event.amount)
                 external_cash_flows.append(
                     ExternalCashFlow(
-                        date=current_date,
+                        date=as_of_date,
                         amount=event.amount,
                         currency=event.currency,
                     )
                 )
+
+        for current_date in trading_dates:
+            daily_contributions = contributions_by_date.get(current_date, [])
             pending_executed = False
+            if position_policy.is_legacy_compatible:
+                apply_contributions(daily_contributions, current_date)
             if pending is not None and pending[1] == current_date:
-                active_target = pending[0]
+                pending_target, _, _, pending_cause, pending_signal_date = pending
+                active_target = pending_target
                 created_orders, created_fills, created_trades, created_holdings = self._rebalance(
                     ledger=ledger,
                     target=active_target,
-                    signal_date=active_target.date,
+                    signal_date=pending_signal_date,
                     execution_date=current_date,
                     data=normalized_data,
                     symbols=symbols,
                     config=config,
-                    cause=RebalanceCause.TARGET,
+                    cause=pending_cause,
                 )
                 orders.extend(created_orders)
                 fills.extend(created_fills)
@@ -168,6 +182,9 @@ class BacktestEngine:
                 closed_holdings.extend(created_holdings)
                 pending = None
                 pending_executed = True
+
+            if not position_policy.is_legacy_compatible:
+                apply_contributions(daily_contributions, current_date)
 
             if (
                 daily_contributions
@@ -188,52 +205,6 @@ class BacktestEngine:
                 fills.extend(created_fills)
                 trades.extend(created_trades)
                 closed_holdings.extend(created_holdings)
-
-            if (
-                daily_contributions
-                and not pending_executed
-                and not position_policy.is_legacy_compatible
-            ):
-                open_prices = {
-                    symbol: self._valid_price(
-                        normalized_data[symbol]
-                        .points_by_date[current_date]
-                        .open_for(config.price_field_used)
-                    )
-                    for symbol in symbols
-                }
-                contribution_amount = sum(float(item.amount) for item in daily_contributions)
-                decision = evaluate_rebalance_decision(
-                    evaluation_date=current_date,
-                    target=active_target,
-                    actual=actual_allocation(
-                        cash=ledger.cash,
-                        quantities=ledger.quantities,
-                        prices=open_prices,
-                    ),
-                    previous_target=canonical_target.as_mapping(),
-                    policy=position_policy,
-                    contribution_amount=contribution_amount,
-                )
-                decision = replace(decision, execution_date=current_date)
-                rebalance_decisions.append(decision)
-                if decision.decision is RebalanceDecisionType.EXECUTE:
-                    created_orders, created_fills, created_trades, created_holdings = (
-                        self._rebalance(
-                            ledger=ledger,
-                            target=active_target,
-                            signal_date=active_target.date,
-                            execution_date=current_date,
-                            data=normalized_data,
-                            symbols=symbols,
-                            config=config,
-                            cause=RebalanceCause.CONTRIBUTION,
-                        )
-                    )
-                    orders.extend(created_orders)
-                    fills.extend(created_fills)
-                    trades.extend(created_trades)
-                    closed_holdings.extend(created_holdings)
 
             point_by_symbol = {
                 symbol: normalized_data[symbol].points_by_date[current_date] for symbol in symbols
@@ -261,39 +232,76 @@ class BacktestEngine:
             )
 
             scheduled_allocation = scheduled.get(current_date)
-            if scheduled_allocation is not None:
-                if current_date not in next_date:
-                    raise ExecutionError(
-                        f"No next trading day exists for signal date {current_date.isoformat()}"
+            if position_policy.is_legacy_compatible:
+                if scheduled_allocation is not None:
+                    if current_date not in next_date:
+                        raise ExecutionError(
+                            f"No next trading day exists for signal date {current_date.isoformat()}"
+                        )
+                    pending = (
+                        scheduled_allocation,
+                        next_date[current_date],
+                        None,
+                        RebalanceCause.TARGET,
+                        scheduled_allocation.date,
                     )
-                if position_policy.is_legacy_compatible:
-                    pending = (scheduled_allocation, next_date[current_date], None)
-                else:
+            elif (
+                scheduled_allocation is not None
+                or daily_contributions
+                or (position_policy.drift_threshold is not None)
+            ):
+                if scheduled_allocation is not None:
+                    if current_date not in next_date:
+                        raise ExecutionError(
+                            f"No next trading day exists for signal date {current_date.isoformat()}"
+                        )
                     previous_target = canonical_target.as_mapping()
                     canonical_target = scheduled_allocation
-                    close_prices = {
-                        symbol: self._valid_price(
-                            normalized_data[symbol]
-                            .points_by_date[current_date]
-                            .close_for(config.price_field_used)
-                        )
-                        for symbol in symbols
-                    }
-                    decision = evaluate_rebalance_decision(
-                        evaluation_date=current_date,
-                        target=scheduled_allocation,
-                        actual=actual_allocation(
-                            cash=ledger.cash,
-                            quantities=ledger.quantities,
-                            prices=close_prices,
-                        ),
-                        previous_target=previous_target,
-                        policy=position_policy,
+                else:
+                    previous_target = canonical_target.as_mapping()
+                close_prices = {
+                    symbol: self._valid_price(
+                        normalized_data[symbol]
+                        .points_by_date[current_date]
+                        .close_for(config.price_field_used)
                     )
-                    decision = replace(decision, execution_date=next_date[current_date])
-                    rebalance_decisions.append(decision)
-                    if decision.decision is RebalanceDecisionType.EXECUTE:
-                        pending = (scheduled_allocation, next_date[current_date], decision)
+                    for symbol in symbols
+                }
+                contribution_amount = sum(float(item.amount) for item in daily_contributions)
+                decision = evaluate_rebalance_decision(
+                    evaluation_date=current_date,
+                    target=canonical_target,
+                    actual=actual_allocation(
+                        cash=ledger.cash,
+                        quantities=ledger.quantities,
+                        prices=close_prices,
+                    ),
+                    previous_target=previous_target,
+                    policy=position_policy,
+                    contribution_amount=contribution_amount,
+                    schedule_eligible=scheduled_allocation is not None,
+                )
+                execution_date = next_date.get(current_date)
+                decision = replace(decision, execution_date=execution_date)
+                rebalance_decisions.append(decision)
+                if decision.decision is RebalanceDecisionType.EXECUTE:
+                    if execution_date is None:
+                        raise ExecutionError(
+                            f"No next trading day exists for signal date {current_date.isoformat()}"
+                        )
+                    cause = (
+                        RebalanceCause.TARGET
+                        if scheduled_allocation is not None
+                        or decision.target_change_metric > _EPSILON
+                        else RebalanceCause.CONTRIBUTION
+                    )
+                    pending = (
+                        canonical_target,
+                        execution_date,
+                        decision,
+                        cause,
+                        canonical_target.date if cause is RebalanceCause.TARGET else current_date,
+                    )
         if pending is not None:
             raise ExecutionError("A target allocation remained unexecuted at the end of the run")
 

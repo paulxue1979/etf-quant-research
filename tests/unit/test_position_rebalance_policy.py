@@ -7,6 +7,8 @@ from backtest import (
     AllocationConstraint,
     BacktestConfig,
     BacktestEngine,
+    ContributionFrequency,
+    ContributionSchedule,
     PositionRebalancePolicy,
     RebalanceDecisionType,
     RebalanceFrequency,
@@ -55,14 +57,20 @@ def _dataset(symbol: str, prices: list[float]) -> HistoricalDataSet:
     )
 
 
-def _config(policy: PositionRebalancePolicy) -> BacktestConfig:
+def _config(
+    policy: PositionRebalancePolicy,
+    *,
+    frequency: RebalanceFrequency = RebalanceFrequency.DAILY,
+    contribution_schedule: ContributionSchedule | None = None,
+) -> BacktestConfig:
     return BacktestConfig(
         strategy_version_id="policy-v1",
         start_date=date(2024, 1, 2),
         end_date=date(2024, 1, 6),
         initial_capital=1_000.0,
         price_field_used=PriceField.RAW_CLOSE,
-        rebalance_policy=RebalancePolicy(RebalanceFrequency.DAILY),
+        rebalance_policy=RebalancePolicy(frequency),
+        contribution_schedule=contribution_schedule,
         position_rebalance_policy=policy,
     )
 
@@ -151,3 +159,114 @@ def test_custom_policy_is_carried_into_oos_configuration_identity() -> None:
     restored = OosEvaluationConfig.from_dict(oos_config.to_dict())
     assert restored == oos_config
     assert restored.configuration_hash == oos_config.configuration_hash
+
+
+def test_same_day_contribution_and_schedule_create_one_decision_and_one_plan() -> None:
+    contribution = ContributionSchedule(
+        frequency=ContributionFrequency.ONE_TIME,
+        amount=100.0,
+        requested_date=date(2024, 1, 3),
+    )
+    result = BacktestEngine().run(
+        {"QQQ": _dataset("QQQ", [10, 10, 10, 10, 10])},
+        [
+            TargetAllocation.from_weights(date(2024, 1, 2), {"QQQ": 1.0}),
+            TargetAllocation.from_weights(date(2024, 1, 3), {"QQQ": 1.0}),
+        ],
+        _config(
+            PositionRebalancePolicy(drift_threshold=0.05),
+            contribution_schedule=contribution,
+        ),
+    )
+
+    same_day = [
+        item for item in result.rebalance_decisions if item.evaluation_date == date(2024, 1, 3)
+    ]
+    assert len(same_day) == 1
+    assert same_day[0].reasons == ("contribution", "drift_threshold", "schedule")
+    assert len(result.orders) == 2
+    assert len(result.fills) == 2
+
+
+def test_contribution_only_uses_cash_adjusted_actual_once() -> None:
+    contribution = ContributionSchedule(
+        frequency=ContributionFrequency.ONE_TIME,
+        amount=100.0,
+        requested_date=date(2024, 1, 3),
+    )
+    result = BacktestEngine().run(
+        {"QQQ": _dataset("QQQ", [10, 10, 10, 10, 10])},
+        [TargetAllocation.from_weights(date(2024, 1, 2), {"QQQ": 1.0})],
+        _config(
+            PositionRebalancePolicy(drift_threshold=0.05),
+            frequency=RebalanceFrequency.WEEKLY,
+            contribution_schedule=contribution,
+        ),
+    )
+
+    same_day = [
+        item for item in result.rebalance_decisions if item.evaluation_date == date(2024, 1, 3)
+    ]
+    assert len(same_day) == 1
+    assert same_day[0].reasons == ("contribution", "drift_threshold")
+    assert same_day[0].actual_allocation["CASH"] > 0.0
+    assert result.orders[0].date == date(2024, 1, 3)
+    assert result.orders[1].date == date(2024, 1, 4)
+
+
+def test_cash_target_contribution_is_suppressed_without_security_orders() -> None:
+    contribution = ContributionSchedule(
+        frequency=ContributionFrequency.ONE_TIME,
+        amount=100.0,
+        requested_date=date(2024, 1, 3),
+    )
+    result = BacktestEngine().run(
+        {"QQQ": _dataset("QQQ", [10, 10, 10, 10, 10])},
+        [TargetAllocation.from_weights(date(2024, 1, 2), {})],
+        _config(
+            PositionRebalancePolicy(drift_threshold=0.05),
+            frequency=RebalanceFrequency.WEEKLY,
+            contribution_schedule=contribution,
+        ),
+    )
+
+    same_day = [
+        item for item in result.rebalance_decisions if item.evaluation_date == date(2024, 1, 3)
+    ]
+    assert len(same_day) == 1
+    assert same_day[0].decision is RebalanceDecisionType.SUPPRESS
+    assert result.fills == ()
+
+
+def test_target_change_contribution_drift_and_schedule_are_aggregated() -> None:
+    contribution = ContributionSchedule(
+        frequency=ContributionFrequency.ONE_TIME,
+        amount=100.0,
+        requested_date=date(2024, 1, 3),
+    )
+    result = BacktestEngine().run(
+        {
+            "QQQ": _dataset("QQQ", [10, 10, 10, 10, 10]),
+            "TQQQ": _dataset("TQQQ", [10, 10, 10, 10, 10]),
+        },
+        [
+            TargetAllocation.from_weights(date(2024, 1, 2), {"QQQ": 1.0}),
+            TargetAllocation.from_weights(date(2024, 1, 3), {"TQQQ": 1.0}),
+        ],
+        _config(
+            PositionRebalancePolicy(drift_threshold=0.05),
+            contribution_schedule=contribution,
+        ),
+    )
+
+    same_day = [
+        item for item in result.rebalance_decisions if item.evaluation_date == date(2024, 1, 3)
+    ]
+    assert len(same_day) == 1
+    assert same_day[0].reasons == (
+        "contribution",
+        "target_change",
+        "drift_threshold",
+        "schedule",
+    )
+    assert len(result.fills) == 3
