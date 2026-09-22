@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BacktestMarkerReport, BacktestMarkerType, BacktestReport, BacktestReportSeries } from "./types";
@@ -194,6 +195,22 @@ describe("BacktestReportCharts", () => {
     await user.clear(screen.getByRole("spinbutton", { name: "Major marker threshold" }));
     await user.type(screen.getByRole("spinbutton", { name: "Major marker threshold" }), "0.6");
     expect(screen.getByText("0 events shown · 2 hidden by filters")).toBeInTheDocument();
+  });
+
+  it("notifies the parent about marker filters outside the child state updater", async () => {
+    const user = userEvent.setup();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    function Parent() {
+      const [types, setTypes] = useState<BacktestMarkerType[]>([]);
+      return <><output data-testid="selected-marker-types">{types.join(",")}</output><BacktestReportCharts report={report()} series={reportSeries()} markerReport={markerReport()} onMarkerTypesChange={setTypes} /></>;
+    }
+
+    render(<Parent />);
+    await user.click(screen.getByRole("checkbox", { name: "Signals" }));
+
+    expect(screen.getByTestId("selected-marker-types")).toHaveTextContent("SIGNAL");
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain("Cannot update a component");
+    consoleError.mockRestore();
   });
 
   it("restores full history through MAX, Fit All, and Reset View after a custom viewport", async () => {

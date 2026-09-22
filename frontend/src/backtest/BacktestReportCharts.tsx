@@ -58,13 +58,11 @@ export function BacktestReportCharts({ report, series, markerReport = null, mark
     setSelectedRange("MAX");
   };
   const toggleMarkerType = (type: BacktestMarkerType) => {
-    setMarkerTypes((current) => {
-      const next = new Set(current);
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
-      onMarkerTypesChange?.([...next].sort());
-      return next;
-    });
+    const next = new Set(markerTypes);
+    if (next.has(type)) next.delete(type);
+    else next.add(type);
+    setMarkerTypes(next);
+    onMarkerTypesChange?.([...next].sort());
   };
   if (loading) return <section className="panel financial-charts" aria-label="Financial charts"><p className="muted">Loading report charts...</p></section>;
   if (error) return <section className="panel financial-charts" aria-label="Financial charts"><p className="research-error">{error}</p></section>;
