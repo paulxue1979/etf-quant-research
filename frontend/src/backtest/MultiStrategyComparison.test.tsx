@@ -26,6 +26,7 @@ vi.mock("./chartSync", () => ({
 vi.mock("./MultiStrategyTwrChart", () => ({
   MultiStrategyTwrChart: ({ visibleSeries, hoverDate }: { visibleSeries: Array<{ runId: string }>; hoverDate: string | null }) => <section aria-label="Multi-strategy TWR comparison" data-runs={visibleSeries.map((item) => item.runId).join(",")} data-hover-date={hoverDate} />,
   MultiStrategyDrawdownChart: ({ visibleSeries, hoverDate }: { visibleSeries: Array<{ runId: string }>; hoverDate: string | null }) => <section aria-label="Multi-strategy drawdown comparison" data-runs={visibleSeries.map((item) => item.runId).join(",")} data-hover-date={hoverDate} />,
+  MultiStrategyWealthChart: ({ kind, visibleSeries, hoverDate }: { kind: string; visibleSeries: Array<{ runId: string; points: Array<{ value: number }> }>; hoverDate: string | null }) => <section aria-label={`Multi-strategy ${kind} comparison`} data-runs={visibleSeries.map((item) => item.runId).join(",")} data-values={visibleSeries.flatMap((item) => item.points.map((point) => point.value)).join(",")} data-hover-date={hoverDate} />,
 }));
 
 import { MultiStrategyComparison } from "./MultiStrategyComparison";
@@ -70,6 +71,36 @@ function payload(count = 2, status: ComparisonCompatibilityStatus = "COMPARABLE"
     series: runIds.map((runId, index) => ({ backtest_run_id: runId, strategy_version_id: `v-${index}`, start_date: "2000-01-03", end_date: "2025-01-03", twr: { status: "available", points: [{ date: "2000-01-03", value: 100 }, { date: "2025-01-03", value: 110 + index }] }, drawdown: { status: "available", points: [{ date: "2000-01-03", value: 0 }, { date: "2025-01-03", value: -0.2 - index / 100 }] }, portfolio_value: { status: "excluded", points: [] } })),
     provenance_notice: "Immutable comparison provenance.",
   };
+}
+
+function wealthPayload(count = 2): ResearchComparison {
+  const value = payload(count);
+  value.comparison_schema_version = "2.1";
+  value.include = { twr: true, drawdown: true, portfolio_value: true, capital_invested: true, investment_profit: true, metrics: true };
+  value.compatibility.portfolio_value = {
+    status: "INCOMPATIBLE",
+    reason_codes: ["TOTAL_CAPITAL_EQUAL_BUT_TIMING_DIFFERS"],
+    human_readable_reasons: ["Final invested capital is equal, but effective external cash-flow timing differs."],
+    dimensions: {},
+  };
+  value.compatibility.investor_experience = {
+    status: "WARNING",
+    reason_codes: ["DIFFERENT_EXTERNAL_CASH_FLOWS"],
+    human_readable_reasons: ["Investor cash-flow context differs."],
+    dimensions: {},
+  };
+  value.runs.forEach((run, index) => {
+    run.initial_capital = index === 0 ? 100_000 : 10_000;
+    run.final_equity = 120_000 + index * 1_000;
+    run.total_capital_invested = 100_000;
+    run.investment_profit = index === 0 ? 20_000 : -2_500;
+  });
+  value.series.forEach((series, index) => {
+    series.portfolio_value = { status: "available", unit: "USD", points: [{ date: "2000-01-03", value: index === 0 ? 100_000 : 10_000 }, { date: "2025-01-03", value: 120_000 + index * 1_000 }] };
+    series.capital_invested = { status: "available", unit: "USD", points: [{ date: "2000-01-03", value: index === 0 ? 100_000 : 10_000 }, { date: "2025-01-03", value: 100_000 }] };
+    series.investment_profit = { status: "available", unit: "USD", points: [{ date: "2000-01-03", value: 0 }, { date: "2025-01-03", value: index === 0 ? 20_000 : -2_500 }] };
+  });
+  return value;
 }
 
 describe("MultiStrategyComparison", () => {
@@ -161,5 +192,37 @@ describe("MultiStrategyComparison", () => {
 
     expect(screen.getByText(/canonical TWR missing/)).toBeInTheDocument();
     expect(screen.getByLabelText("Multi-strategy TWR comparison")).toHaveAttribute("data-runs", "run-1");
+  });
+
+  it("renders backend-owned wealth modes, dollar summaries, and cash-flow warning", async () => {
+    const user = userEvent.setup();
+    render(<MultiStrategyComparison comparison={wealthPayload()} />);
+
+    expect(screen.getByLabelText("Wealth Accumulation comparison")).toBeInTheDocument();
+    expect(screen.getByText("TOTAL_CAPITAL_EQUAL_BUT_TIMING_DIFFERS")).toBeInTheDocument();
+    expect(screen.getByLabelText("Multi-strategy portfolio_value comparison")).toHaveAttribute("data-runs", "run-1,run-2");
+    expect(screen.getByText("$120,000.00")).toBeInTheDocument();
+    expect(screen.getAllByText("Total Capital Invested")).toHaveLength(2);
+    expect(screen.getAllByText("XIRR · Investor Experience")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Capital Invested" }));
+    expect(screen.getByLabelText("Multi-strategy capital_invested comparison")).toHaveAttribute("data-values", "100000,100000,10000,100000");
+    await user.click(screen.getByRole("button", { name: "Investment Profit" }));
+    expect(screen.getByLabelText("Multi-strategy investment_profit comparison")).toHaveAttribute("data-values", "0,20000,0,-2500");
+  });
+
+  it("shares one crosshair date with wealth and supports ten runs without winner language", () => {
+    render(<MultiStrategyComparison comparison={wealthPayload(10)} />);
+    act(() => { for (const listener of harness.crosshairListeners) listener("2025-01-03"); });
+
+    expect(screen.getByLabelText("Multi-strategy portfolio_value comparison")).toHaveAttribute("data-hover-date", "2025-01-03");
+    expect(screen.getByLabelText("Multi-strategy portfolio_value comparison")).toHaveAttribute("data-runs", "run-1,run-2,run-3,run-4,run-5,run-6,run-7,run-8,run-9,run-10");
+    expect(screen.queryByText(/winner|best strategy/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps schema 2.0 responses without wealth capabilities usable", () => {
+    render(<MultiStrategyComparison comparison={payload()} />);
+    expect(screen.queryByLabelText("Wealth Accumulation comparison")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Multi-strategy TWR comparison")).toBeInTheDocument();
   });
 });

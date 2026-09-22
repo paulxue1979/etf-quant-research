@@ -5,6 +5,7 @@ import type { ComparisonChartSeries } from "./comparisonCharts";
 
 const chartHarness = vi.hoisted(() => ({
   lines: [] as Array<{ setData: ReturnType<typeof vi.fn> }>,
+  lineOptions: [] as Array<Record<string, unknown>>,
   resize: vi.fn(),
   remove: vi.fn(),
   createChart: vi.fn(),
@@ -15,10 +16,11 @@ vi.mock("lightweight-charts", () => ({
   ColorType: { Solid: "solid" },
   CrosshairMode: { Normal: "normal" },
   LineSeries: "line",
+  LineType: { Simple: "simple", WithSteps: "steps" },
   createChart: chartHarness.createChart,
 }));
 
-import { MultiStrategyDrawdownChart, MultiStrategyTwrChart } from "./MultiStrategyTwrChart";
+import { MultiStrategyDrawdownChart, MultiStrategyTwrChart, MultiStrategyWealthChart } from "./MultiStrategyTwrChart";
 
 const allSeries: ComparisonChartSeries[] = [
   { runId: "run-1", label: "Strategy 1", color: "#111111", status: "available", points: [{ date: "2025-01-02", value: 100 }, { date: "2025-01-03", value: 101 }] },
@@ -27,12 +29,14 @@ const allSeries: ComparisonChartSeries[] = [
 
 beforeEach(() => {
   chartHarness.lines = [];
+  chartHarness.lineOptions = [];
   chartHarness.resize.mockClear();
   chartHarness.remove.mockClear();
   chartHarness.createChart.mockImplementation(() => ({
-    addSeries: vi.fn(() => {
+    addSeries: vi.fn((_series, options: Record<string, unknown>) => {
       const line = { setData: vi.fn() };
       chartHarness.lines.push(line);
+      chartHarness.lineOptions.push(options);
       return line;
     }),
     timeScale: () => ({
@@ -119,5 +123,17 @@ describe("MultiStrategyTwrChart", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("Strategy 1: -12.50%");
     expect(screen.getByRole("status")).toHaveTextContent("Strategy 2: N/A");
+  });
+
+  it("renders capital as a stepped USD series and preserves negative profit", () => {
+    render(<MultiStrategyWealthChart kind="capital_invested" allSeries={allSeries} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={allSeries} hoverDate="2025-01-03" onReady={() => () => undefined} />);
+    expect(chartHarness.lineOptions.every((item) => item.lineType === "steps")).toBe(true);
+    expect(screen.getByRole("status")).toHaveTextContent("$101.00");
+    cleanup();
+
+    const profit = [{ ...allSeries[0], points: [{ date: "2025-01-03", value: -125.5 }] }];
+    render(<MultiStrategyWealthChart kind="investment_profit" allSeries={profit} hiddenRunIds={new Set()} focusRunId={null} visibleSeries={profit} hoverDate="2025-01-03" onReady={() => () => undefined} />);
+    expect(chartHarness.lines.at(-1)?.setData).toHaveBeenCalledWith([{ time: "2025-01-03", value: -125.5 }]);
+    expect(screen.getByRole("status")).toHaveTextContent("-$125.50");
   });
 });

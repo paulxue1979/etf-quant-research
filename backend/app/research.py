@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
 from analytics.models import MetricValue
 from backend.app.backtest_models import BacktestRunMetadata
 from backend.app.backtest_repository import BacktestRunRecord
+from backend.app.wealth_projection import WealthProjectionPoint, project_wealth
 from backtest.models import canonical_decimal
 
 MetricAccessor = Callable[[BacktestRunRecord], MetricValue]
-COMPARISON_SCHEMA_VERSION = "2.0"
+COMPARISON_SCHEMA_VERSION = "2.1"
 
 
 def _trade_metric(name: str) -> MetricAccessor:
@@ -138,6 +140,8 @@ class ComparisonInclude:
     twr: bool = True
     drawdown: bool = True
     portfolio_value: bool = False
+    capital_invested: bool = False
+    investment_profit: bool = False
     metrics: bool = True
 
     def to_dict(self) -> dict[str, bool]:
@@ -145,6 +149,8 @@ class ComparisonInclude:
             "twr": self.twr,
             "drawdown": self.drawdown,
             "portfolio_value": self.portfolio_value,
+            "capital_invested": self.capital_invested,
+            "investment_profit": self.investment_profit,
             "metrics": self.metrics,
         }
 
@@ -267,6 +273,8 @@ def _comparison_run_payload(
                 f"{strategy_name} · {version_label} · {run.backtest_run_id[-8:]}"
             ),
             "asset_universe": sorted(str(symbol) for symbol in result.data_snapshot_reference),
+            "total_capital_invested": result.total_capital_invested,
+            "investment_profit": result.investment_profit,
             "metrics": _comparison_metrics(record) if include_metrics else {},
             "metrics_status": "included" if include_metrics else "excluded",
             "comparison_provenance": _comparison_provenance(record),
@@ -311,7 +319,17 @@ def _mapping_capability(value: Mapping[str, Any], reason: str) -> dict[str, Any]
 def _series_payload(record: BacktestRunRecord, include: ComparisonInclude) -> dict[str, Any]:
     run = record.run
     drawdown = _drawdown_series(record, included=include.drawdown)
-    portfolio = _portfolio_value_series(record, included=include.portfolio_value)
+    wealth_requested = (
+        include.portfolio_value or include.capital_invested or include.investment_profit
+    )
+    wealth = project_wealth(run.backtest_result) if wealth_requested else ()
+    portfolio = _wealth_series(
+        wealth,
+        field="portfolio_value",
+        included=include.portfolio_value,
+        source="BacktestResult.equity_curve.total_equity",
+        fair_comparison_requires="compatibility.portfolio_value.status == COMPARABLE",
+    )
     return {
         "backtest_run_id": run.backtest_run_id,
         "strategy_version_id": run.strategy_version_id,
@@ -320,6 +338,20 @@ def _series_payload(record: BacktestRunRecord, include: ComparisonInclude) -> di
         "twr": _twr_series(record, included=include.twr),
         "drawdown": drawdown,
         "portfolio_value": portfolio,
+        "capital_invested": _wealth_series(
+            wealth,
+            field="capital_invested",
+            included=include.capital_invested,
+            source=(
+                "BacktestResult.initial_capital + effective BacktestResult.contribution_events"
+            ),
+        ),
+        "investment_profit": _wealth_series(
+            wealth,
+            field="investment_profit",
+            included=include.investment_profit,
+            source="portfolio_value - capital_invested",
+        ),
         # Deprecated PHASE 6 fields remain available during the schema transition.
         "equity_curve": (
             [
@@ -384,19 +416,25 @@ def _drawdown_series(record: BacktestRunRecord, *, included: bool) -> dict[str, 
     }
 
 
-def _portfolio_value_series(record: BacktestRunRecord, *, included: bool) -> dict[str, Any]:
+def _wealth_series(
+    points: tuple[WealthProjectionPoint, ...],
+    *,
+    field: str,
+    included: bool,
+    source: str,
+    fair_comparison_requires: str | None = None,
+) -> dict[str, Any]:
     if not included:
         return {"status": "excluded", "points": []}
-    return {
+    payload = {
         "status": "available",
         "unit": "USD",
-        "source": "BacktestResult.equity_curve.total_equity",
-        "fair_comparison_requires": "compatibility.portfolio_value.status == COMPARABLE",
-        "points": [
-            {"date": point.date.isoformat(), "value": point.total_equity}
-            for point in record.run.backtest_result.equity_curve
-        ],
+        "source": source,
+        "points": [point.series_point(field) for point in points],
     }
+    if fair_comparison_requires is not None:
+        payload["fair_comparison_requires"] = fair_comparison_requires
+    return payload
 
 
 def _comparison_provenance(record: BacktestRunRecord) -> dict[str, Any]:
@@ -454,11 +492,18 @@ def _compatibility_dimensions(
         ("rebalance_policy", lambda item: _sanitize(_config(item).get("rebalance_policy"))),
         ("initial_capital", lambda item: item.run.backtest_result.initial_capital),
         (
+            "total_capital_invested",
+            lambda item: canonical_decimal(
+                Decimal(str(item.run.backtest_result.total_capital_invested))
+            ),
+        ),
+        (
             "contribution_schedule",
             _contribution_schedule,
         ),
         ("requested_contribution_dates", _requested_contribution_dates),
         ("effective_contributions", _effective_contributions),
+        ("effective_cash_flow_sequence", _effective_cash_flow_sequence),
         ("cash_flow_timeline", _cash_flow_timeline),
         (
             "asset_universe",
@@ -532,6 +577,7 @@ def _twr_compatibility(dimensions: Mapping[str, dict[str, Any]]) -> dict[str, An
         "requested_contribution_dates",
         "effective_contributions",
         "cash_flow_timeline",
+        "effective_cash_flow_sequence",
     )
     if any(dimensions[name]["status"] == "MISMATCH" for name in cash_dimensions):
         reasons.extend(
@@ -580,6 +626,10 @@ def _portfolio_value_compatibility(
                 "DIFFERENT_INITIAL_CAPITAL",
                 CompatibilityStatus.INCOMPATIBLE,
             ),
+            "total_capital_invested": (
+                "DIFFERENT_TOTAL_CAPITAL_INVESTED",
+                CompatibilityStatus.INCOMPATIBLE,
+            ),
             "price_field": ("DIFFERENT_PRICE_FIELDS", CompatibilityStatus.INCOMPATIBLE),
             "execution_rule": (
                 "DIFFERENT_EXECUTION_SEMANTICS",
@@ -603,10 +653,15 @@ def _portfolio_value_compatibility(
                 "DIFFERENT_EXTERNAL_CASH_FLOWS",
                 CompatibilityStatus.INCOMPATIBLE,
             ),
+            "effective_cash_flow_sequence": (
+                "DIFFERENT_EXTERNAL_CASH_FLOWS",
+                CompatibilityStatus.INCOMPATIBLE,
+            ),
             "engine_version": ("DIFFERENT_ENGINE_VERSIONS", CompatibilityStatus.WARNING),
             "data_provenance": ("DIFFERENT_DATA_PROVENANCE", CompatibilityStatus.WARNING),
         },
     )
+    _add_equal_capital_different_timing_reason(reasons, dimensions)
     _add_provenance_reasons(reasons, dimensions)
     return _compatibility_payload(reasons, dimensions)
 
@@ -619,6 +674,10 @@ def _investor_compatibility(dimensions: Mapping[str, dict[str, Any]]) -> dict[st
         {
             "date_range": ("DIFFERENT_DATE_RANGES", CompatibilityStatus.WARNING),
             "initial_capital": ("DIFFERENT_INITIAL_CAPITAL", CompatibilityStatus.WARNING),
+            "total_capital_invested": (
+                "DIFFERENT_TOTAL_CAPITAL_INVESTED",
+                CompatibilityStatus.WARNING,
+            ),
             "contribution_schedule": (
                 "DIFFERENT_CONTRIBUTION_SCHEDULES",
                 CompatibilityStatus.WARNING,
@@ -631,6 +690,10 @@ def _investor_compatibility(dimensions: Mapping[str, dict[str, Any]]) -> dict[st
                 "DIFFERENT_EXTERNAL_CASH_FLOWS",
                 CompatibilityStatus.WARNING,
             ),
+            "effective_cash_flow_sequence": (
+                "DIFFERENT_EXTERNAL_CASH_FLOWS",
+                CompatibilityStatus.WARNING,
+            ),
             "price_field": ("DIFFERENT_PRICE_FIELDS", CompatibilityStatus.WARNING),
             "execution_rule": (
                 "DIFFERENT_EXECUTION_SEMANTICS",
@@ -640,6 +703,7 @@ def _investor_compatibility(dimensions: Mapping[str, dict[str, Any]]) -> dict[st
             "slippage": ("DIFFERENT_SLIPPAGE", CompatibilityStatus.WARNING),
         },
     )
+    _add_equal_capital_different_timing_reason(reasons, dimensions)
     if dimensions["xirr_availability"]["status"] != "MATCH" or not all(
         item["value"] for item in dimensions["xirr_availability"]["values"]
     ):
@@ -652,6 +716,23 @@ def _investor_compatibility(dimensions: Mapping[str, dict[str, Any]]) -> dict[st
         )
     _add_provenance_reasons(reasons, dimensions)
     return _compatibility_payload(reasons, dimensions)
+
+
+def _add_equal_capital_different_timing_reason(
+    reasons: list[tuple[str, str, CompatibilityStatus]],
+    dimensions: Mapping[str, dict[str, Any]],
+) -> None:
+    if (
+        dimensions["total_capital_invested"]["status"] == "MATCH"
+        and dimensions["effective_cash_flow_sequence"]["status"] == "MISMATCH"
+    ):
+        reasons.append(
+            (
+                "TOTAL_CAPITAL_EQUAL_BUT_TIMING_DIFFERS",
+                "Final invested capital is equal, but effective external cash-flow timing differs.",
+                CompatibilityStatus.WARNING,
+            )
+        )
 
 
 def _add_mismatch_reasons(
@@ -776,6 +857,29 @@ def _cash_flow_timeline(record: BacktestRunRecord) -> list[dict[str, str]]:
         }
         for item in record.run.backtest_result.external_cash_flows
     ]
+
+
+def _effective_cash_flow_sequence(record: BacktestRunRecord) -> list[dict[str, str]]:
+    result = record.run.backtest_result
+    sequence = [
+        {
+            "date": result.start_date.isoformat(),
+            "amount": canonical_decimal(Decimal(str(result.initial_capital))),
+            "source": "initial_capital",
+        }
+    ]
+    sequence.extend(
+        {
+            "date": item.effective_date.isoformat(),
+            "amount": canonical_decimal(item.amount),
+            "source": "external_contribution",
+        }
+        for item in sorted(
+            result.contribution_events,
+            key=lambda event: (event.effective_date, event.requested_date, event.amount),
+        )
+    )
+    return sequence
 
 
 def _benchmark_capability(record: BacktestRunRecord) -> dict[str, Any]:

@@ -8,11 +8,28 @@ import {
   visibleComparisonSeries,
 } from "./comparisonCharts";
 import { MultiStrategyMetricsTable } from "./MultiStrategyMetricsTable";
-import { MultiStrategyDrawdownChart, MultiStrategyTwrChart } from "./MultiStrategyTwrChart";
+import { MultiStrategyDrawdownChart, MultiStrategyTwrChart, MultiStrategyWealthChart } from "./MultiStrategyTwrChart";
 import type { ComparisonCompatibilityStatus, ResearchComparison } from "./types";
 
 const presets = ["1Y", "3Y", "5Y", "MAX"] as const;
 type RangeMode = typeof presets[number] | "CUSTOM";
+type WealthMode = "portfolio_value" | "capital_invested" | "investment_profit";
+
+const wealthModes: Array<{ key: WealthMode; label: string }> = [
+  { key: "portfolio_value", label: "Portfolio Value" },
+  { key: "capital_invested", label: "Capital Invested" },
+  { key: "investment_profit", label: "Investment Profit" },
+];
+
+function formatCurrency(value: number | undefined): string {
+  return typeof value === "number"
+    ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value)
+    : "N/A";
+}
+
+function formatXirr(value: unknown): string {
+  return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "N/A";
+}
 
 function compatibilityTitle(status: ComparisonCompatibilityStatus): string {
   if (status === "COMPARABLE") return "Comparable TWR context";
@@ -24,13 +41,26 @@ function compatibilityTitle(status: ComparisonCompatibilityStatus): string {
 export function MultiStrategyComparison({ comparison }: { comparison: ResearchComparison }) {
   const twrSeries = useMemo(() => buildComparisonSeries(comparison, "twr"), [comparison]);
   const drawdownSeries = useMemo(() => buildComparisonSeries(comparison, "drawdown"), [comparison]);
+  const portfolioSeries = useMemo(() => buildComparisonSeries(comparison, "portfolio_value"), [comparison]);
+  const capitalSeries = useMemo(() => buildComparisonSeries(comparison, "capital_invested"), [comparison]);
+  const profitSeries = useMemo(() => buildComparisonSeries(comparison, "investment_profit"), [comparison]);
   const [hiddenRunIds, setHiddenRunIds] = useState<Set<string>>(() => new Set());
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
   const [hoverDate, setHoverDate] = useState<string | null>(null);
   const [selectedRange, setSelectedRange] = useState<RangeMode>("MAX");
+  const [wealthMode, setWealthMode] = useState<WealthMode>("portfolio_value");
   const [sync] = useState(() => new ChartSyncController());
   const compatibility = comparison.compatibility.twr;
+  const wealthCompatibility = comparison.compatibility.portfolio_value ?? {
+    status: "UNKNOWN" as const,
+    reason_codes: ["WEALTH_COMPATIBILITY_UNAVAILABLE"],
+    human_readable_reasons: ["Wealth compatibility was not returned by this comparison contract."],
+    dimensions: {},
+  };
   const blocked = compatibility.status === "INCOMPATIBLE";
+  const wealthContractAvailable = [portfolioSeries, capitalSeries, profitSeries]
+    .some((series) => series.some((item) => item.status === "available"));
+  const navigationDisabled = blocked && !wealthContractAvailable;
   const visibleTwr = useMemo(
     () => visibleComparisonSeries(twrSeries, hiddenRunIds, focusRunId),
     [focusRunId, hiddenRunIds, twrSeries],
@@ -39,13 +69,33 @@ export function MultiStrategyComparison({ comparison }: { comparison: ResearchCo
     () => visibleComparisonSeries(drawdownSeries, hiddenRunIds, focusRunId),
     [drawdownSeries, focusRunId, hiddenRunIds],
   );
-  const fullRange = useMemo(() => comparisonFullRange([...twrSeries, ...drawdownSeries]), [drawdownSeries, twrSeries]);
+  const wealthSeries = wealthMode === "portfolio_value"
+    ? portfolioSeries
+    : wealthMode === "capital_invested" ? capitalSeries : profitSeries;
+  const visibleWealth = useMemo(
+    () => visibleComparisonSeries(wealthSeries, hiddenRunIds, focusRunId),
+    [focusRunId, hiddenRunIds, wealthSeries],
+  );
+  const fullRange = useMemo(
+    () => comparisonFullRange([
+      ...twrSeries,
+      ...drawdownSeries,
+      ...portfolioSeries,
+      ...capitalSeries,
+      ...profitSeries,
+    ]),
+    [capitalSeries, drawdownSeries, portfolioSeries, profitSeries, twrSeries],
+  );
   const registerTwrChart = useCallback(
     (chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("twr-comparison", chart),
     [sync],
   );
   const registerDrawdownChart = useCallback(
     (chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("drawdown-comparison", chart),
+    [sync],
+  );
+  const registerWealthChart = useCallback(
+    (chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("wealth-comparison", chart),
     [sync],
   );
   useEffect(() => {
@@ -107,9 +157,9 @@ export function MultiStrategyComparison({ comparison }: { comparison: ResearchCo
       <div className="financial-charts-toolbar">
         <div><span className="eyebrow">MULTI-STRATEGY RESEARCH</span><h2>Canonical strategy comparison</h2></div>
         <div className="range-controls" aria-label="Comparison chart range">
-          {presets.map((preset) => <button className={`button ${selectedRange === preset ? "button-primary" : "button-secondary"}`} type="button" key={preset} disabled={blocked} onClick={() => selectRange(preset)}>{preset}</button>)}
-          <button className="button button-secondary" type="button" disabled={blocked} onClick={fitAll}>Fit All</button>
-          <button className="button button-secondary" type="button" disabled={blocked} onClick={resetView}>Reset View</button>
+          {presets.map((preset) => <button className={`button ${selectedRange === preset ? "button-primary" : "button-secondary"}`} type="button" key={preset} disabled={navigationDisabled} onClick={() => selectRange(preset)}>{preset}</button>)}
+          <button className="button button-secondary" type="button" disabled={navigationDisabled} onClick={fitAll}>Fit All</button>
+          <button className="button button-secondary" type="button" disabled={navigationDisabled} onClick={resetView}>Reset View</button>
           {selectedRange === "CUSTOM" && <span className="custom-range-label" role="status">Custom view</span>}
         </div>
       </div>
@@ -142,6 +192,38 @@ export function MultiStrategyComparison({ comparison }: { comparison: ResearchCo
           </div>
           <MultiStrategyMetricsTable comparison={comparison} colors={twrSeries} hiddenRunIds={hiddenRunIds} focusRunId={focusRunId} />
         </>}
+      {wealthContractAvailable && <section className="wealth-comparison" aria-label="Wealth Accumulation comparison">
+        <div className={`compatibility wealth-compatibility comparison-${wealthCompatibility.status.toLowerCase()}`}>
+          <span className="eyebrow">WEALTH ACCUMULATION CONTRACT · V{comparison.comparison_schema_version}</span>
+          <h3>Wealth compatibility: {wealthCompatibility.status}</h3>
+          {wealthCompatibility.human_readable_reasons.length > 0
+            ? <ul>{wealthCompatibility.human_readable_reasons.map((reason, index) => <li key={`${wealthCompatibility.reason_codes[index] ?? "wealth-reason"}-${index}`}><strong>{wealthCompatibility.reason_codes[index] ?? wealthCompatibility.status}</strong><span>{reason}</span></li>)}</ul>
+            : <p>Capital path, execution context, and persisted provenance are comparable.</p>}
+          <p>Portfolio Value shows actual wealth. TWR isolates strategy performance. XIRR describes investor experience under the effective cash-flow schedule.</p>
+        </div>
+        <div className="wealth-heading">
+          <div><span className="eyebrow">ACTUAL ACCOUNT WEALTH</span><h3>Wealth Accumulation</h3></div>
+          <div className="wealth-mode-control" role="group" aria-label="Wealth comparison mode">
+            {wealthModes.map((mode) => <button key={mode.key} type="button" className={`button ${wealthMode === mode.key ? "button-primary" : "button-secondary"}`} aria-pressed={wealthMode === mode.key} onClick={() => setWealthMode(mode.key)}>{mode.label}</button>)}
+          </div>
+        </div>
+        <MultiStrategyWealthChart kind={wealthMode} allSeries={wealthSeries} hiddenRunIds={hiddenRunIds} focusRunId={focusRunId} visibleSeries={visibleWealth} hoverDate={hoverDate} onReady={registerWealthChart} />
+        <div className="wealth-summary" aria-label="Wealth final values">
+          {comparison.runs.map((run, index) => {
+            const hidden = hiddenRunIds.has(run.backtest_run_id) || (focusRunId !== null && focusRunId !== run.backtest_run_id);
+            return <article key={run.backtest_run_id} className={hidden ? "is-hidden" : ""}>
+              <header><i style={{ background: twrSeries[index]?.color }} /><strong>{run.short_display_label}</strong></header>
+              <dl>
+                <div><dt>Final Portfolio Value</dt><dd>{formatCurrency(run.final_equity)}</dd></div>
+                <div><dt>Total Capital Invested</dt><dd>{formatCurrency(run.total_capital_invested)}</dd></div>
+                <div><dt>Investment Profit</dt><dd>{formatCurrency(run.investment_profit)}</dd></div>
+                <div><dt>XIRR · Investor Experience</dt><dd>{formatXirr(run.metrics.xirr?.value)}</dd></div>
+              </dl>
+            </article>;
+          })}
+        </div>
+        <p className="wealth-semantics">Results remain descriptive; no automatic strategy selection occurs. Wealth paths include actual external-capital timing; use canonical TWR for strategy performance and XIRR for investor experience.</p>
+      </section>}
       <p className="comparison-provenance">{comparison.provenance_notice}</p>
     </section>
   </section>;

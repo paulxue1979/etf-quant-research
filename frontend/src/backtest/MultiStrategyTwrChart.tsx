@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
-import { ColorType, CrosshairMode, LineSeries, createChart, type Time } from "lightweight-charts";
+import { ColorType, CrosshairMode, LineSeries, LineType, createChart, type Time } from "lightweight-charts";
 
 import { comparisonTooltipRows, type ComparisonChartSeries } from "./comparisonCharts";
 import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
 interface MultiStrategyChartProps {
-  kind: "twr" | "drawdown";
+  kind: "twr" | "drawdown" | "portfolio_value" | "capital_invested" | "investment_profit";
   allSeries: ComparisonChartSeries[];
   hiddenRunIds: ReadonlySet<string>;
   focusRunId: string | null;
@@ -15,17 +15,24 @@ interface MultiStrategyChartProps {
 }
 
 function displayValue(kind: MultiStrategyChartProps["kind"], value: number): string {
-  return kind === "drawdown" ? `${(value * 100).toFixed(2)}%` : value.toFixed(2);
+  if (kind === "drawdown") return `${(value * 100).toFixed(2)}%`;
+  if (kind === "twr") return value.toFixed(2);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
+}
+
+function chartCopy(kind: MultiStrategyChartProps["kind"]) {
+  if (kind === "twr") return { title: "Strategy Performance (TWR)", ariaLabel: "Multi-strategy TWR comparison", description: "Backend base-100 wealth index · exact trading dates", unit: "BASE 100" };
+  if (kind === "drawdown") return { title: "Drawdown", ariaLabel: "Multi-strategy drawdown comparison", description: "Backend canonical drawdown path · exact trading dates", unit: "%" };
+  if (kind === "portfolio_value") return { title: "Portfolio Value", ariaLabel: "Multi-strategy Portfolio Value comparison", description: "Canonical account value · actual USD · no rebasing", unit: "USD" };
+  if (kind === "capital_invested") return { title: "Capital Invested", ariaLabel: "Multi-strategy Capital Invested comparison", description: "Initial capital plus effective external contributions · step path", unit: "USD" };
+  return { title: "Investment Profit", ariaLabel: "Multi-strategy Investment Profit comparison", description: "Portfolio Value minus Capital Invested · dollar gain or loss", unit: "USD" };
 }
 
 function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visibleSeries, hoverDate, onReady }: MultiStrategyChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const height = kind === "twr" ? 500 : 320;
-  const title = kind === "twr" ? "Strategy Performance (TWR)" : "Drawdown";
-  const ariaLabel = kind === "twr" ? "Multi-strategy TWR comparison" : "Multi-strategy drawdown comparison";
-  const description = kind === "twr"
-    ? "Backend base-100 wealth index · exact trading dates"
-    : "Backend canonical drawdown path · exact trading dates";
+  const copy = chartCopy(kind);
+  const emptyLabel = kind === "twr" ? "TWR" : kind === "drawdown" ? "drawdown" : copy.title;
 
   useEffect(() => {
     if (!containerRef.current || visibleSeries.length === 0) return undefined;
@@ -52,6 +59,7 @@ function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visible
         color: item.color,
         lineWidth: focusRunId === item.runId ? 3 : 2,
         title: item.label,
+        lineType: kind === "capital_invested" ? LineType.WithSteps : LineType.Simple,
         priceFormat: { type: "custom", formatter: (value: number) => displayValue(kind, value) },
       });
       line.setData(item.points.map((point) => ({ time: point.date as Time, value: point.value })));
@@ -77,10 +85,10 @@ function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visible
   }, [focusRunId, height, kind, onReady, visibleSeries]);
 
   const hoverRows = hoverDate === null ? [] : comparisonTooltipRows(allSeries, hoverDate, hiddenRunIds, focusRunId);
-  return <section className={`comparison-chart comparison-chart-${kind}`} aria-label={ariaLabel} data-series-count={visibleSeries.length} data-runs={visibleSeries.map((item) => item.runId).join(",")}>
-    <div className="financial-chart-heading"><div><h3>{title}</h3><span className="muted">{description}</span></div><span className="chart-unit">{kind === "twr" ? "BASE 100" : "%"}</span></div>
+  return <section className={`comparison-chart comparison-chart-${kind}`} aria-label={copy.ariaLabel} data-series-count={visibleSeries.length} data-runs={visibleSeries.map((item) => item.runId).join(",")}>
+    <div className="financial-chart-heading"><div><h3>{copy.title}</h3><span className="muted">{copy.description}</span></div><span className="chart-unit">{copy.unit}</span></div>
     {visibleSeries.length === 0
-      ? <div className="comparison-empty" role="status">No visible canonical {kind === "twr" ? "TWR" : "drawdown"} series.</div>
+      ? <div className="comparison-empty" role="status">No visible canonical {emptyLabel} series.</div>
       : <div className="comparison-chart-canvas" style={{ minHeight: height }} ref={containerRef} />}
     {hoverDate && <div className="financial-chart-tooltip comparison-tooltip" role="status"><strong>{hoverDate}</strong>{hoverRows.map((row) => <span key={row.runId}><i style={{ background: row.color }} />{row.label}: {row.value === null ? "N/A" : displayValue(kind, row.value)}</span>)}</div>}
   </section>;
@@ -94,4 +102,10 @@ export function MultiStrategyTwrChart(props: SharedChartProps) {
 
 export function MultiStrategyDrawdownChart(props: SharedChartProps) {
   return <MultiStrategyChart {...props} kind="drawdown" />;
+}
+
+export function MultiStrategyWealthChart(
+  props: SharedChartProps & { kind: "portfolio_value" | "capital_invested" | "investment_profit" },
+) {
+  return <MultiStrategyChart {...props} />;
 }

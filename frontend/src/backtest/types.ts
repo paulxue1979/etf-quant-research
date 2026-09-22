@@ -499,6 +499,10 @@ export interface ComparisonRunIdentity {
   short_display_label: string;
   start_date: string;
   end_date: string;
+  initial_capital?: number;
+  final_equity?: number;
+  total_capital_invested?: number;
+  investment_profit?: number;
   asset_universe: string[];
   metrics_status: "included" | "excluded";
   metrics: Record<string, ComparisonMetricValue>;
@@ -516,6 +520,7 @@ export interface ComparisonSeriesCapability {
   unit?: string;
   source?: string;
   normalization?: Record<string, unknown>;
+  fair_comparison_requires?: string;
   points: Array<{ date: string; value: number }>;
 }
 
@@ -527,16 +532,20 @@ export interface ComparisonSeries {
   twr: ComparisonSeriesCapability;
   drawdown: ComparisonSeriesCapability;
   portfolio_value: ComparisonSeriesCapability;
+  capital_invested?: ComparisonSeriesCapability;
+  investment_profit?: ComparisonSeriesCapability;
 }
 
 export interface ResearchComparison {
-  comparison_schema_version: "2.0";
+  comparison_schema_version: "2.0" | "2.1";
   ordering: "request_order";
   include: {
-    twr: true;
-    drawdown: true;
-    portfolio_value: false;
-    metrics: true;
+    twr: boolean;
+    drawdown: boolean;
+    portfolio_value: boolean;
+    capital_invested?: boolean;
+    investment_profit?: boolean;
+    metrics: boolean;
   };
   compatibility: { twr: ComparisonCompatibility } & Record<string, ComparisonCompatibility>;
   runs: ComparisonRunIdentity[];

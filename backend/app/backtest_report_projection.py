@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 from backend.app.backtest_models import BacktestRun
+from backend.app.wealth_projection import wealth_series_points
 from backtest.models import canonical_decimal
 
 REPORT_SCHEMA_VERSION = "1.0"
@@ -864,14 +865,7 @@ def _window_points(
 
 
 def _capital_points(run: BacktestRun) -> Iterable[dict[str, Any]]:
-    contributions: dict[date, Decimal] = {}
-    for item in run.backtest_result.contribution_events:
-        current = contributions.get(item.effective_date, Decimal("0"))
-        contributions[item.effective_date] = current + item.amount
-    capital = Decimal(str(run.backtest_result.initial_capital))
-    for equity in run.backtest_result.equity_curve:
-        capital += contributions.get(equity.date, Decimal("0"))
-        yield {"date": equity.date.isoformat(), "value": float(capital)}
+    yield from wealth_series_points(run.backtest_result, "capital_invested")
 
 
 def _sanitize(value: Any) -> Any:

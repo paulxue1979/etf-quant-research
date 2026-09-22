@@ -101,6 +101,34 @@ describe("multi-strategy comparison chart projection", () => {
     expect(visible.map((item) => item.color)).toEqual([colors.get("run-1"), colors.get("run-3")]);
   });
 
+  it("projects backend wealth points verbatim without alignment, fill, or profit calculation", () => {
+    const payload = comparison();
+    payload.comparison_schema_version = "2.1";
+    payload.series[0].investment_profit = {
+      status: "available",
+      unit: "USD",
+      points: [{ date: "2020-01-02", value: -125.5 }, { date: "2025-01-03", value: 250 }],
+    };
+    payload.series[1].investment_profit = {
+      status: "available",
+      unit: "USD",
+      points: [{ date: "2020-01-03", value: 0 }],
+    };
+
+    const projected = buildComparisonSeries(payload, "investment_profit");
+
+    expect(projected[0].points).toEqual(payload.series[0].investment_profit.points);
+    expect(projected[1].points).toEqual([{ date: "2020-01-03", value: 0 }]);
+    expect(comparisonTooltipRows(projected, "2020-01-02", new Set(), null).map((row) => row.value)).toEqual([-125.5, null]);
+  });
+
+  it("represents missing wealth capabilities from schema 2.0 as unavailable", () => {
+    const projected = buildComparisonSeries(comparison(), "capital_invested");
+
+    expect(projected.every((item) => item.status === "not_available")).toBe(true);
+    expect(projected[0].reason).toContain("capital invested was not returned");
+  });
+
   it("returns no fabricated range when every TWR capability is empty", () => {
     const payload = comparison();
     payload.series.forEach((item) => { item.twr.points = []; });

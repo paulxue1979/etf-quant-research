@@ -417,7 +417,14 @@ describe("Backtest Lab", () => {
     const comparisonRequest = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/research/comparisons") && init?.method === "POST");
     expect(JSON.parse(String(comparisonRequest?.[1]?.body))).toEqual({
       backtest_run_ids: ["backtest-research-a", "backtest-research-b"],
-      include: { twr: true, drawdown: true, portfolio_value: false, metrics: true },
+      include: {
+        twr: true,
+        drawdown: true,
+        portfolio_value: true,
+        capital_invested: true,
+        investment_profit: true,
+        metrics: true,
+      },
     });
 
     for (const runId of ["backtest-research-c", "backtest-research-d", "backtest-research-e", "backtest-research-f", "backtest-research-g", "backtest-research-h", "backtest-research-i", "backtest-research-j"]) {

@@ -254,13 +254,45 @@ def test_research_comparison_reads_existing_runs_and_reports_compatibility(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["comparison_schema_version"] == "2.0"
+    assert payload["comparison_schema_version"] == "2.1"
     assert payload["comparable"] is True
     assert [item["backtest_run_id"] for item in payload["runs"]] == ["repo-run-a", "repo-run-b"]
     assert payload["series"][0]["equity_curve"] == []
     assert payload["series"][0]["portfolio_value"]["status"] == "excluded"
+    assert payload["series"][0]["capital_invested"]["status"] == "excluded"
+    assert payload["series"][0]["investment_profit"]["status"] == "excluded"
     assert payload["series"][0]["twr"]["status"] == "available"
     assert payload["runs"][0]["metrics"]["cagr"]["value"] is None
+
+
+def test_research_comparison_accepts_opt_in_wealth_capabilities(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = (_record("repo-run-a"), _record("repo-run-b"))
+    monkeypatch.setattr(backtest_lab.backtest_repository, "get_records", lambda run_ids: records)
+
+    response = client.post(
+        "/research/comparisons",
+        json={
+            "backtest_run_ids": ["repo-run-a", "repo-run-b"],
+            "include": {
+                "twr": True,
+                "drawdown": True,
+                "portfolio_value": True,
+                "capital_invested": True,
+                "investment_profit": True,
+                "metrics": True,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["include"]["capital_invested"] is True
+    assert payload["include"]["investment_profit"] is True
+    assert payload["series"][0]["portfolio_value"]["status"] == "available"
+    assert payload["series"][0]["capital_invested"]["status"] == "available"
+    assert payload["series"][0]["investment_profit"]["status"] == "available"
 
 
 def test_research_comparison_surfaces_configuration_mismatches(

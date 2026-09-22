@@ -145,11 +145,18 @@ export const backtestApi = {
       method: "POST",
       body: JSON.stringify({
         backtest_run_ids: runIds,
-        include: { twr: true, drawdown: true, portfolio_value: false, metrics: true },
+        include: {
+          twr: true,
+          drawdown: true,
+          portfolio_value: true,
+          capital_invested: true,
+          investment_profit: true,
+          metrics: true,
+        },
       }),
     }).then((payload) => {
       if (
-        payload.comparison_schema_version !== "2.0"
+        !["2.0", "2.1"].includes(payload.comparison_schema_version)
         || payload.ordering !== "request_order"
         || !Array.isArray(payload.runs)
         || !Array.isArray(payload.series)

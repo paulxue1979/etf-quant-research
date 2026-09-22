@@ -215,6 +215,8 @@ class ResearchComparisonIncludeRequest(BaseModel):
     twr: StrictBool = True
     drawdown: StrictBool = True
     portfolio_value: StrictBool = False
+    capital_invested: StrictBool = False
+    investment_profit: StrictBool = False
     metrics: StrictBool = True
 
     def to_domain(self) -> ComparisonInclude:
@@ -222,6 +224,8 @@ class ResearchComparisonIncludeRequest(BaseModel):
             twr=self.twr,
             drawdown=self.drawdown,
             portfolio_value=self.portfolio_value,
+            capital_invested=self.capital_invested,
+            investment_profit=self.investment_profit,
             metrics=self.metrics,
         )
 

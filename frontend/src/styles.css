@@ -355,6 +355,24 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .comparison-empty.incompatible { min-height: 140px; color: var(--red); border-color: #6b3939; background: #211416; }
 .comparison-provenance { margin: 0; color: var(--muted); font-size: 11px; }
 .comparison-tooltip { max-width: min(440px, calc(100% - 32px)); }
+.wealth-comparison { display: grid; gap: 14px; padding-top: 8px; border-top: 1px solid var(--line); }
+.wealth-compatibility { padding: 14px 16px; background: #0d151a; border-top: 1px solid var(--line); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.wealth-compatibility h3 { margin: 5px 0 8px; font-size: 16px; }
+.wealth-compatibility p + p { margin-top: 8px; }
+.wealth-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.wealth-heading h3 { margin-top: 5px; }
+.wealth-mode-control { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.wealth-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px; }
+.wealth-summary article { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #10191e; }
+.wealth-summary article.is-hidden { opacity: .46; }
+.wealth-summary header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wealth-summary header i { display: inline-block; flex: 0 0 auto; width: 14px; height: 3px; }
+.wealth-summary header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wealth-summary dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0 0; }
+.wealth-summary dl div { min-width: 0; }
+.wealth-summary dt { color: var(--muted); font-size: 9px; }
+.wealth-summary dd { margin: 4px 0 0; overflow-wrap: anywhere; font-weight: 700; }
+.wealth-semantics { margin: 0; color: var(--muted); font-size: 11px; }
 .comparison-metrics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; padding-top: 4px; }
 .comparison-metrics .subsection-heading { align-items: end; }
 .comparison-metrics-scroll { width: 100%; min-width: 0; max-width: 100%; border: 1px solid var(--line); }
@@ -380,7 +398,7 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .oos-provenance-list > div { display: contents; }
 .oos-provenance-list dd { white-space: pre-wrap; }
 @media (max-width: 900px) { .backtest-layout, .chart-grid, .result-tables { grid-template-columns: minmax(0, 1fr); } .backtest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-item { border-bottom: 1px solid var(--line); } .comparison-legend-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } }
-@media (max-width: 600px) { .backtest-shell { padding: 22px 14px 40px; } .backtest-topbar, .result-header, .financial-charts-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .result-equity { text-align: left; } .backtest-metrics, .capital-summary-grid, .capital-return-grid, .contribution-schedule-summary { grid-template-columns: minmax(0, 1fr); } .capital-summary-item, .contribution-schedule-summary div { border-right: 0; border-bottom: 1px solid var(--line); } .research-controls { align-items: stretch; } .research-controls label, .research-controls .button { width: 100%; } .provenance-panel dl, .protocol-summary { grid-template-columns: minmax(0, 1fr); gap: 4px; } .financial-charts-toolbar { align-items: start; } .financial-chart-controls { justify-content: flex-start; } .range-controls { min-width: 0; justify-content: flex-start; } .holding-controls, .holding-controls form { display: grid; align-items: stretch; } .holding-controls label { width: 100%; } .holding-pagination { justify-content: space-between; } .benchmark-capital-note { display: grid; } .benchmark-capital-note > div:last-child { justify-items: start; } .comparison-legend-item { max-width: 100%; } .comparison-metrics .subsection-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .comparison-metrics-table .strategy-column { min-width: 220px; max-width: 220px; } .contribution-header { align-items: flex-start; flex-direction: column; } .contribution-config { min-width: 0; padding: 14px 12px; } .contribution-toggle { max-width: 100%; } }
+@media (max-width: 600px) { .backtest-shell { padding: 22px 14px 40px; } .backtest-topbar, .result-header, .financial-charts-toolbar, .wealth-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .result-equity { text-align: left; } .backtest-metrics, .capital-summary-grid, .capital-return-grid, .contribution-schedule-summary, .wealth-summary dl { grid-template-columns: minmax(0, 1fr); } .capital-summary-item, .contribution-schedule-summary div { border-right: 0; border-bottom: 1px solid var(--line); } .research-controls { align-items: stretch; } .research-controls label, .research-controls .button { width: 100%; } .provenance-panel dl, .protocol-summary { grid-template-columns: minmax(0, 1fr); gap: 4px; } .financial-charts-toolbar { align-items: start; } .financial-chart-controls, .wealth-mode-control { justify-content: flex-start; } .range-controls { min-width: 0; justify-content: flex-start; } .holding-controls, .holding-controls form { display: grid; align-items: stretch; } .holding-controls label { width: 100%; } .holding-pagination { justify-content: space-between; } .benchmark-capital-note { display: grid; } .benchmark-capital-note > div:last-child { justify-items: start; } .comparison-legend-item { max-width: 100%; } .comparison-metrics .subsection-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .comparison-metrics-table .strategy-column { min-width: 220px; max-width: 220px; } .contribution-header { align-items: flex-start; flex-direction: column; } .contribution-config { min-width: 0; padding: 14px 12px; } .contribution-toggle { max-width: 100%; } }
 
 .research-shell { width: min(1500px, 100%); margin: 0 auto; padding: 30px 34px 60px; }
 .research-loader { margin-top: 22px; }

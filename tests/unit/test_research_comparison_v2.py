@@ -64,6 +64,14 @@ def _with_dataset_version(record, version: str = "dataset-v1"):
     )
 
 
+def _with_symbols(record, symbols: tuple[str, ...]):
+    source = next(iter(record.run.backtest_result.data_snapshot_reference.values()))
+    return _replace_result(
+        record,
+        data_snapshot_reference=MappingProxyType({symbol: dict(source) for symbol in symbols}),
+    )
+
+
 def _with_contribution(record, *, amount: str = "100", effective_day: int = 3):
     requested = date(2026, 1, 2)
     effective = date(2026, 1, effective_day)
@@ -105,7 +113,7 @@ def test_two_run_happy_path_is_versioned_and_preserves_request_order() -> None:
 
     payload = _payload(first, second)
 
-    assert payload["comparison_schema_version"] == "2.0"
+    assert payload["comparison_schema_version"] == "2.1"
     assert payload["ordering"] == "request_order"
     assert [item["backtest_run_id"] for item in payload["runs"]] == ["run-b", "run-a"]
     assert [item["backtest_run_id"] for item in payload["series"]] == ["run-b", "run-a"]
@@ -349,9 +357,117 @@ def test_raw_portfolio_value_is_excluded_by_default_and_included_explicitly() ->
         "status": "excluded",
         "points": [],
     }
+    assert default_payload["series"][0]["capital_invested"] == {
+        "status": "excluded",
+        "points": [],
+    }
+    assert default_payload["series"][0]["investment_profit"] == {
+        "status": "excluded",
+        "points": [],
+    }
     assert default_payload["series"][0]["equity_curve"] == []
     assert included_payload["series"][0]["portfolio_value"]["points"]
     assert included_payload["series"][0]["equity_curve"]
+
+
+def test_wealth_series_are_opt_in_canonical_and_match_final_scalars() -> None:
+    first = _with_contribution(_record("run-a"), amount="100", effective_day=3)
+    payload = _payload(
+        first,
+        _record("run-b"),
+        include=ComparisonInclude(
+            portfolio_value=True,
+            capital_invested=True,
+            investment_profit=True,
+        ),
+    )
+    series = payload["series"][0]
+    result = first.run.backtest_result
+
+    assert series["portfolio_value"]["points"] == [
+        {"date": point.date.isoformat(), "value": point.total_equity}
+        for point in result.equity_curve
+    ]
+    assert [point["value"] for point in series["capital_invested"]["points"]] == [
+        10_000,
+        10_100,
+        10_100,
+    ]
+    assert series["capital_invested"]["points"][-1]["value"] == result.total_capital_invested
+    assert series["investment_profit"]["points"][-1]["value"] == result.investment_profit
+    assert "normalization" not in series["portfolio_value"]
+    assert "normalization" not in series["capital_invested"]
+    assert "normalization" not in series["investment_profit"]
+    assert payload["runs"][0]["total_capital_invested"] == result.total_capital_invested
+    assert payload["runs"][0]["investment_profit"] == result.investment_profit
+
+
+def test_equal_total_capital_with_different_timing_has_deterministic_reason() -> None:
+    lump_sum = _record("lump-sum", initial_capital=10_000)
+    dca = _with_contribution(
+        _record("dca", initial_capital=9_000),
+        amount="1000",
+        effective_day=3,
+    )
+
+    include = ComparisonInclude(
+        portfolio_value=True,
+        capital_invested=True,
+        investment_profit=True,
+    )
+    first = _payload(lump_sum, dca, include=include)
+    second = _payload(lump_sum, dca)
+
+    portfolio = first["compatibility"]["portfolio_value"]
+    investor = first["compatibility"]["investor_experience"]
+    assert portfolio["dimensions"]["total_capital_invested"]["status"] == "MATCH"
+    assert portfolio["dimensions"]["effective_cash_flow_sequence"]["status"] == "MISMATCH"
+    assert "TOTAL_CAPITAL_EQUAL_BUT_TIMING_DIFFERS" in portfolio["reason_codes"]
+    assert "TOTAL_CAPITAL_EQUAL_BUT_TIMING_DIFFERS" in investor["reason_codes"]
+    assert portfolio["status"] == "INCOMPATIBLE"
+    assert investor["status"] == "WARNING"
+    assert first["compatibility"] == second["compatibility"]
+    assert first["series"][0]["twr"]["status"] == "available"
+    for capability in ("portfolio_value", "capital_invested", "investment_profit"):
+        assert first["series"][0][capability]["status"] == "available"
+        assert first["series"][1][capability]["status"] == "available"
+
+
+@pytest.mark.parametrize(
+    "symbols",
+    [
+        ("QQQ",),
+        ("QQQ", "TQQQ"),
+        ("SPY", "UPRO", "SGOV"),
+    ],
+)
+def test_wealth_projection_is_strategy_and_asset_universe_agnostic(
+    symbols: tuple[str, ...],
+) -> None:
+    records = tuple(_with_symbols(_record(f"run-{index}"), symbols) for index in range(2))
+
+    payload = _payload(
+        *records,
+        include=ComparisonInclude(
+            portfolio_value=True,
+            capital_invested=True,
+            investment_profit=True,
+        ),
+    )
+
+    assert all(item["asset_universe"] == sorted(symbols) for item in payload["runs"])
+    assert all(series["investment_profit"]["status"] == "available" for series in payload["series"])
+
+
+def test_different_final_capital_is_explicitly_distinct_from_timing() -> None:
+    payload = _payload(
+        _record("run-a", initial_capital=10_000),
+        _with_contribution(_record("run-b", initial_capital=10_000), amount="1000"),
+    )
+
+    reasons = _reason_codes(payload, "portfolio_value")
+    assert "DIFFERENT_TOTAL_CAPITAL_INVESTED" in reasons
+    assert "TOTAL_CAPITAL_EQUAL_BUT_TIMING_DIFFERS" not in reasons
 
 
 def test_legacy_run_missing_canonical_capabilities_does_not_crash() -> None:
@@ -446,16 +562,33 @@ def test_ten_long_histories_have_stable_order_and_bounded_projection_cost() -> N
             )
         )
 
-    started = perf_counter()
-    payload = _payload(*records, include=ComparisonInclude(metrics=False))
-    elapsed = perf_counter() - started
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    include = ComparisonInclude(
+        portfolio_value=True,
+        capital_invested=True,
+        investment_profit=True,
+        metrics=False,
+    )
+    for run_count in (2, 5, 10):
+        started = perf_counter()
+        payload = _payload(*records[:run_count], include=include)
+        elapsed = perf_counter() - started
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        expected_points = run_count * 6_000
 
-    assert [item["backtest_run_id"] for item in payload["runs"]] == [
-        f"long-{index}" for index in range(10)
-    ]
-    assert sum(len(item["twr"]["points"]) for item in payload["series"]) == 60_000
-    assert sum(len(item["drawdown"]["points"]) for item in payload["series"]) == 60_000
-    assert len(serialized) < 20_000_000
-    assert elapsed < 5.0
-    assert payload == _payload(*records, include=ComparisonInclude(metrics=False))
+        assert [item["backtest_run_id"] for item in payload["runs"]] == [
+            f"long-{index}" for index in range(run_count)
+        ]
+        for capability in (
+            "twr",
+            "drawdown",
+            "portfolio_value",
+            "capital_invested",
+            "investment_profit",
+        ):
+            assert (
+                sum(len(item[capability]["points"]) for item in payload["series"])
+                == expected_points
+            )
+        assert len(serialized) < run_count * 4_000_000
+        assert elapsed < 5.0
+        assert payload == _payload(*records[:run_count], include=include)

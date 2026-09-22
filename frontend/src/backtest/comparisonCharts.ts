@@ -14,13 +14,24 @@ export interface ComparisonChartSeries {
   points: Array<{ date: string; value: number }>;
 }
 
+export type ComparisonChartCapability =
+  | "twr"
+  | "drawdown"
+  | "portfolio_value"
+  | "capital_invested"
+  | "investment_profit";
+
 export function buildComparisonSeries(
   comparison: ResearchComparison,
-  capability: "twr" | "drawdown" = "twr",
+  capability: ComparisonChartCapability = "twr",
 ): ComparisonChartSeries[] {
   const identities = new Map(comparison.runs.map((run) => [run.backtest_run_id, run]));
   return comparison.series.map((series, index) => {
-    const selected = series[capability];
+    const selected = series[capability] ?? {
+      status: "not_available" as const,
+      reason: `${capability.replaceAll("_", " ")} was not returned by this comparison contract`,
+      points: [],
+    };
     return {
       runId: series.backtest_run_id,
       label: displayLabel(identities.get(series.backtest_run_id), series.backtest_run_id),
