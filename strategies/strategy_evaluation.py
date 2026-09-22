@@ -36,6 +36,7 @@ from strategies.models import (
     Condition,
     RuleGroup,
     RuleNode,
+    StrategyDefinition,
     StrategyVersion,
 )
 from strategies.rule_group_evaluator import evaluate_rule_group
@@ -335,10 +336,9 @@ def _price_field_mismatch(
 
 def _indicator_requirements(strategy_version: StrategyVersion) -> tuple[IndicatorKey, ...]:
     requirements: set[IndicatorKey] = set()
-    for rule in strategy_version.configuration.rules:
-        if rule.condition is None:
-            continue
-        for operand in _operands(rule.condition):
+    strategy = strategy_version.configuration
+    for node in _strategy_condition_nodes(strategy):
+        for operand in _operands(node):
             if operand.operand_type in (OperandType.MA, OperandType.EMA):
                 requirements.add(
                     IndicatorKey(
@@ -349,6 +349,16 @@ def _indicator_requirements(strategy_version: StrategyVersion) -> tuple[Indicato
                         operand.timeframe,
                     )
                 )
+    for zone in strategy.value_zones:
+        requirements.add(
+            IndicatorKey(
+                zone.asset,
+                zone.indicator_kind,
+                zone.period,
+                zone.price_field,
+                zone.timeframe,
+            )
+        )
     return tuple(
         sorted(
             requirements,
@@ -373,14 +383,24 @@ def required_weekly_assets(strategy_version: StrategyVersion) -> tuple[str, ...]
     """Return symbols referenced by any weekly PRICE, MA, or EMA operand."""
     if not isinstance(strategy_version, StrategyVersion):
         raise StrategyEvaluationInputError("strategy_version must be a StrategyVersion")
+    strategy = strategy_version.configuration
     symbols = {
         operand.symbol
-        for rule in strategy_version.configuration.rules
-        if rule.condition is not None
-        for operand in _operands(rule.condition)
+        for node in _strategy_condition_nodes(strategy)
+        for operand in _operands(node)
         if getattr(operand, "timeframe", Timeframe.DAILY) is Timeframe.WEEKLY
     }
+    symbols.update(
+        zone.asset.symbol for zone in strategy.value_zones if zone.timeframe is Timeframe.WEEKLY
+    )
     return tuple(sorted(symbols))
+
+
+def _strategy_condition_nodes(strategy: StrategyDefinition) -> tuple[RuleNode, ...]:
+    return tuple(
+        [rule.condition for rule in strategy.rules if rule.condition is not None]
+        + [transition.condition for transition in strategy.transitions]
+    )
 
 
 def _operands(node: RuleNode) -> tuple[object, ...]:

@@ -50,6 +50,7 @@ from strategies.models import (
     RuleGroup,
     StrategyAssetReference,
     StrategyDefinition,
+    ValueZoneDefinition,
 )
 
 
@@ -90,6 +91,11 @@ class ValidationCode(StrEnum):
     SELF_REGIME_TRANSITION = "SelfRegimeTransition"
     REGIME_PRIORITY_CONFLICT = "RegimePriorityConflict"
     MISSING_INITIAL_REGIME = "MissingInitialRegime"
+    DUPLICATE_VALUE_ZONE = "DuplicateValueZone"
+    VALUE_ZONE_PRIORITY_CONFLICT = "ValueZonePriorityConflict"
+    UNKNOWN_VALUE_ZONE_REFERENCE = "UnknownValueZoneReference"
+    VALUE_ZONE_SIGNAL_SOURCE_REQUIRED = "ValueZoneSignalSourceRequired"
+    INVALID_VALUE_ZONE = "InvalidValueZone"
 
 
 @dataclass(frozen=True)
@@ -197,6 +203,7 @@ class StrategyValidator:
         self._validate_initial_allocation(strategy, assets, errors)
         self._validate_rebalance_policy(strategy, errors)
         self._validate_no_match_behavior(strategy, errors)
+        self._validate_value_zones(strategy, assets, errors)
         self._validate_regime_graph(strategy, assets, errors)
         return ValidationResult(errors=tuple(errors))
 
@@ -219,7 +226,12 @@ class StrategyValidator:
         regimes = getattr(strategy, "regimes", ())
         transitions = getattr(strategy, "transitions", ())
         if mode is StrategyEvaluationMode.RULE_BASED:
-            if regimes or transitions or strategy.initial_regime is not None:
+            if (
+                regimes
+                or transitions
+                or strategy.initial_regime is not None
+                or strategy.value_zones
+            ):
                 errors.append(
                     self._issue(
                         ValidationCode.INVALID_REGIME_GRAPH,
@@ -272,6 +284,7 @@ class StrategyValidator:
             )
         transition_ids: set[str] = set()
         priorities_by_state: dict[str, set[int]] = {}
+        value_zone_ids = {zone.zone_id for zone in strategy.value_zones}
         for index, transition in enumerate(transitions):
             path = f"transitions[{index}]"
             if transition.transition_id in transition_ids:
@@ -317,7 +330,78 @@ class StrategyValidator:
                     )
                 )
             priorities.add(transition.priority)
+            if (
+                transition.value_zone_id is not None
+                and transition.value_zone_id not in value_zone_ids
+            ):
+                errors.append(
+                    self._issue(
+                        ValidationCode.UNKNOWN_VALUE_ZONE_REFERENCE,
+                        f"{path}.value_zone_id",
+                        "value_zone_id must reference a declared value zone",
+                    )
+                )
             self._validate_node(transition.condition, f"{path}.condition", strategy, assets, errors)
+
+    def _validate_value_zones(
+        self,
+        strategy: StrategyDefinition,
+        assets: Mapping[str, AssetRole],
+        errors: list[ValidationIssue],
+    ) -> None:
+        zones = getattr(strategy, "value_zones", ())
+        if not isinstance(zones, Sequence) or isinstance(zones, (str, bytes)):
+            errors.append(
+                self._issue(
+                    ValidationCode.INVALID_VALUE_ZONE,
+                    "value_zones",
+                    "value_zones must be a sequence",
+                )
+            )
+            return
+        zone_ids: set[str] = set()
+        priorities: set[int] = set()
+        for index, zone in enumerate(zones):
+            path = f"value_zones[{index}]"
+            if not isinstance(zone, ValueZoneDefinition):
+                errors.append(
+                    self._issue(ValidationCode.INVALID_VALUE_ZONE, path, "value zone is invalid")
+                )
+                continue
+            if zone.zone_id in zone_ids:
+                errors.append(
+                    self._issue(
+                        ValidationCode.DUPLICATE_VALUE_ZONE,
+                        f"{path}.zone_id",
+                        f"zone_id {zone.zone_id} is duplicated",
+                    )
+                )
+            zone_ids.add(zone.zone_id)
+            if zone.priority in priorities:
+                errors.append(
+                    self._issue(
+                        ValidationCode.VALUE_ZONE_PRIORITY_CONFLICT,
+                        f"{path}.priority",
+                        "value zone priorities must be unique",
+                    )
+                )
+            priorities.add(zone.priority)
+            if zone.asset.symbol not in assets:
+                errors.append(
+                    self._issue(
+                        ValidationCode.UNKNOWN_ASSET_REFERENCE,
+                        f"{path}.asset",
+                        f"asset {zone.asset.symbol} is not declared in strategy assets",
+                    )
+                )
+            elif not assets[zone.asset.symbol].signal_capable:
+                errors.append(
+                    self._issue(
+                        ValidationCode.VALUE_ZONE_SIGNAL_SOURCE_REQUIRED,
+                        f"{path}.asset",
+                        f"asset {zone.asset.symbol} is not declared as a signal-capable asset",
+                    )
+                )
 
     def _validate_no_match_behavior(
         self, strategy: StrategyDefinition, errors: list[ValidationIssue]

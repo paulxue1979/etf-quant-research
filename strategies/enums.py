@@ -97,3 +97,11 @@ class StrategyEvaluationMode(StrEnum):
 
     RULE_BASED = "rule_based"
     REGIME_STATE_MACHINE = "regime_state_machine"
+
+
+class ValueZoneTrigger(StrEnum):
+    """How a regime transition consumes value-zone evidence."""
+
+    MATCH = "match"
+    ENTER = "enter"
+    EXIT = "exit"

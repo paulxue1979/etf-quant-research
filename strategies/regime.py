@@ -10,7 +10,12 @@ from datetime import date
 from typing import Any
 
 from strategies.allocation_resolver import resolve_regime_allocation
-from strategies.enums import LogicalOperator, StrategyEvaluationMode, StrategyEvaluationStatus
+from strategies.enums import (
+    LogicalOperator,
+    StrategyEvaluationMode,
+    StrategyEvaluationStatus,
+    ValueZoneTrigger,
+)
 from strategies.evaluation import (
     EvaluationContext,
     RuleGroupResult,
@@ -33,6 +38,7 @@ from strategies.strategy_evaluation import (
     rule_group_to_dict,
 )
 from strategies.validation import validate_strategy_definition
+from strategies.value_zones import ValueZoneResolution, resolve_value_zones
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,7 @@ class RegimeRuntimeState:
     last_transition_id: str | None
     transition_count: int
     current_target_allocation: AllocationSpecification
+    current_zone_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -54,6 +61,7 @@ class RegimeRuntimeState:
             "last_transition_id": self.last_transition_id,
             "transition_count": self.transition_count,
             "current_target_allocation": self.current_target_allocation.to_dict(),
+            "current_zone_id": self.current_zone_id,
         }
 
 
@@ -64,13 +72,17 @@ class RegimeTransitionEvidence:
     transition_id: str
     passed: bool
     result: RuleGroupResult
+    value_zone_match: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "transition_id": self.transition_id,
             "passed": self.passed,
             "condition_evidence": rule_group_to_dict(self.result),
         }
+        if self.value_zone_match is not None:
+            payload["value_zone_match"] = self.value_zone_match
+        return payload
 
 
 @dataclass(frozen=True)
@@ -87,9 +99,10 @@ class RegimeTransitionEvent:
     strategy_version_id: str
     strategy_version_hash: str
     transition_definition_hash: str
+    value_zone_resolution: ValueZoneResolution | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "evaluation_date": self.evaluation_date.isoformat(),
             "transition_id": self.transition_id,
             "from_state": self.from_state,
@@ -101,6 +114,9 @@ class RegimeTransitionEvent:
             "strategy_version_hash": self.strategy_version_hash,
             "transition_definition_hash": self.transition_definition_hash,
         }
+        if self.value_zone_resolution is not None:
+            payload["value_zone"] = self.value_zone_resolution.to_dict()
+        return payload
 
 
 def evaluate_regime_strategy(
@@ -139,6 +155,7 @@ def evaluate_regime_strategy(
         last_transition_id=None,
         transition_count=0,
         current_target_allocation=initial.target_allocation,
+        current_zone_id=None,
     )
     evaluations: list[StrategyEvaluationResult] = []
     for as_of_date in dates:
@@ -177,6 +194,11 @@ def _evaluate_date(
     )
     evidence: list[RegimeTransitionEvidence] = []
     try:
+        zone_resolution = (
+            resolve_value_zones(strategy, context, as_of_date, runtime.current_zone_id)
+            if strategy.value_zones
+            else None
+        )
         for transition in outgoing:
             node = (
                 transition.condition
@@ -189,8 +211,15 @@ def _evaluate_date(
                 as_of_date,
                 rule_group_id=f"transition:{transition.transition_id}",
             )
+            zone_match = _value_zone_trigger_matches(transition, zone_resolution)
+            passed = result.passed and (zone_match is None or zone_match)
             evidence.append(
-                RegimeTransitionEvidence(transition.transition_id, result.passed, result)
+                RegimeTransitionEvidence(
+                    transition.transition_id,
+                    passed,
+                    result,
+                    zone_match,
+                )
             )
     except EvaluationError as exc:
         failure = EvaluationFailure(exc.code, str(exc))
@@ -231,6 +260,7 @@ def _evaluate_date(
             strategy_version_id=strategy_version.version_id,
             strategy_version_hash=strategy_version.content_hash or "",
             transition_definition_hash=_transition_hash(transition),
+            value_zone_resolution=zone_resolution,
         )
         runtime = RegimeRuntimeState(
             current_state_id=next_regime.state_id,
@@ -239,6 +269,11 @@ def _evaluate_date(
             last_transition_id=transition.transition_id,
             transition_count=runtime.transition_count + 1,
             current_target_allocation=next_regime.target_allocation,
+            current_zone_id=(
+                zone_resolution.matched_zone_id
+                if zone_resolution is not None
+                else runtime.current_zone_id
+            ),
         )
     else:
         current = regimes[runtime.current_state_id]
@@ -248,9 +283,19 @@ def _evaluate_date(
             current.target_allocation,
             as_of_date,
         )
+        if zone_resolution is not None:
+            runtime = RegimeRuntimeState(
+                current_state_id=runtime.current_state_id,
+                state_entry_date=runtime.state_entry_date,
+                previous_state_id=runtime.previous_state_id,
+                last_transition_id=runtime.last_transition_id,
+                transition_count=runtime.transition_count,
+                current_target_allocation=runtime.current_target_allocation,
+                current_zone_id=zone_resolution.matched_zone_id,
+            )
 
     condition_result = _aggregate_evidence(as_of_date, tuple(item.result for item in evidence))
-    provenance = {
+    provenance: dict[str, object] = {
         "active_state_id": runtime.current_state_id,
         "state_entry_date": runtime.state_entry_date.isoformat(),
         "previous_state_id": runtime.previous_state_id,
@@ -259,6 +304,9 @@ def _evaluate_date(
         "evaluated_transitions": [item.to_dict() for item in evidence],
         "transition_event": event.to_dict() if event is not None else None,
     }
+    if zone_resolution is not None:
+        provenance["current_zone_id"] = runtime.current_zone_id
+        provenance["value_zone"] = zone_resolution.to_dict()
     signal = build_signal(
         strategy_version,
         condition_result,
@@ -298,6 +346,26 @@ def _aggregate_evidence(
         child_results=results,
         explanation="; ".join(f"{result.rule_group_id}={result.passed}" for result in results),
     )
+
+
+def _value_zone_trigger_matches(
+    transition: RegimeTransitionDefinition,
+    resolution: ValueZoneResolution | None,
+) -> bool | None:
+    if transition.value_zone_id is None:
+        return None
+    if resolution is None:
+        return False
+    if transition.value_zone_trigger is ValueZoneTrigger.MATCH:
+        return resolution.matched_zone_id == transition.value_zone_id
+    if transition.value_zone_trigger is ValueZoneTrigger.ENTER:
+        return (
+            resolution.matched_zone_id == transition.value_zone_id
+            and resolution.transition_type in {"enter", "upgrade"}
+        )
+    if transition.value_zone_trigger is ValueZoneTrigger.EXIT:
+        return resolution.exited_zone_id == transition.value_zone_id
+    return False
 
 
 def _aligned_dates(

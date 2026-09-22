@@ -18,6 +18,7 @@ from types import MappingProxyType
 from typing import Any
 
 from data.models import PriceField, Timeframe
+from indicators.models import IndicatorKind
 from strategies.enums import (
     AssetRole,
     ComparisonOperator,
@@ -28,6 +29,7 @@ from strategies.enums import (
     StrategyEvaluationMode,
     StrategyStatus,
     ThresholdType,
+    ValueZoneTrigger,
 )
 from strategies.exceptions import (
     InvalidAllocationError,
@@ -615,6 +617,8 @@ class RegimeTransitionDefinition:
     condition: RuleNode
     priority: int
     description: str = ""
+    value_zone_id: str | None = None
+    value_zone_trigger: ValueZoneTrigger = ValueZoneTrigger.MATCH
 
     def __post_init__(self) -> None:
         for label in ("transition_id", "from_state", "to_state"):
@@ -627,13 +631,29 @@ class RegimeTransitionDefinition:
             raise InvalidStrategyError("regime transition priority must be an integer")
         if not isinstance(self.description, str):
             raise InvalidStrategyError("regime transition description must be a string")
+        if self.value_zone_id is not None and (
+            not isinstance(self.value_zone_id, str) or not self.value_zone_id.strip()
+        ):
+            raise InvalidStrategyError("regime value_zone_id must be a non-empty string or None")
+        value_zone_trigger = _validate_enum(
+            self.value_zone_trigger,
+            ValueZoneTrigger,
+            InvalidStrategyError,
+            "value_zone_trigger",
+        )
         object.__setattr__(self, "transition_id", self.transition_id.strip())
         object.__setattr__(self, "from_state", self.from_state.strip())
         object.__setattr__(self, "to_state", self.to_state.strip())
         object.__setattr__(self, "description", self.description.strip())
+        object.__setattr__(
+            self,
+            "value_zone_id",
+            self.value_zone_id.strip() if self.value_zone_id else None,
+        )
+        object.__setattr__(self, "value_zone_trigger", value_zone_trigger)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "transition_id": self.transition_id,
             "from_state": self.from_state,
             "to_state": self.to_state,
@@ -641,6 +661,10 @@ class RegimeTransitionDefinition:
             "priority": self.priority,
             "description": self.description,
         }
+        if self.value_zone_id is not None:
+            payload["value_zone_id"] = self.value_zone_id
+            payload["value_zone_trigger"] = self.value_zone_trigger.value
+        return payload
 
     @classmethod
     def from_dict(cls, payload: object) -> RegimeTransitionDefinition:
@@ -660,6 +684,148 @@ class RegimeTransitionDefinition:
             condition=condition,
             priority=data.get("priority"),
             description=data.get("description", ""),
+            value_zone_id=data.get("value_zone_id"),
+            value_zone_trigger=data.get("value_zone_trigger", ValueZoneTrigger.MATCH.value),
+        )
+
+
+@dataclass(frozen=True)
+class ValueZoneDefinition:
+    """Immutable, strategy-defined proximity band over one reference indicator."""
+
+    zone_id: str
+    display_name: str
+    asset: AssetReference | str
+    timeframe: Timeframe
+    indicator_kind: IndicatorKind
+    period: int
+    price_field: PriceField
+    entry_threshold: float
+    exit_threshold: float | None = None
+    entry_operator: ComparisonOperator = ComparisonOperator.LESS_OR_EQUAL
+    exit_operator: ComparisonOperator = ComparisonOperator.GREATER_OR_EQUAL
+    priority: int = 0
+    metadata: Mapping[str, str] = MappingProxyType({})
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.zone_id, str) or not self.zone_id.strip():
+            raise InvalidStrategyError("value zone zone_id must not be empty")
+        if not isinstance(self.display_name, str) or not self.display_name.strip():
+            raise InvalidStrategyError("value zone display_name must not be empty")
+        asset = self.asset if isinstance(self.asset, AssetReference) else AssetReference(self.asset)
+        timeframe = _validate_enum(
+            self.timeframe, Timeframe, InvalidStrategyError, "zone timeframe"
+        )
+        indicator_kind = _validate_enum(
+            self.indicator_kind,
+            IndicatorKind,
+            InvalidStrategyError,
+            "zone indicator_kind",
+        )
+        price_field = _validate_enum(
+            self.price_field, PriceField, InvalidStrategyError, "zone price_field"
+        )
+        if isinstance(self.period, bool) or not isinstance(self.period, int) or self.period <= 0:
+            raise InvalidStrategyError("value zone period must be a positive integer")
+        if not _is_finite_number(self.entry_threshold):
+            raise InvalidStrategyError("value zone entry_threshold must be finite")
+        if self.exit_threshold is not None and not _is_finite_number(self.exit_threshold):
+            raise InvalidStrategyError("value zone exit_threshold must be finite or None")
+        entry_operator = _validate_enum(
+            self.entry_operator,
+            ComparisonOperator,
+            InvalidStrategyError,
+            "zone entry_operator",
+        )
+        exit_operator = _validate_enum(
+            self.exit_operator,
+            ComparisonOperator,
+            InvalidStrategyError,
+            "zone exit_operator",
+        )
+        if entry_operator is ComparisonOperator.EQUAL or exit_operator is ComparisonOperator.EQUAL:
+            raise InvalidStrategyError("value zones do not support the equal comparator")
+        if entry_operator in (ComparisonOperator.LESS_THAN, ComparisonOperator.LESS_OR_EQUAL) and (
+            exit_operator
+            not in (ComparisonOperator.GREATER_THAN, ComparisonOperator.GREATER_OR_EQUAL)
+        ):
+            raise InvalidStrategyError("downward value zones require an upward exit comparator")
+        if entry_operator in (
+            ComparisonOperator.GREATER_THAN,
+            ComparisonOperator.GREATER_OR_EQUAL,
+        ) and exit_operator not in (ComparisonOperator.LESS_THAN, ComparisonOperator.LESS_OR_EQUAL):
+            raise InvalidStrategyError("upward value zones require a downward exit comparator")
+        if self.exit_threshold is not None:
+            if entry_operator in (ComparisonOperator.LESS_THAN, ComparisonOperator.LESS_OR_EQUAL):
+                if self.exit_threshold <= self.entry_threshold:
+                    raise InvalidStrategyError(
+                        "downward value zone exit_threshold must exceed entry_threshold"
+                    )
+            elif self.exit_threshold >= self.entry_threshold:
+                raise InvalidStrategyError(
+                    "upward value zone exit_threshold must be below entry_threshold"
+                )
+        if isinstance(self.priority, bool) or not isinstance(self.priority, int):
+            raise InvalidStrategyError("value zone priority must be an integer")
+        if not isinstance(self.metadata, Mapping):
+            raise InvalidStrategyError("value zone metadata must be a mapping")
+        metadata = dict(self.metadata)
+        if any(
+            not isinstance(key, str) or not key.strip() or not isinstance(value, str)
+            for key, value in metadata.items()
+        ):
+            raise InvalidStrategyError("value zone metadata must contain string key/value pairs")
+        object.__setattr__(self, "zone_id", self.zone_id.strip())
+        object.__setattr__(self, "display_name", self.display_name.strip())
+        object.__setattr__(self, "asset", asset)
+        object.__setattr__(self, "timeframe", timeframe)
+        object.__setattr__(self, "indicator_kind", indicator_kind)
+        object.__setattr__(self, "price_field", price_field)
+        object.__setattr__(self, "entry_threshold", float(self.entry_threshold))
+        if self.exit_threshold is not None:
+            object.__setattr__(self, "exit_threshold", float(self.exit_threshold))
+        object.__setattr__(self, "entry_operator", entry_operator)
+        object.__setattr__(self, "exit_operator", exit_operator)
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType({key.strip(): value for key, value in metadata.items()}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "zone_id": self.zone_id,
+            "display_name": self.display_name,
+            "asset": self.asset.symbol,
+            "timeframe": self.timeframe.value,
+            "indicator_kind": self.indicator_kind.value,
+            "period": self.period,
+            "price_field": self.price_field.value,
+            "entry_threshold": self.entry_threshold,
+            "exit_threshold": self.exit_threshold,
+            "entry_operator": self.entry_operator.value,
+            "exit_operator": self.exit_operator.value,
+            "priority": self.priority,
+            "metadata": {key: self.metadata[key] for key in sorted(self.metadata)},
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> ValueZoneDefinition:
+        data = _require_mapping(payload, "value zone definition")
+        return cls(
+            zone_id=data.get("zone_id", ""),
+            display_name=data.get("display_name", ""),
+            asset=data.get("asset", ""),
+            timeframe=data.get("timeframe", Timeframe.DAILY.value),
+            indicator_kind=data.get("indicator_kind", IndicatorKind.MOVING_AVERAGE.value),
+            period=data.get("period"),
+            price_field=data.get("price_field", PriceField.ADJUSTED_CLOSE.value),
+            entry_threshold=data.get("entry_threshold"),
+            exit_threshold=data.get("exit_threshold"),
+            entry_operator=data.get("entry_operator", ComparisonOperator.LESS_OR_EQUAL.value),
+            exit_operator=data.get("exit_operator", ComparisonOperator.GREATER_OR_EQUAL.value),
+            priority=data.get("priority", 0),
+            metadata=data.get("metadata", {}),
         )
 
 
@@ -728,6 +894,7 @@ class StrategyDefinition:
     initial_regime: str | None = None
     regimes: tuple[RegimeDefinition, ...] = ()
     transitions: tuple[RegimeTransitionDefinition, ...] = ()
+    value_zones: tuple[ValueZoneDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
@@ -799,12 +966,16 @@ class StrategyDefinition:
             object.__setattr__(self, "initial_regime", self.initial_regime.strip())
         regimes = _normalize_sequence(self.regimes, "regimes")
         transitions = _normalize_sequence(self.transitions, "transitions")
+        value_zones = _normalize_sequence(self.value_zones, "value_zones")
         if not all(isinstance(item, RegimeDefinition) for item in regimes):
             raise InvalidStrategyError("regimes must contain RegimeDefinition values")
         if not all(isinstance(item, RegimeTransitionDefinition) for item in transitions):
             raise InvalidStrategyError("transitions must contain RegimeTransitionDefinition values")
+        if not all(isinstance(item, ValueZoneDefinition) for item in value_zones):
+            raise InvalidStrategyError("value_zones must contain ValueZoneDefinition values")
         object.__setattr__(self, "regimes", regimes)
         object.__setattr__(self, "transitions", transitions)
+        object.__setattr__(self, "value_zones", value_zones)
 
     def to_dict(self) -> dict[str, Any]:
         current_schema = self.strategy_schema_version == CURRENT_STRATEGY_SCHEMA_VERSION
@@ -841,6 +1012,11 @@ class StrategyDefinition:
                     key=lambda item: (item.from_state, item.priority, item.transition_id),
                 )
             ]
+            if self.value_zones:
+                payload["value_zones"] = [
+                    zone.to_dict()
+                    for zone in sorted(self.value_zones, key=lambda item: item.zone_id)
+                ]
         return payload
 
     def to_json(self) -> str:
@@ -904,6 +1080,10 @@ class StrategyDefinition:
             transitions=tuple(
                 RegimeTransitionDefinition.from_dict(item)
                 for item in _normalize_sequence(data.get("transitions", []), "transitions")
+            ),
+            value_zones=tuple(
+                ValueZoneDefinition.from_dict(item)
+                for item in _normalize_sequence(data.get("value_zones", []), "value_zones")
             ),
         )
 

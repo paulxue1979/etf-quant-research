@@ -55,6 +55,10 @@ _REGIME_ALLOCATION_TARGET = re.compile(
     rf"^regimes\[({_ROOT_INDEX})\]\.target_allocation\."
     rf"allocations\[({_ROOT_INDEX})\]\.target_weight$"
 )
+_VALUE_ZONE_PERIOD_TARGET = re.compile(rf"^value_zones\[({_ROOT_INDEX})\]\.period$")
+_VALUE_ZONE_THRESHOLD_TARGET = re.compile(
+    rf"^value_zones\[({_ROOT_INDEX})\]\.(?P<field>entry_threshold|exit_threshold)$"
+)
 
 MATERIALIZATION_SPEC_VERSION = "phase-8d-1-v1"
 
@@ -345,6 +349,12 @@ def _apply_binding(payload: dict[str, Any], binding: ParameterBinding, value: ob
         "period": (BindingValueType.POSITIVE_INTEGER, BindingValueType.INTEGER),
         "threshold": (BindingValueType.RELATIVE_THRESHOLD,),
         "allocation": (BindingValueType.ALLOCATION_WEIGHT,),
+        "zone_period": (BindingValueType.POSITIVE_INTEGER, BindingValueType.INTEGER),
+        "zone_threshold": (
+            BindingValueType.RELATIVE_THRESHOLD,
+            BindingValueType.FINITE_FLOAT,
+            BindingValueType.FLOAT,
+        ),
     }[target_kind]
     if binding.value_type not in expected:
         raise ParameterBindingTypeMismatchError(
@@ -365,17 +375,23 @@ def _apply_binding(payload: dict[str, Any], binding: ParameterBinding, value: ob
         )
     field = (
         "period"
-        if target_kind == "period"
+        if target_kind in {"period", "zone_period"}
         else "value"
         if target_kind == "threshold"
         else "target_weight"
     )
+    if target_kind == "zone_threshold":
+        field = _VALUE_ZONE_THRESHOLD_TARGET.fullmatch(binding.target_path).group("field")
     target[field] = value
 
 
 def _target_kind(path: str) -> str:
     if _CONDITION_TARGET.fullmatch(path) or _REGIME_TRANSITION_CONDITION_TARGET.fullmatch(path):
         return "period"
+    if _VALUE_ZONE_PERIOD_TARGET.fullmatch(path):
+        return "zone_period"
+    if _VALUE_ZONE_THRESHOLD_TARGET.fullmatch(path):
+        return "zone_threshold"
     if _THRESHOLD_TARGET.fullmatch(path) or _REGIME_TRANSITION_THRESHOLD_TARGET.fullmatch(path):
         return "threshold"
     if any(
@@ -403,6 +419,8 @@ def _is_supported_path_syntax(path: str) -> bool:
             _REGIME_TRANSITION_CONDITION_TARGET,
             _REGIME_TRANSITION_THRESHOLD_TARGET,
             _REGIME_ALLOCATION_TARGET,
+            _VALUE_ZONE_PERIOD_TARGET,
+            _VALUE_ZONE_THRESHOLD_TARGET,
         )
     )
 
@@ -440,6 +458,22 @@ def _resolve_target(payload: dict[str, Any], path: str) -> dict[str, Any]:
             return payload["rules"][int(allocation_match.group(1))]["allocations"][
                 int(allocation_match.group(2))
             ]
+        except (IndexError, KeyError, TypeError) as exc:
+            raise UnsupportedParameterBindingTargetError(
+                f"target path does not exist in the base strategy: {path}"
+            ) from exc
+    zone_period_match = _VALUE_ZONE_PERIOD_TARGET.fullmatch(path)
+    if zone_period_match is not None:
+        try:
+            return payload["value_zones"][int(zone_period_match.group(1))]
+        except (IndexError, KeyError, TypeError) as exc:
+            raise UnsupportedParameterBindingTargetError(
+                f"target path does not exist in the base strategy: {path}"
+            ) from exc
+    zone_threshold_match = _VALUE_ZONE_THRESHOLD_TARGET.fullmatch(path)
+    if zone_threshold_match is not None:
+        try:
+            return payload["value_zones"][int(zone_threshold_match.group(1))]
         except (IndexError, KeyError, TypeError) as exc:
             raise UnsupportedParameterBindingTargetError(
                 f"target path does not exist in the base strategy: {path}"

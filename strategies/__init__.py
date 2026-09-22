@@ -15,6 +15,7 @@ from strategies.enums import (
     StrategyEvaluationStatus,
     StrategyStatus,
     ThresholdType,
+    ValueZoneTrigger,
 )
 from strategies.evaluation import (
     ConditionResult,
@@ -45,6 +46,7 @@ from strategies.models import (
     StrategyMaterializationProvenance,
     StrategyVersion,
     Threshold,
+    ValueZoneDefinition,
 )
 from strategies.operand_evaluator import evaluate_operand
 from strategies.regime import (
@@ -71,6 +73,7 @@ from strategies.validation import (
     validate_strategy,
     validate_strategy_definition,
 )
+from strategies.value_zones import ValueZoneEvidence, ValueZoneResolution, resolve_value_zones
 
 __all__ = [
     "Allocation",
@@ -114,6 +117,8 @@ __all__ = [
     "StrategyVersion",
     "Threshold",
     "ThresholdType",
+    "ValueZoneTrigger",
+    "ValueZoneDefinition",
     "StrategyValidator",
     "ValidationCode",
     "ValidationIssue",
@@ -133,4 +138,7 @@ __all__ = [
     "RegimeTransitionEvent",
     "RegimeTransitionEvidence",
     "evaluate_regime_strategy",
+    "ValueZoneEvidence",
+    "ValueZoneResolution",
+    "resolve_value_zones",
 ]
