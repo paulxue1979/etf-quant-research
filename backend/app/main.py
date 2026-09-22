@@ -15,7 +15,7 @@ from backend.app.strategy_lab import router as strategy_lab_router
 
 app = FastAPI(
     title="ETF Quant Research System API",
-    version="0.1.0",
+    version="1.3.0",
     description="Quantitative research API with persistent Strategy Lab version endpoints.",
 )
 
