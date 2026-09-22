@@ -11,6 +11,8 @@ class ExperimentStatus(StrEnum):
     SPACE_FROZEN = "space_frozen"
     CANDIDATES_GENERATED = "candidates_generated"
     RUNNING = "running"
+    CANCEL_REQUESTED = "cancel_requested"
+    CANCELLED = "cancelled"
     COMPLETED = "completed"
     SELECTION_RECORDED = "selection_recorded"
     OOS_CONTAMINATED = "oos_contaminated"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -62,7 +62,12 @@ class ExperimentResultFinalizationService:
             raise ValueError("actor must be a non-empty string")
         self._actor = actor.strip()
 
-    def finalize(self, outcome: ExperimentExecutionOutcome) -> ExperimentResult:
+    def finalize(
+        self,
+        outcome: ExperimentExecutionOutcome,
+        *,
+        terminalize_experiment: bool = True,
+    ) -> ExperimentResult:
         """Finalize a successful outcome, safely supporting retries."""
         self._validate_outcome(outcome)
 
@@ -88,7 +93,11 @@ class ExperimentResultFinalizationService:
             created_at=self._now(),
         )
         experiment = self._experiments.get(outcome.experiment_id)
-        if experiment is not None and experiment.status is ExperimentStatus.RUNNING:
+        if (
+            terminalize_experiment
+            and experiment is not None
+            and experiment.status is ExperimentStatus.RUNNING
+        ):
             try:
                 stored = self._experiments.finalize_result(
                     result,
@@ -111,9 +120,7 @@ class ExperimentResultFinalizationService:
                 # Another finalizer won the candidate's unique result race.  The
                 # winner is authoritative; a retry must return it after checking
                 # that it represents the same immutable outcome.
-                stored = self._results.get_by_candidate(
-                    outcome.experiment_id, outcome.candidate_id
-                )
+                stored = self._results.get_by_candidate(outcome.experiment_id, outcome.candidate_id)
                 if stored is None:
                     raise ExperimentFinalizationError(
                         "DUPLICATE_EXPERIMENT_RESULT: conflicting result could not be recovered"
@@ -231,21 +238,20 @@ class ExperimentResultFinalizationService:
             "base_strategy_version_hash": execution.base_strategy_version_hash,
             "derived_strategy_version_id": execution.derived_strategy_version_id,
             "derived_strategy_version_hash": execution.derived_strategy_version_hash,
-                "parameter_binding_hash": execution.parameter_binding_hash,
-            }
+            "parameter_binding_hash": execution.parameter_binding_hash,
+        }
         if actual != expected:
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: candidate execution identity does not match outcome"
             )
         experiment = self._experiments.get(outcome.experiment_id)
         if experiment is None:
-            raise ExperimentFinalizationError(
-                "EXPERIMENT_NOT_FOUND: experiment does not exist"
-            )
+            raise ExperimentFinalizationError("EXPERIMENT_NOT_FOUND: experiment does not exist")
         if execution.experiment_hash != experiment.content_hash:
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: candidate execution experiment hash is stale"
             )
+        base_configuration_hash = sha256_hash(experiment.backtest_configuration.snapshot({}))
         if any(
             (
                 experiment.base_strategy_version_id != outcome.base_strategy_version_id,
@@ -255,12 +261,25 @@ class ExperimentResultFinalizationService:
                 experiment.is_end_date != outcome.is_end,
                 experiment.engine_version != outcome.engine_version,
                 experiment.analysis_version != outcome.analysis_version,
-                sha256_hash(experiment.backtest_configuration.snapshot({}))
-                != outcome.backtest_configuration_hash,
+                outcome.provenance.get("base_backtest_configuration_hash")
+                not in (None, base_configuration_hash),
+                not self._experiments.candidate_configuration_hash_matches(
+                    experiment,
+                    outcome.candidate_index,
+                    outcome.backtest_configuration_hash,
+                ),
             )
         ):
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: outcome does not match frozen experiment"
+            )
+        materialized_configuration = outcome.provenance.get("backtest_configuration")
+        if materialized_configuration is not None and (
+            not isinstance(materialized_configuration, Mapping)
+            or sha256_hash(materialized_configuration) != outcome.backtest_configuration_hash
+        ):
+            raise ExperimentFinalizationError(
+                "PROVENANCE_MISMATCH: materialized backtest configuration hash is invalid"
             )
         candidates = self._experiments.list_candidates(outcome.experiment_id)
         candidate = next(
@@ -325,9 +344,7 @@ class ExperimentResultFinalizationService:
             "experiment_id": outcome.experiment_id,
             "candidate_id": outcome.candidate_id,
             "candidate_execution_id": outcome.candidate_execution_id,
-            "data_snapshot_reference": outcome.provenance.get(
-                "data_snapshot_reference", {}
-            ),
+            "data_snapshot_reference": outcome.provenance.get("data_snapshot_reference", {}),
             "execution_provenance": outcome.provenance,
         }
         provenance = json.loads(canonical_json(provenance_payload))
@@ -377,9 +394,12 @@ class ExperimentResultFinalizationService:
             raise ExperimentFinalizationError(
                 "BACKTEST_RUN_CONFLICT: persisted backtest run differs from outcome"
             )
-        if run.performance_analysis.to_dict() != replace(
-            analysis, backtest_run_id=run.backtest_run_id, strategy_id=integration.strategy_id
-        ).to_dict():
+        if (
+            run.performance_analysis.to_dict()
+            != replace(
+                analysis, backtest_run_id=run.backtest_run_id, strategy_id=integration.strategy_id
+            ).to_dict()
+        ):
             raise ExperimentFinalizationError(
                 "BACKTEST_RUN_CONFLICT: persisted analytics differs from outcome"
             )

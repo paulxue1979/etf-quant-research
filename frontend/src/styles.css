@@ -404,5 +404,19 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .selection-form textarea { min-height: 92px; }
 .status-pill.is-warning { color: var(--yellow); border-color: #66542e; }
 .status-pill.is-error { color: var(--red); border-color: #6b3939; }
+.grid-search-panel { margin-top: 16px; }
+.grid-search-toolbar { display: flex; align-items: center; gap: 12px; }
+.grid-search-scope { display: grid; grid-template-columns: 150px 150px minmax(0, 1fr); gap: 10px; margin: 16px 0; }
+.grid-search-scope > div, .grid-counts > div { min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: #10191e; padding: 10px; }
+.grid-search-scope span, .grid-counts span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 6px; }
+.grid-search-scope strong, .grid-counts strong { display: block; overflow-wrap: anywhere; font-size: 12px; }
+.grid-definition-field textarea { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.45; }
+.grid-search-actions { margin-top: 12px; }
+.grid-counts { display: grid; grid-template-columns: repeat(6, minmax(90px, 1fr)); gap: 8px; margin-top: 16px; }
+.grid-progress { display: grid; gap: 8px; margin-top: 16px; }
+.grid-progress-heading { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.grid-progress-heading span { color: var(--muted); text-align: right; }
+.grid-progress progress { width: 100%; height: 8px; accent-color: var(--cyan); }
 @media (max-width: 900px) { .objective-grid, .selection-form { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .research-shell { padding: 22px 14px 40px; } .research-detail-list { grid-template-columns: 1fr; gap: 4px; } .research-detail-list dd { margin-bottom: 7px; } }
+@media (max-width: 900px) { .grid-counts { grid-template-columns: repeat(3, minmax(90px, 1fr)); } }
+@media (max-width: 600px) { .research-shell { padding: 22px 14px 40px; } .research-detail-list { grid-template-columns: 1fr; gap: 4px; } .research-detail-list dd { margin-bottom: 7px; } .grid-search-scope, .grid-counts { grid-template-columns: 1fr 1fr; } .grid-search-tunables { grid-column: 1 / -1; } .grid-search-toolbar, .grid-progress-heading { align-items: stretch; flex-direction: column; } .grid-progress-heading span { text-align: left; } }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { researchApi, ResearchApiError } from "./api";
+import { GridSearchPanel } from "./GridSearchPanel";
 import type {
   CandidateResult,
   CompatibilityDiagnostic,
@@ -316,6 +317,7 @@ export function ExperimentResearch({ onBack }: ExperimentResearchProps) {
         <div className="research-controls"><label>Protocol ID<input aria-label="Protocol ID" value={protocolId} onChange={(event) => setProtocolId(event.target.value)} placeholder="protocol-id" /></label><label>Experiment ID<input aria-label="Experiment ID" value={experimentId} onChange={(event) => setExperimentId(event.target.value)} placeholder="experiment-id" /></label><button className="button button-primary" type="button" disabled={busy === "load"} onClick={() => void loadResearch()}>{busy === "load" ? "Loading..." : "Load experiment"}</button></div>
         {error && <ApiErrorNotice error={error} />}
       </section>
+      <GridSearchPanel experimentId={experimentId} />
       {results && <>
         <section className="panel"><div className="section-header compact"><div><span className="eyebrow">EXPERIMENT SUMMARY</span><h2>{results.experiment_id}</h2></div><span className="status-pill">{statusLabel(results.experiment_status)}</span></div><dl className="research-detail-list summary-list"><dt>Protocol</dt><dd>{results.protocol_id}</dd><dt>IS range</dt><dd>{results.is_start} to {results.is_end}</dd><dt>Candidates</dt><dd>{results.summary.candidate_count}</dd><dt>Completed</dt><dd>{results.summary.completed_count}</dd><dt>Failed</dt><dd>{results.summary.failed_count}</dd><dt>Not evaluable</dt><dd>{results.summary.not_evaluable_count}</dd><dt>Pending / running</dt><dd>{results.summary.pending_count} / {results.summary.running_count}</dd><dt>Completeness</dt><dd>{results.summary.completeness_status}</dd><dt>Candidate set hash</dt><dd className="research-hash">{results.candidate_set?.candidate_set_hash ?? "Unavailable"}</dd><dt>Parameter space hash</dt><dd className="research-hash">{results.parameter_space_hash}</dd><dt>Objective hash</dt><dd className="research-hash">{results.objective_spec_hash}</dd><dt>Engine / analytics</dt><dd>{results.engine_version} / {results.analysis_version}</dd></dl></section>
         <CompatibilityPanel diagnostic={compatibility} />

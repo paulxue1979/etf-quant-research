@@ -2,6 +2,9 @@ import type {
   CompatibilityDiagnostic,
   ExperimentResults,
   HandoffResponse,
+  GridSearchPreflight,
+  GridSearchProgress,
+  GridSearchTemplate,
   ObjectiveEvaluationResponse,
   SelectionDecision,
   SelectionRequest,
@@ -60,6 +63,40 @@ const path = (protocolId: string, experimentId: string, suffix: string) =>
   `/research/protocols/${encodeURIComponent(protocolId)}/experiments/${encodeURIComponent(experimentId)}/${suffix}`;
 
 export const researchApi = {
+  getGridTemplate(experimentId: string) {
+    return requestJson<GridSearchTemplate>(
+      `/research/experiments/${encodeURIComponent(experimentId)}/grid/template`,
+    );
+  },
+  preflightGrid(experimentId: string, definition: Record<string, unknown>) {
+    return requestJson<GridSearchPreflight>(
+      `/research/experiments/${encodeURIComponent(experimentId)}/grid/preflight`,
+      { method: "POST", body: JSON.stringify(definition) },
+    );
+  },
+  prepareGrid(experimentId: string, definition: Record<string, unknown>) {
+    return requestJson<GridSearchPreflight>(
+      `/research/experiments/${encodeURIComponent(experimentId)}/grid/prepare`,
+      { method: "POST", body: JSON.stringify(definition) },
+    );
+  },
+  executeGrid(experimentId: string) {
+    return requestJson<GridSearchProgress>(
+      `/research/experiments/${encodeURIComponent(experimentId)}/grid/execute`,
+      { method: "POST" },
+    );
+  },
+  cancelGrid(experimentId: string) {
+    return requestJson<GridSearchProgress>(
+      `/research/experiments/${encodeURIComponent(experimentId)}/grid/cancel`,
+      { method: "POST" },
+    );
+  },
+  getGridProgress(experimentId: string) {
+    return requestJson<GridSearchProgress>(
+      `/research/experiments/${encodeURIComponent(experimentId)}/grid/progress`,
+    );
+  },
   getExperimentResults(protocolId: string, experimentId: string) {
     return requestJson<ExperimentResults>(path(protocolId, experimentId, "results"));
   },

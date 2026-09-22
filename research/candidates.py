@@ -87,23 +87,23 @@ def generate_candidates(experiment: Experiment) -> ParameterCandidateSet:
         )
 
     space = experiment.parameter_space
-    theoretical_count = _theoretical_count(space)
+    theoretical_count = theoretical_candidate_count(space)
     if theoretical_count > space.max_candidates:
         raise ParameterSpaceTooLargeError(
             "theoretical candidate count exceeds parameter space max_candidates"
         )
 
     parameter_names = tuple(item.name for item in space.parameters)
-    domains = tuple(_parameter_values(definition) for definition in space.parameters)
+    domains = tuple(parameter_values(definition) for definition in space.parameters)
     candidates = tuple(
         ParameterSet(_candidate_values(parameter_names, values), space)
         for values in product(*domains)
-        if _constraints_hold(space.constraints, _candidate_values(parameter_names, values))
+        if parameter_constraints_hold(space.constraints, _candidate_values(parameter_names, values))
     )
     return ParameterCandidateSet(space, theoretical_count, candidates)
 
 
-def _theoretical_count(space: ParameterSpace) -> int:
+def theoretical_candidate_count(space: ParameterSpace) -> int:
     count = 1
     for definition in space.parameters:
         count *= _parameter_value_count(definition)
@@ -115,13 +115,11 @@ def _parameter_value_count(definition: ParameterDefinition) -> int:
         return ((definition.max_value - definition.min_value) // definition.step) + 1
     if definition.parameter_type is ParameterType.FLOAT:
         span = _decimal(definition.max_value) - _decimal(definition.min_value)
-        return int(
-            (span / _decimal(definition.step)).to_integral_value(rounding=ROUND_FLOOR)
-        ) + 1
+        return int((span / _decimal(definition.step)).to_integral_value(rounding=ROUND_FLOOR)) + 1
     return len(definition.allowed_values)
 
 
-def _parameter_values(definition: ParameterDefinition) -> tuple[object, ...]:
+def parameter_values(definition: ParameterDefinition) -> tuple[object, ...]:
     if definition.parameter_type is ParameterType.INTEGER:
         return tuple(range(definition.min_value, definition.max_value + 1, definition.step))
     if definition.parameter_type is ParameterType.FLOAT:
@@ -145,7 +143,7 @@ def _value_order_key(value: object) -> tuple[int, Decimal | str, int]:
     return (1, canonical_json(value), 0)
 
 
-def _constraints_hold(
+def parameter_constraints_hold(
     constraints: tuple[ParameterConstraint, ...], values: dict[str, object]
 ) -> bool:
     return all(_constraint_holds(constraint, values) for constraint in constraints)

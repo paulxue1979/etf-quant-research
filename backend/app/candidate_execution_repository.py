@@ -406,6 +406,60 @@ class CandidateExecutionRepository:
         finally:
             connection.close()
 
+    def recover_unfinalized_completion(
+        self,
+        experiment_id: str,
+        candidate_index: int,
+        *,
+        actor: str,
+        now: datetime,
+    ) -> CandidateExecution:
+        """Recover the narrow crash window between execution and result finalization."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            execution = self._load_candidate(connection, experiment_id, candidate_index)
+            if execution is None:
+                raise CandidateExecutionPersistenceError("candidate execution was not found")
+            result_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'research_experiment_results'"
+            ).fetchone()
+            if result_exists is not None:
+                row = connection.execute(
+                    "SELECT 1 FROM research_experiment_results "
+                    "WHERE experiment_id = ? AND candidate_id = ?",
+                    (experiment_id, execution.candidate_id),
+                ).fetchone()
+                if row is not None:
+                    raise CandidateExecutionConflictError(
+                        "completed candidate already has an immutable result"
+                    )
+            recovered = execution.recover_unfinalized()
+            self._update(connection, recovered)
+            self._insert_event(
+                connection,
+                recovered,
+                "EXECUTION_UNFINALIZED_RECOVERED",
+                actor=actor,
+                occurred_at=now,
+                from_state=CandidateExecutionStatus.COMPLETED,
+                to_state=CandidateExecutionStatus.PENDING,
+                payload={"reason": "immutable result missing"},
+            )
+            connection.execute("COMMIT")
+            return recovered
+        except (CandidateExecutionConflictError, CandidateExecutionPersistenceError):
+            self._rollback(connection)
+            raise
+        except (sqlite3.Error, ExecutionStateTransitionError) as exc:
+            self._rollback(connection)
+            raise CandidateExecutionPersistenceError(
+                "could not recover unfinalized candidate execution"
+            ) from exc
+        finally:
+            connection.close()
+
     def list_events(self, execution_id: str) -> tuple[ExecutionEvent, ...]:
         connection = self._connect()
         try:

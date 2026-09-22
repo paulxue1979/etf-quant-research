@@ -158,6 +158,49 @@ export interface HandoffResponse {
   provenance?: Record<string, unknown>;
 }
 
+export interface GridSearchTemplate {
+  definition: Record<string, unknown>;
+  parameter_space: Record<string, unknown>;
+  fixed_parameters: Record<string, unknown>;
+  tunable_parameters: Array<Record<string, unknown>>;
+}
+
+export interface GridSearchPreflight {
+  definition_hash: string;
+  parameter_space_hash: string;
+  theoretical_count: number;
+  pruned_count: number;
+  valid_count: number;
+  duplicate_count: number;
+  executable_count: number;
+  max_allowed: number;
+  hard_maximum: number;
+  theoretical_guard: number;
+  pruning_reasons: Record<string, number>;
+  status: "ready" | "failed";
+  can_execute: boolean;
+  issues: string[];
+}
+
+export interface GridSearchProgress {
+  experiment_id: string;
+  definition_hash: string;
+  status: "prepared" | "running" | "completed" | "failed" | "cancelled";
+  cancel_requested: boolean;
+  theoretical: number;
+  pruned: number;
+  valid: number;
+  duplicate: number;
+  executable: number;
+  pending: number;
+  running: number;
+  completed: number;
+  failed: number;
+  retryable: number;
+  cancelled: number;
+  progress_percentage: number;
+}
+
 export interface OosResearchView {
   read_only: boolean;
   protocol: Record<string, unknown>;

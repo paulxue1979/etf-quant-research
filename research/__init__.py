@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from research.backtest_materialization import (
+    BacktestBindingValueType,
+    BacktestParameterBinding,
+    BacktestParameterBindingSet,
+    backtest_config_hash,
+    materialize_backtest_config,
+)
 from research.candidates import ParameterCandidateSet, generate_candidates
 from research.canonical import canonical_json, sha256_hash
 from research.enums import (
@@ -101,6 +108,24 @@ from research.experiments import (
     ParameterSet,
     ParameterSpace,
 )
+from research.grid_search import (
+    DEFAULT_MAX_CANDIDATES,
+    DEFAULT_THEORETICAL_GUARD,
+    GRID_SEARCH_SCHEMA_VERSION,
+    HARD_MAX_CANDIDATES,
+    BoundConstraint,
+    BudgetConstraint,
+    GridCandidatePlan,
+    GridPreflightStatus,
+    GridSearchDefinition,
+    GridSearchPreflight,
+    MonotonicConstraint,
+    MonotonicDirection,
+    OrderingConstraint,
+    SumConstraint,
+    constraint_from_dict,
+    preflight_grid_search,
+)
 from research.materialization import (
     BindingValueType,
     ParameterBinding,
@@ -176,6 +201,27 @@ __all__ = [
     "ParameterSpaceTooLargeError",
     "ParameterType",
     "BindingValueType",
+    "BacktestBindingValueType",
+    "BacktestParameterBinding",
+    "BacktestParameterBindingSet",
+    "BoundConstraint",
+    "BudgetConstraint",
+    "DEFAULT_MAX_CANDIDATES",
+    "DEFAULT_THEORETICAL_GUARD",
+    "GRID_SEARCH_SCHEMA_VERSION",
+    "GridCandidatePlan",
+    "GridPreflightStatus",
+    "GridSearchDefinition",
+    "GridSearchPreflight",
+    "HARD_MAX_CANDIDATES",
+    "MonotonicConstraint",
+    "MonotonicDirection",
+    "OrderingConstraint",
+    "SumConstraint",
+    "backtest_config_hash",
+    "constraint_from_dict",
+    "materialize_backtest_config",
+    "preflight_grid_search",
     "InvalidParameterBindingError",
     "ParameterBinding",
     "ParameterBindingError",

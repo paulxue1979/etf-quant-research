@@ -916,9 +916,16 @@ class Experiment:
             },
             ExperimentStatus.CANDIDATES_GENERATED: {
                 ExperimentStatus.RUNNING,
+                ExperimentStatus.CANCEL_REQUESTED,
                 ExperimentStatus.INVALID,
             },
-            ExperimentStatus.RUNNING: {ExperimentStatus.COMPLETED, ExperimentStatus.INVALID},
+            ExperimentStatus.RUNNING: {
+                ExperimentStatus.COMPLETED,
+                ExperimentStatus.CANCEL_REQUESTED,
+                ExperimentStatus.INVALID,
+            },
+            ExperimentStatus.CANCEL_REQUESTED: {ExperimentStatus.CANCELLED},
+            ExperimentStatus.CANCELLED: {ExperimentStatus.CLOSED},
             ExperimentStatus.COMPLETED: {
                 ExperimentStatus.SELECTION_RECORDED,
                 ExperimentStatus.CLOSED,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -27,6 +26,12 @@ from data.exceptions import (
 )
 from data.models import HistoricalDataRequest, HistoricalDataSet, PriceField
 from indicators.preparation import PreparedStrategyInputs, prepare_strategy_inputs
+from research.backtest_materialization import (
+    BacktestParameterBinding,
+    BacktestParameterBindingSet,
+    backtest_config_hash,
+    materialize_backtest_config,
+)
 from research.canonical import sha256_hash
 from research.enums import ExperimentStatus
 from research.execution import CandidateExecution, CandidateExecutionStatus, candidate_id_for
@@ -88,6 +93,9 @@ class ExperimentExecutionService:
         experiment_id: str,
         candidate_index: int,
         parameter_bindings: ParameterBindingSet | Sequence[ParameterBinding],
+        backtest_parameter_bindings: (
+            BacktestParameterBindingSet | Sequence[BacktestParameterBinding]
+        ) = (),
         claimed_by: str = "phase-8d-3-worker",
     ) -> ExperimentExecutionOutcome:
         """Run one candidate within immutable Protocol IS boundaries only."""
@@ -97,6 +105,7 @@ class ExperimentExecutionService:
                 experiment_id,
                 candidate_index,
                 parameter_bindings,
+                backtest_parameter_bindings,
                 claimed_by=claimed_by,
                 started_at=started_at,
             )
@@ -226,6 +235,9 @@ class ExperimentExecutionService:
         experiment_id: str,
         candidate_index: int,
         parameter_bindings: ParameterBindingSet | Sequence[ParameterBinding],
+        backtest_parameter_bindings: (
+            BacktestParameterBindingSet | Sequence[BacktestParameterBinding]
+        ) = (),
         *,
         claimed_by: str,
         started_at: datetime,
@@ -282,12 +294,25 @@ class ExperimentExecutionService:
                 if isinstance(parameter_bindings, ParameterBindingSet)
                 else ParameterBindingSet(parameter_bindings)
             )
+            backtest_bindings = (
+                backtest_parameter_bindings
+                if isinstance(backtest_parameter_bindings, BacktestParameterBindingSet)
+                else BacktestParameterBindingSet(backtest_parameter_bindings)
+            )
         except Exception:
             raise _ExecutionFailure(
                 self._preflight_failure(experiment_id, candidate_index, "INVALID_BINDING")
             ) from None
         try:
-            derived = materialize_strategy_version(base, parameter_set, bindings)
+            strategy_names = {item.parameter_name for item in bindings.bindings}
+            strategy_parameter_set = ParameterSet(
+                {
+                    name: value
+                    for name, value in parameter_set.values.items()
+                    if name in strategy_names
+                }
+            )
+            derived = materialize_strategy_version(base, strategy_parameter_set, bindings)
             # The result and any subsequent PHASE 7 freeze must reference this
             # exact immutable object, not a later equivalent re-materialization.
             derived = self._strategies.persist_exact_strategy_version(derived)
@@ -298,6 +323,7 @@ class ExperimentExecutionService:
                     candidate=candidate,
                     parameter_set=parameter_set,
                     bindings=bindings,
+                    backtest_bindings=backtest_bindings,
                     base_strategy_version=base,
                     claimed_by=claimed_by,
                     started_at=started_at,
@@ -331,10 +357,27 @@ class ExperimentExecutionService:
                     bindings,
                 )
             )
-        config = replace(
-            experiment.backtest_configuration,
-            strategy_version_id=derived.version_id,
-        )
+        try:
+            config = materialize_backtest_config(
+                experiment.backtest_configuration,
+                parameter_set,
+                backtest_bindings,
+                strategy_version_id=derived.version_id,
+            )
+        except Exception:
+            raise _ExecutionFailure(
+                self._persist_materialization_failure(
+                    experiment=experiment,
+                    candidate=candidate,
+                    parameter_set=parameter_set,
+                    bindings=bindings,
+                    backtest_bindings=backtest_bindings,
+                    base_strategy_version=base,
+                    claimed_by=claimed_by,
+                    started_at=started_at,
+                )
+            ) from None
+        binding_hash = _combined_binding_hash(bindings, backtest_bindings)
         if (
             config.start_date != experiment.is_start_date
             or config.end_date != experiment.is_end_date
@@ -360,7 +403,7 @@ class ExperimentExecutionService:
             ),
             candidate_index=candidate.candidate_index,
             parameter_set_hash=parameter_set.content_hash,
-            parameter_binding_hash=bindings.binding_hash,
+            parameter_binding_hash=binding_hash,
             base_strategy_version_id=base.version_id,
             base_strategy_version_hash=base.content_hash or "",
             derived_strategy_version_id=derived.version_id,
@@ -380,6 +423,7 @@ class ExperimentExecutionService:
             parameter_set=parameter_set,
             candidate_set_hash=candidate_set.candidate_set_hash,
             bindings=bindings,
+            binding_hash=binding_hash,
             derived_strategy=derived,
             execution=execution,
             backtest_config=config,
@@ -579,6 +623,7 @@ class ExperimentExecutionService:
         candidate: ExperimentCandidateRecord,
         parameter_set: ParameterSet,
         bindings: ParameterBindingSet,
+        backtest_bindings: BacktestParameterBindingSet,
         base_strategy_version: Any,
         claimed_by: str,
         started_at: datetime,
@@ -599,7 +644,7 @@ class ExperimentExecutionService:
             ),
             candidate_index=candidate.candidate_index,
             parameter_set_hash=parameter_set.content_hash,
-            parameter_binding_hash=bindings.binding_hash,
+            parameter_binding_hash=_combined_binding_hash(bindings, backtest_bindings),
             base_strategy_version_id=base_strategy_version.version_id,
             base_strategy_version_hash=base_strategy_version.content_hash or "",
             created_at=started_at,
@@ -632,6 +677,7 @@ class ExperimentExecutionService:
                     candidate,
                     parameter_set,
                     bindings,
+                    binding_hash=_combined_binding_hash(bindings, backtest_bindings),
                     candidate_execution_id=stored.execution_id,
                     scope="preflight_lifecycle",
                 )
@@ -643,6 +689,7 @@ class ExperimentExecutionService:
                 candidate,
                 parameter_set,
                 bindings,
+                binding_hash=_combined_binding_hash(bindings, backtest_bindings),
                 candidate_execution_id=stored.execution_id,
                 scope="preflight_lifecycle",
             )
@@ -655,6 +702,7 @@ class ExperimentExecutionService:
                 candidate,
                 parameter_set,
                 bindings,
+                binding_hash=_combined_binding_hash(bindings, backtest_bindings),
                 scope="preflight_lifecycle",
             )
 
@@ -668,6 +716,7 @@ class ExperimentExecutionService:
         parameter_set: ParameterSet | None = None,
         bindings: ParameterBindingSet | None = None,
         derived: Any | None = None,
+        binding_hash: str | None = None,
         candidate_execution_id: str | None = None,
         scope: str = "preflight",
     ) -> ExperimentExecutionOutcome:
@@ -695,7 +744,7 @@ class ExperimentExecutionService:
             base_strategy_version_hash=base_hash,
             derived_strategy_version_id=derived.version_id if derived else None,
             derived_strategy_version_hash=derived.content_hash if derived else None,
-            binding_hash=bindings.binding_hash if bindings else "0" * 64,
+            binding_hash=binding_hash or (bindings.binding_hash if bindings else "0" * 64),
             warmup_start=None,
             warmup_end=None,
             is_start=experiment.is_start_date if experiment else date.min,
@@ -706,9 +755,7 @@ class ExperimentExecutionService:
                 else PriceField.ADJUSTED_CLOSE
             ),
             backtest_configuration_hash=(
-                sha256_hash(experiment.backtest_configuration.snapshot({}))
-                if experiment
-                else "0" * 64
+                backtest_config_hash(experiment.backtest_configuration) if experiment else "0" * 64
             ),
             engine_version=experiment.engine_version if experiment else ENGINE_SERVICE_VERSION,
             analysis_version=experiment.analysis_version if experiment else "unavailable",
@@ -742,13 +789,16 @@ class ExperimentExecutionService:
             base_strategy_version_hash=experiment.base_strategy_version_hash,
             derived_strategy_version_id=prepared.derived_strategy.version_id,
             derived_strategy_version_hash=prepared.derived_strategy.content_hash,
-            binding_hash=prepared.bindings.binding_hash,
+            binding_hash=prepared.binding_hash,
             warmup_start=prepared.warmup_start,
             warmup_end=warmup_end,
             is_start=experiment.is_start_date,
             is_end=experiment.is_end_date,
             price_field_used=prepared.backtest_config.price_field_used,
-            backtest_configuration_hash=sha256_hash(experiment.backtest_configuration.snapshot({})),
+            backtest_configuration_hash=backtest_config_hash(
+                prepared.backtest_config,
+                strategy_version_id=experiment.base_strategy_version_id,
+            ),
             engine_version=experiment.engine_version,
             analysis_version=experiment.analysis_version,
             status=status,
@@ -774,6 +824,12 @@ class ExperimentExecutionService:
                     "end_date": warmup_end.isoformat(),
                 },
                 "execution_rule": prepared.backtest_config.execution_rule.value,
+                "base_backtest_configuration_hash": backtest_config_hash(
+                    experiment.backtest_configuration
+                ),
+                "backtest_configuration": _configuration_identity_payload(
+                    prepared.backtest_config, experiment.base_strategy_version_id
+                ),
             },
         )
 
@@ -799,6 +855,28 @@ def _failure_message(code: str) -> str:
     return f"Candidate execution failed with {code}."
 
 
+def _combined_binding_hash(
+    strategy_bindings: ParameterBindingSet,
+    backtest_bindings: BacktestParameterBindingSet,
+) -> str:
+    if not backtest_bindings.bindings:
+        return strategy_bindings.binding_hash
+    return sha256_hash(
+        {
+            "strategy_bindings": strategy_bindings.to_dict(),
+            "backtest_bindings": backtest_bindings.to_dict(),
+        }
+    )
+
+
+def _configuration_identity_payload(
+    config: BacktestConfig, base_strategy_version_id: str
+) -> dict[str, Any]:
+    payload = config.snapshot({})
+    payload["strategy_version_id"] = base_strategy_version_id
+    return payload
+
+
 class _RuntimeFailure(Exception):
     def __init__(self, code: str, *, retryable: bool) -> None:
         self.code = code
@@ -819,6 +897,7 @@ class _PreparedExecution:
         parameter_set: ParameterSet,
         candidate_set_hash: str,
         bindings: ParameterBindingSet,
+        binding_hash: str,
         derived_strategy: Any,
         execution: CandidateExecution,
         backtest_config: BacktestConfig,
@@ -830,6 +909,7 @@ class _PreparedExecution:
         self.parameter_set = parameter_set
         self.candidate_set_hash = candidate_set_hash
         self.bindings = bindings
+        self.binding_hash = binding_hash
         self.derived_strategy = derived_strategy
         self.execution = execution
         self.backtest_config = backtest_config

@@ -374,6 +374,118 @@ class ExperimentRepository:
         finally:
             connection.close()
 
+    def attach_candidate_set(
+        self,
+        experiment_id: str,
+        candidates: ParameterCandidateSet,
+        *,
+        transition_key: str,
+    ) -> Experiment:
+        """Atomically freeze one complete preflighted set onto an existing experiment."""
+        if not isinstance(candidates, ParameterCandidateSet):
+            raise ExperimentPersistenceError("candidate set is invalid")
+        key = self._validate_transition_text(transition_key, "transition_key")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,)
+            ).fetchone()
+            if row is None:
+                raise ExperimentPersistenceError(
+                    "experiment was not found", code="EXPERIMENT_NOT_FOUND"
+                )
+            experiment = self._decode_experiment(row)
+            self._validate_external_bindings(experiment)
+            self._validate_candidate_set(experiment, candidates)
+            existing_set = connection.execute(
+                "SELECT candidate_set_hash FROM experiment_candidate_sets WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            if existing_set is not None:
+                if existing_set["candidate_set_hash"] != candidates.candidate_set_hash:
+                    raise ExperimentPersistenceError(
+                        "experiment already has a different candidate set",
+                        code="EXPERIMENT_CANDIDATE_SET_CONFLICT",
+                    )
+                if experiment.status is not ExperimentStatus.CANDIDATES_GENERATED:
+                    raise ExperimentPersistenceError(
+                        "candidate set exists without generated lifecycle state",
+                        code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+                    )
+                connection.execute("COMMIT")
+                return experiment
+            if experiment.status is not ExperimentStatus.SPACE_FROZEN:
+                raise ExperimentPersistenceError(
+                    "candidate generation requires space_frozen status",
+                    code="EXPERIMENT_STALE_STATE",
+                )
+            updated = experiment.with_status(ExperimentStatus.CANDIDATES_GENERATED)
+            for candidate in candidates.candidates:
+                self._insert_parameter_set(connection, candidate)
+            candidate_set_payload = self._candidate_set_payload(candidates)
+            connection.execute(
+                """
+                INSERT INTO experiment_candidate_sets(
+                    experiment_id, parameter_space_hash, candidate_set_hash,
+                    theoretical_candidate_count, candidate_count, canonical_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    experiment_id,
+                    candidates.parameter_space.content_hash,
+                    candidates.candidate_set_hash,
+                    candidates.theoretical_candidate_count,
+                    candidates.candidate_count,
+                    candidate_set_payload,
+                ),
+            )
+            for candidate_index, candidate in enumerate(candidates.candidates):
+                self._insert_candidate(
+                    connection,
+                    experiment_id,
+                    candidate_index,
+                    candidate,
+                    candidates.candidate_set_hash,
+                )
+            payload = self._canonical_payload(updated.to_dict())
+            self._validate_experiment_integrity(updated, payload)
+            self._update_experiment_row(
+                connection,
+                experiment_id,
+                ExperimentStatus.SPACE_FROZEN,
+                updated,
+                payload,
+            )
+            self._insert_event(
+                connection,
+                experiment_id,
+                "GRID_CANDIDATES_GENERATED",
+                {
+                    "candidate_set_hash": candidates.candidate_set_hash,
+                    "candidate_count": candidates.candidate_count,
+                    "theoretical_candidate_count": candidates.theoretical_candidate_count,
+                },
+                datetime.now(UTC),
+                transition_key=key,
+                from_status=ExperimentStatus.SPACE_FROZEN,
+                to_status=ExperimentStatus.CANDIDATES_GENERATED,
+                provenance={"source": "phase-11h-grid-preflight"},
+            )
+            connection.execute("COMMIT")
+            return updated
+        except ExperimentPersistenceError:
+            self._rollback(connection)
+            raise
+        except (sqlite3.Error, TypeError, ValueError, OverflowError) as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "could not attach candidate set atomically",
+                code="EXPERIMENT_CANDIDATE_SET_PERSISTENCE_ERROR",
+            ) from exc
+        finally:
+            connection.close()
+
     def save_parameter_set(self, parameter_set: ParameterSet) -> ParameterSet:
         """Persist one immutable parameter set independently of a candidate."""
         if not isinstance(parameter_set, ParameterSet):
@@ -453,8 +565,7 @@ class ExperimentRepository:
             self._validate_external_bindings(experiment)
             self._validate_parameter_space_row(connection, experiment.parameter_space)
             existing = connection.execute(
-                "SELECT * FROM experiment_events WHERE experiment_id = ? "
-                "AND transition_key = ?",
+                "SELECT * FROM experiment_events WHERE experiment_id = ? AND transition_key = ?",
                 (experiment_id, key),
             ).fetchone()
             if existing is not None:
@@ -622,8 +733,7 @@ class ExperimentRepository:
             self._validate_result_binding(connection, experiment, result)
 
             existing_event_row = connection.execute(
-                "SELECT * FROM experiment_events WHERE experiment_id = ? "
-                "AND transition_key = ?",
+                "SELECT * FROM experiment_events WHERE experiment_id = ? AND transition_key = ?",
                 (result.experiment_id, key),
             ).fetchone()
             if existing_event_row is not None:
@@ -708,9 +818,7 @@ class ExperimentRepository:
             raise
         except ExperimentResultConflictError as exc:
             self._rollback(connection)
-            raise ExperimentPersistenceError(
-                str(exc), code="EXPERIMENT_RESULT_CONFLICT"
-            ) from exc
+            raise ExperimentPersistenceError(str(exc), code="EXPERIMENT_RESULT_CONFLICT") from exc
         except ExperimentResultPersistenceError as exc:
             self._rollback(connection)
             raise ExperimentPersistenceError(
@@ -737,6 +845,133 @@ class ExperimentRepository:
         finally:
             connection.close()
 
+    def complete_grid_experiment(
+        self,
+        experiment_id: str,
+        *,
+        transition_key: str,
+        provenance: Mapping[str, Any] | None = None,
+    ) -> Experiment:
+        """Complete a grid only after all candidates are terminal and a result exists."""
+        key = self._validate_transition_text(transition_key, "transition_key")
+        provenance_payload = {} if provenance is None else dict(provenance)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,)
+            ).fetchone()
+            if row is None:
+                raise ExperimentPersistenceError(
+                    "experiment was not found", code="EXPERIMENT_NOT_FOUND"
+                )
+            experiment = self._decode_experiment(row)
+            existing_event = connection.execute(
+                "SELECT * FROM experiment_events WHERE experiment_id = ? AND transition_key = ?",
+                (experiment_id, key),
+            ).fetchone()
+            if existing_event is not None:
+                if experiment.status is not ExperimentStatus.COMPLETED:
+                    raise ExperimentPersistenceError(
+                        "grid completion event does not match experiment state",
+                        code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+                    )
+                connection.execute("COMMIT")
+                return experiment
+            if experiment.status is not ExperimentStatus.RUNNING:
+                raise ExperimentPersistenceError(
+                    "grid completion requires running status", code="EXPERIMENT_STALE_STATE"
+                )
+            candidate_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM experiment_candidates WHERE experiment_id = ?",
+                    (experiment_id,),
+                ).fetchone()[0]
+            )
+            execution_counts = {
+                str(item["status"]): int(item["count"])
+                for item in connection.execute(
+                    "SELECT status, COUNT(*) AS count FROM candidate_executions "
+                    "WHERE experiment_id = ? GROUP BY status",
+                    (experiment_id,),
+                ).fetchall()
+            }
+            terminal_count = execution_counts.get("completed", 0) + execution_counts.get(
+                "failed", 0
+            )
+            if candidate_count == 0 or terminal_count != candidate_count:
+                raise ExperimentPersistenceError(
+                    "all grid candidates must be terminal before completion",
+                    code="EXPERIMENT_CANDIDATES_NOT_TERMINAL",
+                )
+            result_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM research_experiment_results WHERE experiment_id = ?",
+                    (experiment_id,),
+                ).fetchone()[0]
+            )
+            if result_count == 0:
+                raise ExperimentPersistenceError(
+                    "grid completion requires at least one immutable result",
+                    code="EXPERIMENT_RESULT_REQUIRED",
+                )
+            updated = experiment.with_status(ExperimentStatus.COMPLETED)
+            payload = self._canonical_payload(updated.to_dict())
+            self._validate_experiment_integrity(updated, payload)
+            self._update_experiment_row(
+                connection,
+                experiment_id,
+                ExperimentStatus.RUNNING,
+                updated,
+                payload,
+            )
+            self._insert_event(
+                connection,
+                experiment_id,
+                "GRID_EXPERIMENT_COMPLETED",
+                {
+                    "candidate_count": candidate_count,
+                    "completed_count": execution_counts.get("completed", 0),
+                    "failed_count": execution_counts.get("failed", 0),
+                    "result_count": result_count,
+                },
+                datetime.now(UTC),
+                transition_key=key,
+                from_status=ExperimentStatus.RUNNING,
+                to_status=ExperimentStatus.COMPLETED,
+                provenance=provenance_payload,
+            )
+            connection.execute("COMMIT")
+            return updated
+        except ExperimentPersistenceError:
+            self._rollback(connection)
+            raise
+        except (sqlite3.Error, TypeError, ValueError, OverflowError) as exc:
+            self._rollback(connection)
+            raise ExperimentPersistenceError(
+                "could not complete grid experiment atomically",
+                code="EXPERIMENT_TRANSITION_INTEGRITY_ERROR",
+            ) from exc
+        finally:
+            connection.close()
+
+    def candidate_configuration_hash_matches(
+        self,
+        experiment: Experiment,
+        candidate_index: int,
+        configuration_hash: str,
+    ) -> bool:
+        """Verify either the frozen base config or an immutable 11H candidate plan."""
+        if configuration_hash == sha256_hash(experiment.backtest_configuration.snapshot({})):
+            return True
+        connection = self._connect()
+        try:
+            return self._grid_configuration_hash_matches(
+                connection, experiment.experiment_id, candidate_index, configuration_hash
+            )
+        finally:
+            connection.close()
+
     def _validate_result_binding(
         self,
         connection: sqlite3.Connection,
@@ -744,8 +979,14 @@ class ExperimentRepository:
         result: ExperimentResult,
     ) -> None:
         """Validate that a result belongs to this exact frozen experiment."""
-        expected_configuration_hash = sha256_hash(
-            experiment.backtest_configuration.snapshot({})
+        expected_configuration_hash = sha256_hash(experiment.backtest_configuration.snapshot({}))
+        configuration_hash_matches = result.backtest_configuration_hash == (
+            expected_configuration_hash
+        ) or self._grid_configuration_hash_matches(
+            connection,
+            experiment.experiment_id,
+            result.candidate_index,
+            result.backtest_configuration_hash,
         )
         if any(
             (
@@ -756,7 +997,7 @@ class ExperimentRepository:
                 result.is_start != experiment.is_start_date,
                 result.is_end != experiment.is_end_date,
                 result.price_field_used is not experiment.backtest_configuration.price_field_used,
-                result.backtest_configuration_hash != expected_configuration_hash,
+                not configuration_hash_matches,
                 result.engine_version != experiment.engine_version,
                 result.analysis_version != experiment.analysis_version,
             )
@@ -765,6 +1006,7 @@ class ExperimentRepository:
                 "experiment result does not match frozen experiment",
                 code="EXPERIMENT_RESULT_CONFLICT",
             )
+
         derived = self._strategies.get_any_version(result.derived_strategy_version_id)
         if derived is None or derived.content_hash != result.derived_strategy_version_hash:
             raise ExperimentPersistenceError(
@@ -772,8 +1014,7 @@ class ExperimentRepository:
                 code="EXPERIMENT_RESULT_CONFLICT",
             )
         candidate_row = connection.execute(
-            "SELECT * FROM experiment_candidates WHERE experiment_id = ? "
-            "AND candidate_index = ?",
+            "SELECT * FROM experiment_candidates WHERE experiment_id = ? AND candidate_index = ?",
             (experiment.experiment_id, result.candidate_index),
         ).fetchone()
         if candidate_row is None:
@@ -812,6 +1053,26 @@ class ExperimentRepository:
                 "experiment result candidate set binding is invalid",
                 code="EXPERIMENT_RESULT_CONFLICT",
             )
+
+    @staticmethod
+    def _grid_configuration_hash_matches(
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        candidate_index: int,
+        configuration_hash: str,
+    ) -> bool:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'grid_search_candidate_plans'"
+        ).fetchone()
+        if table is None:
+            return False
+        row = connection.execute(
+            "SELECT backtest_configuration_hash FROM grid_search_candidate_plans "
+            "WHERE experiment_id = ? AND candidate_index = ?",
+            (experiment_id, candidate_index),
+        ).fetchone()
+        return row is not None and row["backtest_configuration_hash"] == configuration_hash
 
     def list(self, protocol_id: str | None = None) -> tuple[Experiment, ...]:
         """Return immutable experiments in explicit creation order."""
@@ -1416,9 +1677,7 @@ class ExperimentRepository:
         )
         for name, definition in additions:
             if name not in columns:
-                connection.execute(
-                    f"ALTER TABLE experiment_events ADD COLUMN {name} {definition}"
-                )
+                connection.execute(f"ALTER TABLE experiment_events ADD COLUMN {name} {definition}")
 
     def _validate_parameter_space_row(
         self, connection: sqlite3.Connection, parameter_space: ParameterSpace

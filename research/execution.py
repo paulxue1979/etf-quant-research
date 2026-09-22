@@ -400,6 +400,14 @@ class CandidateExecution:
             lease_expires_at=None,
         )
 
+    def recover_unfinalized(self) -> CandidateExecution:
+        """Return an execution-only completion to pending when no result was committed."""
+        if self.status is not CandidateExecutionStatus.COMPLETED:
+            raise ExecutionStateTransitionError(
+                "only COMPLETED executions without results may be recovered"
+            )
+        return replace(self, status=CandidateExecutionStatus.PENDING, completed_at=None)
+
     def to_dict(self) -> dict[str, Any]:
         payload = {
             "execution_id": self.execution_id,
