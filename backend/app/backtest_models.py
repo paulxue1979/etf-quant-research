@@ -33,6 +33,9 @@ from backtest.models import (
     OrderSide,
     OrderStatus,
     RebalanceCause,
+    RebalanceDecision,
+    RebalanceDecisionType,
+    RebalanceSuppressionReason,
     Trade,
     canonical_decimal,
 )
@@ -374,6 +377,7 @@ def serialize_backtest_result(result: BacktestResult) -> dict[str, Any]:
             }
             for item in result.allocation_history
         ],
+        "rebalance_decisions": [item.to_dict() for item in result.rebalance_decisions],
         "cash_history": [[item_date.isoformat(), cash] for item_date, cash in result.cash_history],
         "contribution_events": [
             {
@@ -598,6 +602,32 @@ def deserialize_backtest_result(payload: Mapping[str, Any]) -> BacktestResult:
                 actual_weight=float(item["actual_weight"]),
             )
             for item in payload["allocation_history"]
+        ),
+        rebalance_decisions=tuple(
+            RebalanceDecision(
+                evaluation_date=_date(item["evaluation_date"]),
+                execution_date=(
+                    _date(item["execution_date"])
+                    if item.get("execution_date") is not None
+                    else None
+                ),
+                target_allocation=item["target_allocation"],
+                actual_allocation=item["actual_allocation"],
+                previous_target_allocation=item["previous_target_allocation"],
+                decision=RebalanceDecisionType(item["decision"]),
+                reasons=tuple(item.get("reasons", ())),
+                target_change_metric=float(item["target_change_metric"]),
+                drift_metric=float(item["drift_metric"]),
+                turnover_estimate=float(item["turnover_estimate"]),
+                minimum_cash_reserve=float(item["minimum_cash_reserve"]),
+                suppression_reason=(
+                    RebalanceSuppressionReason(item["suppression_reason"])
+                    if item.get("suppression_reason") is not None
+                    else None
+                ),
+                contribution_amount=float(item.get("contribution_amount", 0.0)),
+            )
+            for item in payload.get("rebalance_decisions", [])
         ),
         cash_history=tuple((_date(item[0]), float(item[1])) for item in payload["cash_history"]),
         contribution_events=tuple(

@@ -14,7 +14,12 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any
 
-from backtest.models import BacktestConfig, ExecutionRule, RebalanceFrequency
+from backtest.models import (
+    BacktestConfig,
+    ExecutionRule,
+    PositionRebalancePolicy,
+    RebalanceFrequency,
+)
 from data.models import PriceField
 from research.canonical import canonical_json, sha256_hash
 from research.enums import (
@@ -549,6 +554,7 @@ class ExperimentProvenance:
     analysis_version: str
     data_snapshot_reference: Mapping[str, Any]
     parameter_bindings: tuple[Mapping[str, Any], ...] | None = None
+    position_rebalance_policy: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for label in (
@@ -636,14 +642,26 @@ class ExperimentProvenance:
                 _finite(threshold, "rebalance threshold", InvalidExperimentProvenanceError)
             )
             if threshold < 0:
-                raise InvalidExperimentProvenanceError(
-                    "rebalance threshold must be non-negative"
-                )
+                raise InvalidExperimentProvenanceError("rebalance threshold must be non-negative")
         object.__setattr__(
             self,
             "rebalance_policy",
             MappingProxyType({"frequency": frequency, "threshold": threshold}),
         )
+        if self.position_rebalance_policy is not None:
+            try:
+                normalized_position_policy = PositionRebalancePolicy.from_dict(
+                    self.position_rebalance_policy
+                ).to_dict()
+            except (TypeError, ValueError) as exc:
+                raise InvalidExperimentProvenanceError(
+                    "position_rebalance_policy is invalid"
+                ) from exc
+            object.__setattr__(
+                self,
+                "position_rebalance_policy",
+                MappingProxyType(normalized_position_policy),
+            )
         object.__setattr__(
             self,
             "data_snapshot_reference",
@@ -703,6 +721,8 @@ class ExperimentProvenance:
         }
         if self.parameter_bindings is not None:
             payload["parameter_bindings"] = [dict(item) for item in self.parameter_bindings]
+        if self.position_rebalance_policy is not None:
+            payload["position_rebalance_policy"] = dict(self.position_rebalance_policy)
         return payload
 
     @classmethod
@@ -728,6 +748,7 @@ class ExperimentProvenance:
             analysis_version=data.get("analysis_version", ""),
             data_snapshot_reference=data.get("data_snapshot_reference", {}),
             parameter_bindings=data.get("parameter_bindings"),
+            position_rebalance_policy=data.get("position_rebalance_policy"),
         )
 
 
@@ -836,6 +857,10 @@ class Experiment:
                 "fractional_shares": self.provenance.fractional_shares,
                 "rebalance_policy": dict(self.provenance.rebalance_policy),
             }
+            if self.provenance.position_rebalance_policy is not None:
+                provenance_configuration["position_rebalance_policy"] = dict(
+                    self.provenance.position_rebalance_policy
+                )
             for label, value in provenance_configuration.items():
                 if expected_configuration[label] != value:
                     raise InvalidExperimentError(
@@ -940,6 +965,7 @@ class Experiment:
         from backtest.models import (
             CommissionPolicy,
             ExecutionRule,
+            PositionRebalancePolicy,
             RebalanceFrequency,
             RebalancePolicy,
         )
@@ -958,6 +984,9 @@ class Experiment:
                 threshold=config_data["rebalance_policy"]["threshold"],
             ),
             fractional_shares=config_data["fractional_shares"],
+            position_rebalance_policy=PositionRebalancePolicy.from_dict(
+                config_data.get("position_rebalance_policy")
+            ),
         )
         return cls(
             experiment_id=data.get("experiment_id", ""),

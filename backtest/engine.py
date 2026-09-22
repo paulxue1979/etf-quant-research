@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from hashlib import sha256
 from types import MappingProxyType
@@ -34,9 +34,12 @@ from backtest.models import (
     OrderSide,
     OrderStatus,
     RebalanceCause,
+    RebalanceDecision,
+    RebalanceDecisionType,
     TargetAllocation,
     Trade,
 )
+from backtest.rebalance import actual_allocation, evaluate_rebalance_decision
 from data.exceptions import DataValidationError
 from data.models import (
     DataSource,
@@ -120,8 +123,10 @@ class BacktestEngine:
             contributions_by_date[event.effective_date].append(event)
 
         ledger = _Ledger.create(config.initial_capital)
-        pending: tuple[TargetAllocation, date] | None = None
+        pending: tuple[TargetAllocation, date, RebalanceDecision | None] | None = None
         active_target = TargetAllocation.from_weights(trading_dates[0], {})
+        canonical_target = active_target
+        position_policy = config.position_rebalance_policy
         orders: list[Order] = []
         fills: list[Fill] = []
         trades: list[Trade] = []
@@ -131,6 +136,7 @@ class BacktestEngine:
         allocation_history: list[AllocationPoint] = []
         cash_history: list[tuple[date, float]] = []
         external_cash_flows: list[ExternalCashFlow] = []
+        rebalance_decisions: list[RebalanceDecision] = []
 
         for current_date in trading_dates:
             daily_contributions = contributions_by_date.get(current_date, [])
@@ -163,7 +169,11 @@ class BacktestEngine:
                 pending = None
                 pending_executed = True
 
-            if daily_contributions and not pending_executed:
+            if (
+                daily_contributions
+                and not pending_executed
+                and position_policy.is_legacy_compatible
+            ):
                 created_orders, created_fills, created_trades, created_holdings = self._rebalance(
                     ledger=ledger,
                     target=active_target,
@@ -179,6 +189,52 @@ class BacktestEngine:
                 trades.extend(created_trades)
                 closed_holdings.extend(created_holdings)
 
+            if (
+                daily_contributions
+                and not pending_executed
+                and not position_policy.is_legacy_compatible
+            ):
+                open_prices = {
+                    symbol: self._valid_price(
+                        normalized_data[symbol]
+                        .points_by_date[current_date]
+                        .open_for(config.price_field_used)
+                    )
+                    for symbol in symbols
+                }
+                contribution_amount = sum(float(item.amount) for item in daily_contributions)
+                decision = evaluate_rebalance_decision(
+                    evaluation_date=current_date,
+                    target=active_target,
+                    actual=actual_allocation(
+                        cash=ledger.cash,
+                        quantities=ledger.quantities,
+                        prices=open_prices,
+                    ),
+                    previous_target=canonical_target.as_mapping(),
+                    policy=position_policy,
+                    contribution_amount=contribution_amount,
+                )
+                decision = replace(decision, execution_date=current_date)
+                rebalance_decisions.append(decision)
+                if decision.decision is RebalanceDecisionType.EXECUTE:
+                    created_orders, created_fills, created_trades, created_holdings = (
+                        self._rebalance(
+                            ledger=ledger,
+                            target=active_target,
+                            signal_date=active_target.date,
+                            execution_date=current_date,
+                            data=normalized_data,
+                            symbols=symbols,
+                            config=config,
+                            cause=RebalanceCause.CONTRIBUTION,
+                        )
+                    )
+                    orders.extend(created_orders)
+                    fills.extend(created_fills)
+                    trades.extend(created_trades)
+                    closed_holdings.extend(created_holdings)
+
             point_by_symbol = {
                 symbol: normalized_data[symbol].points_by_date[current_date] for symbol in symbols
             }
@@ -188,7 +244,10 @@ class BacktestEngine:
             equity_curve.append(equity_point)
             snapshots.append(snapshot)
             cash_history.append((current_date, ledger.cash))
-            history_target = scheduled.get(current_date, active_target)
+            history_target = scheduled.get(
+                current_date,
+                canonical_target if not position_policy.is_legacy_compatible else active_target,
+            )
             allocation_history.extend(
                 self._allocation_points(
                     current_date,
@@ -207,7 +266,34 @@ class BacktestEngine:
                     raise ExecutionError(
                         f"No next trading day exists for signal date {current_date.isoformat()}"
                     )
-                pending = (scheduled_allocation, next_date[current_date])
+                if position_policy.is_legacy_compatible:
+                    pending = (scheduled_allocation, next_date[current_date], None)
+                else:
+                    previous_target = canonical_target.as_mapping()
+                    canonical_target = scheduled_allocation
+                    close_prices = {
+                        symbol: self._valid_price(
+                            normalized_data[symbol]
+                            .points_by_date[current_date]
+                            .close_for(config.price_field_used)
+                        )
+                        for symbol in symbols
+                    }
+                    decision = evaluate_rebalance_decision(
+                        evaluation_date=current_date,
+                        target=scheduled_allocation,
+                        actual=actual_allocation(
+                            cash=ledger.cash,
+                            quantities=ledger.quantities,
+                            prices=close_prices,
+                        ),
+                        previous_target=previous_target,
+                        policy=position_policy,
+                    )
+                    decision = replace(decision, execution_date=next_date[current_date])
+                    rebalance_decisions.append(decision)
+                    if decision.decision is RebalanceDecisionType.EXECUTE:
+                        pending = (scheduled_allocation, next_date[current_date], decision)
         if pending is not None:
             raise ExecutionError("A target allocation remained unexecuted at the end of the run")
 
@@ -255,6 +341,7 @@ class BacktestEngine:
             external_cash_flows=tuple(external_cash_flows),
             cumulative_contributions=sum(float(item.amount) for item in contribution_events),
             holding_segments=tuple((*closed_holdings, *open_holdings)),
+            rebalance_decisions=tuple(rebalance_decisions),
         )
 
     def _validate_config(self, config: BacktestConfig) -> None:
@@ -453,9 +540,16 @@ class BacktestEngine:
                 market_price=prices[symbol],
                 requested_quantity=quantity,
                 config=config,
+                minimum_cash_reserve=(
+                    equity_at_open * config.position_rebalance_policy.minimum_cash_reserve
+                ),
             )
             if affordable <= 0:
-                if quantity > 0 and cause is not RebalanceCause.CONTRIBUTION:
+                if (
+                    quantity > 0
+                    and cause is not RebalanceCause.CONTRIBUTION
+                    and config.position_rebalance_policy.minimum_cash_reserve == 0.0
+                ):
                     raise InsufficientCashError(
                         f"insufficient cash for BUY {symbol} at {execution_date.isoformat()}"
                     )
@@ -694,12 +788,16 @@ class BacktestEngine:
         market_price: float,
         requested_quantity: int,
         config: BacktestConfig,
+        minimum_cash_reserve: float = 0.0,
     ) -> int:
         unit_cost = market_price * (1 + config.slippage) * (1 + config.commission.rate)
         fixed_cost = config.commission.per_order
-        if cash < fixed_cost + unit_cost - _EPSILON:
+        available_cash = cash - max(0.0, minimum_cash_reserve)
+        if available_cash < fixed_cost + unit_cost - _EPSILON:
             return 0
-        return min(requested_quantity, max(0, math.floor((cash - fixed_cost) / unit_cost)))
+        return min(
+            requested_quantity, max(0, math.floor((available_cash - fixed_cost) / unit_cost))
+        )
 
     def _mark_to_market(
         self,

@@ -29,6 +29,7 @@ from backtest.models import (
     BacktestConfig,
     ContributionSchedule,
     ExecutionRule,
+    PositionRebalancePolicy,
     RebalanceFrequency,
     RebalancePolicy,
 )
@@ -307,6 +308,7 @@ class OosEvaluationConfig:
     engine_version: str
     analytics_version: str
     contribution_schedule: ContributionSchedule | None = None
+    position_rebalance_policy: PositionRebalancePolicy | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -355,9 +357,22 @@ class OosEvaluationConfig:
                 ) from exc
         if not isinstance(rebalance, RebalancePolicy):
             raise OosDomainError("rebalance_policy is invalid", code="OOS_INVALID_CONFIGURATION")
+        position_policy = self.position_rebalance_policy
+        if isinstance(position_policy, Mapping):
+            try:
+                position_policy = PositionRebalancePolicy.from_dict(position_policy)
+            except (TypeError, ValueError) as exc:
+                raise OosDomainError(
+                    "position_rebalance_policy is invalid", code="OOS_INVALID_CONFIGURATION"
+                ) from exc
+        if position_policy is not None and not isinstance(position_policy, PositionRebalancePolicy):
+            raise OosDomainError(
+                "position_rebalance_policy is invalid", code="OOS_INVALID_CONFIGURATION"
+            )
         object.__setattr__(self, "price_field_used", price_field)
         object.__setattr__(self, "execution_rule", execution_rule)
         object.__setattr__(self, "rebalance_policy", rebalance)
+        object.__setattr__(self, "position_rebalance_policy", position_policy)
         object.__setattr__(self, "engine_version", _text(self.engine_version, "engine_version"))
         object.__setattr__(
             self, "analytics_version", _text(self.analytics_version, "analytics_version")
@@ -396,6 +411,11 @@ class OosEvaluationConfig:
             engine_version="phase-3.0",
             analytics_version=analytics_version,
             contribution_schedule=config.contribution_schedule,
+            position_rebalance_policy=(
+                config.position_rebalance_policy
+                if not config.position_rebalance_policy.is_legacy_compatible
+                else None
+            ),
         )
 
     @classmethod
@@ -423,10 +443,15 @@ class OosEvaluationConfig:
                 if config.contribution_schedule is not None
                 else None
             ),
+            position_rebalance_policy=(
+                PositionRebalancePolicy.from_dict(config.position_rebalance_policy)
+                if config.position_rebalance_policy is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "initial_capital": self.initial_capital,
             "commission": self.commission,
             "commission_per_order": self.commission_per_order,
@@ -446,6 +471,9 @@ class OosEvaluationConfig:
                 else None
             ),
         }
+        if self.position_rebalance_policy is not None:
+            payload["position_rebalance_policy"] = self.position_rebalance_policy.to_dict()
+        return payload
 
     def canonical_json(self) -> str:
         from research.canonical import canonical_json
@@ -479,6 +507,7 @@ class OosEvaluationConfig:
             engine_version=payload.get("engine_version", ""),
             analytics_version=payload.get("analytics_version", ""),
             contribution_schedule=payload.get("contribution_schedule"),
+            position_rebalance_policy=payload.get("position_rebalance_policy"),
         )
 
 

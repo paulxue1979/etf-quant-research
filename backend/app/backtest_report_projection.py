@@ -117,6 +117,7 @@ class BacktestReportProjectionService:
             "contribution_report": contribution_report,
             "strategy_provenance": strategy_provenance,
             "allocations": self._allocations(run, strategy_provenance),
+            "rebalance_decisions": [item.to_dict() for item in result.rebalance_decisions],
             "holdings": holdings,
             "trades": {
                 "closed_trade_count": len(result.trades),

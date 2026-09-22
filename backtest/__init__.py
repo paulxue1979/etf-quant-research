@@ -9,6 +9,7 @@ from backtest.integration import (
     target_allocations_from_timeline,
 )
 from backtest.models import (
+    AllocationConstraint,
     AllocationPoint,
     BacktestConfig,
     BacktestResult,
@@ -25,9 +26,13 @@ from backtest.models import (
     Order,
     OrderSide,
     OrderStatus,
+    PositionRebalancePolicy,
     RebalanceCause,
+    RebalanceDecision,
+    RebalanceDecisionType,
     RebalanceFrequency,
     RebalancePolicy,
+    RebalanceSuppressionReason,
     TargetAllocation,
     TargetWeight,
     Trade,
@@ -35,6 +40,7 @@ from backtest.models import (
 
 __all__ = [
     "AllocationPoint",
+    "AllocationConstraint",
     "BacktestConfig",
     "BacktestEngine",
     "BacktestResult",
@@ -53,7 +59,11 @@ __all__ = [
     "OrderStatus",
     "RebalanceFrequency",
     "RebalanceCause",
+    "RebalanceDecision",
+    "RebalanceDecisionType",
     "RebalancePolicy",
+    "RebalanceSuppressionReason",
+    "PositionRebalancePolicy",
     "TargetAllocation",
     "TargetWeight",
     "Trade",

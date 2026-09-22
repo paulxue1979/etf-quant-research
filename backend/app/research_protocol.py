@@ -154,6 +154,7 @@ class ResearchEvaluationConfig:
     rebalance_policy: Mapping[str, Any]
     engine_version: str
     contribution_schedule: Mapping[str, Any] | None = None
+    position_rebalance_policy: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -206,6 +207,19 @@ class ResearchEvaluationConfig:
             "rebalance_policy",
             MappingProxyType({"frequency": frequency, "threshold": threshold}),
         )
+        position_policy = self.position_rebalance_policy
+        if position_policy is not None:
+            from backtest.models import PositionRebalancePolicy
+
+            try:
+                normalized_position_policy = PositionRebalancePolicy.from_dict(
+                    position_policy
+                ).to_dict()
+            except (TypeError, ValueError) as exc:
+                raise ResearchProtocolError("position_rebalance_policy is invalid") from exc
+            object.__setattr__(
+                self, "position_rebalance_policy", MappingProxyType(normalized_position_policy)
+            )
         object.__setattr__(
             self, "engine_version", _require_text(self.engine_version, "engine_version")
         )
@@ -218,7 +232,7 @@ class ResearchEvaluationConfig:
             object.__setattr__(self, "contribution_schedule", MappingProxyType(normalized_schedule))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "price_field_used": self.price_field_used,
             "initial_capital": self.initial_capital,
             "commission": dict(self.commission),
@@ -231,6 +245,9 @@ class ResearchEvaluationConfig:
                 dict(self.contribution_schedule) if self.contribution_schedule is not None else None
             ),
         }
+        if self.position_rebalance_policy is not None:
+            payload["position_rebalance_policy"] = dict(self.position_rebalance_policy)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: object) -> ResearchEvaluationConfig:
@@ -246,6 +263,7 @@ class ResearchEvaluationConfig:
             rebalance_policy=payload.get("rebalance_policy", {}),
             engine_version=str(payload.get("engine_version", "")),
             contribution_schedule=payload.get("contribution_schedule"),
+            position_rebalance_policy=payload.get("position_rebalance_policy"),
         )
 
     @classmethod

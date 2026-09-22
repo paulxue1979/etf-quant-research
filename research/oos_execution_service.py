@@ -11,7 +11,7 @@ from analytics.models import PerformanceAnalysisResult
 from analytics.performance import analyze_backtest
 from backend.app.strategy_execution_provenance import strategy_execution_provenance
 from backtest.integration import run_strategy_backtest
-from backtest.models import BacktestConfig, CommissionPolicy
+from backtest.models import BacktestConfig, CommissionPolicy, PositionRebalancePolicy
 from data.exceptions import (
     DataValidationError,
     TiingoNetworkError,
@@ -378,6 +378,9 @@ class OosExecutionService:
             rebalance_policy=config.rebalance_policy,
             fractional_shares=config.fractional_shares,
             contribution_schedule=config.contribution_schedule,
+            position_rebalance_policy=(
+                config.position_rebalance_policy or PositionRebalancePolicy()
+            ),
         )
 
     @staticmethod

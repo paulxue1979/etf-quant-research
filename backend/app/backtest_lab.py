@@ -70,6 +70,48 @@ class ContributionScheduleRequest(BaseModel):
         )
 
 
+class AllocationConstraintRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1)
+    minimum_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    maximum_weight: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def ordered_bounds(self) -> AllocationConstraintRequest:
+        if self.minimum_weight > self.maximum_weight:
+            raise ValueError("minimum_weight cannot exceed maximum_weight")
+        return self
+
+
+class PositionRebalancePolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    policy_version: str = Field(default="position-rebalance-policy-v1", min_length=1)
+    minimum_allocation_change: float | None = Field(default=None, ge=0.0)
+    drift_threshold: float | None = Field(default=None, ge=0.0)
+    maximum_turnover: float | None = Field(default=None, ge=0.0)
+    minimum_cash_reserve: float = Field(default=0.0, ge=0.0, le=1.0)
+    allocation_constraints: tuple[AllocationConstraintRequest, ...] = ()
+
+    def to_domain(self) -> Any:
+        from backtest.models import AllocationConstraint, PositionRebalancePolicy
+
+        return PositionRebalancePolicy(
+            policy_version=self.policy_version,
+            minimum_allocation_change=self.minimum_allocation_change,
+            drift_threshold=self.drift_threshold,
+            maximum_turnover=self.maximum_turnover,
+            minimum_cash_reserve=self.minimum_cash_reserve,
+            allocation_constraints=tuple(
+                AllocationConstraint(
+                    symbol=item.symbol,
+                    minimum_weight=item.minimum_weight,
+                    maximum_weight=item.maximum_weight,
+                )
+                for item in self.allocation_constraints
+            ),
+        )
+
+
 class BacktestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     strategy_id: str = Field(min_length=1)
@@ -83,6 +125,7 @@ class BacktestRequest(BaseModel):
     execution_rule: ExecutionRule = ExecutionRule.NEXT_TRADING_DAY_OPEN
     fractional_shares: bool = False
     contribution_schedule: ContributionScheduleRequest | None = None
+    position_rebalance_policy: PositionRebalancePolicyRequest | None = None
     benchmark_symbol: str | None = None
 
     @field_validator("initial_capital", "slippage")
@@ -119,7 +162,7 @@ class BacktestRequest(BaseModel):
         return value
 
     def to_config(self, version_id: str, rebalance_policy: Any) -> Any:
-        from backtest.models import BacktestConfig, CommissionPolicy
+        from backtest.models import BacktestConfig, CommissionPolicy, PositionRebalancePolicy
 
         return BacktestConfig(
             strategy_version_id=version_id,
@@ -139,6 +182,11 @@ class BacktestRequest(BaseModel):
                 self.contribution_schedule.to_domain()
                 if self.contribution_schedule is not None
                 else None
+            ),
+            position_rebalance_policy=(
+                self.position_rebalance_policy.to_domain()
+                if self.position_rebalance_policy is not None
+                else PositionRebalancePolicy()
             ),
         )
 

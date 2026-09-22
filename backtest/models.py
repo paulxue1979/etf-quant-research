@@ -47,6 +47,21 @@ class RebalanceCause(StrEnum):
     CONTRIBUTION = "contribution"
 
 
+class RebalanceDecisionType(StrEnum):
+    EXECUTE = "execute"
+    PARTIAL = "partial"
+    SUPPRESS = "suppress"
+
+
+class RebalanceSuppressionReason(StrEnum):
+    BELOW_MINIMUM_ALLOCATION_CHANGE = "below_minimum_allocation_change"
+    BELOW_DRIFT_THRESHOLD = "below_drift_threshold"
+    TURNOVER_LIMIT = "turnover_limit"
+    MINIMUM_CASH_RESERVE = "minimum_cash_reserve"
+    ALLOCATION_CONSTRAINT = "allocation_constraint"
+    NO_MATERIAL_CHANGE = "no_material_change"
+
+
 class HoldingStatus(StrEnum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
@@ -180,6 +195,191 @@ class RebalancePolicy:
     def __post_init__(self) -> None:
         if self.threshold is not None and (not math.isfinite(self.threshold) or self.threshold < 0):
             raise ValueError("rebalance threshold must be finite and non-negative")
+
+
+@dataclass(frozen=True)
+class AllocationConstraint:
+    """Immutable per-asset bounds for a canonical target allocation."""
+
+    symbol: str
+    minimum_weight: float = 0.0
+    maximum_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        symbol = self.symbol.strip().upper() if isinstance(self.symbol, str) else ""
+        if not symbol or symbol == "CASH":
+            raise ValueError("allocation constraint symbol must be a security")
+        for label, value in (
+            ("minimum_weight", self.minimum_weight),
+            ("maximum_weight", self.maximum_weight),
+        ):
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"{label} must be finite and in [0, 1]")
+        if self.minimum_weight > self.maximum_weight:
+            raise ValueError("minimum_weight cannot exceed maximum_weight")
+        object.__setattr__(self, "symbol", symbol)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "minimum_weight": self.minimum_weight,
+            "maximum_weight": self.maximum_weight,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> AllocationConstraint:
+        return cls(
+            symbol=str(payload.get("symbol", "")),
+            minimum_weight=float(payload.get("minimum_weight", 0.0)),
+            maximum_weight=float(payload.get("maximum_weight", 1.0)),
+        )
+
+
+@dataclass(frozen=True)
+class PositionRebalancePolicy:
+    """Versioned execution constraints applied after strategy intent.
+
+    A disabled (all-default) policy is deliberately legacy-compatible.  The
+    policy never changes TargetAllocation; it only controls whether its
+    execution is scheduled and records the resulting RebalanceDecision.
+    """
+
+    policy_version: str = "position-rebalance-policy-v1"
+    minimum_allocation_change: float | None = None
+    drift_threshold: float | None = None
+    maximum_turnover: float | None = None
+    minimum_cash_reserve: float = 0.0
+    allocation_constraints: tuple[AllocationConstraint, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy_version, str) or not self.policy_version.strip():
+            raise ValueError("policy_version must be non-empty")
+        for label in (
+            "minimum_allocation_change",
+            "drift_threshold",
+            "maximum_turnover",
+        ):
+            value = getattr(self, label)
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise ValueError(f"{label} must be finite and non-negative")
+        if not math.isfinite(self.minimum_cash_reserve) or not 0 <= self.minimum_cash_reserve <= 1:
+            raise ValueError("minimum_cash_reserve must be finite and in [0, 1]")
+        constraints = tuple(self.allocation_constraints)
+        if not all(isinstance(item, AllocationConstraint) for item in constraints):
+            raise TypeError("allocation_constraints must contain AllocationConstraint values")
+        if len({item.symbol for item in constraints}) != len(constraints):
+            raise ValueError("allocation_constraints cannot contain duplicate symbols")
+        object.__setattr__(self, "policy_version", self.policy_version.strip())
+        object.__setattr__(
+            self, "allocation_constraints", tuple(sorted(constraints, key=lambda item: item.symbol))
+        )
+
+    @property
+    def is_legacy_compatible(self) -> bool:
+        return (
+            self.minimum_allocation_change is None
+            and self.drift_threshold is None
+            and self.maximum_turnover is None
+            and self.minimum_cash_reserve == 0.0
+            and not self.allocation_constraints
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "policy_version": self.policy_version,
+            "minimum_allocation_change": self.minimum_allocation_change,
+            "drift_threshold": self.drift_threshold,
+            "maximum_turnover": self.maximum_turnover,
+            "minimum_cash_reserve": self.minimum_cash_reserve,
+            "allocation_constraints": [item.to_dict() for item in self.allocation_constraints],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any] | None) -> PositionRebalancePolicy:
+        if payload is None:
+            return cls()
+        constraints = payload.get("allocation_constraints", ())
+        return cls(
+            policy_version=str(payload.get("policy_version", "position-rebalance-policy-v1")),
+            minimum_allocation_change=payload.get("minimum_allocation_change"),
+            drift_threshold=payload.get("drift_threshold"),
+            maximum_turnover=payload.get("maximum_turnover"),
+            minimum_cash_reserve=float(payload.get("minimum_cash_reserve", 0.0)),
+            allocation_constraints=tuple(
+                AllocationConstraint.from_dict(item) for item in constraints
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class RebalanceDecision:
+    """Deterministic, immutable decision between intent and execution."""
+
+    evaluation_date: date
+    target_allocation: Mapping[str, float]
+    actual_allocation: Mapping[str, float]
+    previous_target_allocation: Mapping[str, float]
+    decision: RebalanceDecisionType
+    reasons: tuple[str, ...]
+    target_change_metric: float
+    drift_metric: float
+    turnover_estimate: float
+    minimum_cash_reserve: float
+    suppression_reason: RebalanceSuppressionReason | None = None
+    execution_date: date | None = None
+    contribution_amount: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evaluation_date, date):
+            raise TypeError("evaluation_date must be a date")
+        for label in ("target_change_metric", "drift_metric", "turnover_estimate"):
+            value = getattr(self, label)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{label} must be finite and non-negative")
+        if not math.isfinite(self.minimum_cash_reserve) or not 0 <= self.minimum_cash_reserve <= 1:
+            raise ValueError("minimum_cash_reserve must be in [0, 1]")
+        if self.contribution_amount < 0 or not math.isfinite(self.contribution_amount):
+            raise ValueError("contribution_amount must be finite and non-negative")
+        object.__setattr__(self, "decision", RebalanceDecisionType(self.decision))
+        if self.suppression_reason is not None:
+            object.__setattr__(
+                self, "suppression_reason", RebalanceSuppressionReason(self.suppression_reason)
+            )
+        object.__setattr__(
+            self,
+            "target_allocation",
+            MappingProxyType(dict(sorted(self.target_allocation.items()))),
+        )
+        object.__setattr__(
+            self,
+            "actual_allocation",
+            MappingProxyType(dict(sorted(self.actual_allocation.items()))),
+        )
+        object.__setattr__(
+            self,
+            "previous_target_allocation",
+            MappingProxyType(dict(sorted(self.previous_target_allocation.items()))),
+        )
+        object.__setattr__(self, "reasons", tuple(self.reasons))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evaluation_date": self.evaluation_date.isoformat(),
+            "execution_date": self.execution_date.isoformat() if self.execution_date else None,
+            "target_allocation": dict(self.target_allocation),
+            "actual_allocation": dict(self.actual_allocation),
+            "previous_target_allocation": dict(self.previous_target_allocation),
+            "decision": self.decision.value,
+            "reasons": list(self.reasons),
+            "target_change_metric": self.target_change_metric,
+            "drift_metric": self.drift_metric,
+            "turnover_estimate": self.turnover_estimate,
+            "minimum_cash_reserve": self.minimum_cash_reserve,
+            "suppression_reason": self.suppression_reason.value
+            if self.suppression_reason
+            else None,
+            "contribution_amount": self.contribution_amount,
+        }
 
 
 @dataclass(frozen=True)
@@ -458,6 +658,9 @@ class BacktestConfig:
     rebalance_policy: RebalancePolicy = field(default_factory=RebalancePolicy)
     fractional_shares: bool = False
     contribution_schedule: ContributionSchedule | None = None
+    position_rebalance_policy: PositionRebalancePolicy = field(
+        default_factory=PositionRebalancePolicy
+    )
 
     def __post_init__(self) -> None:
         if not self.strategy_version_id.strip():
@@ -474,6 +677,8 @@ class BacktestConfig:
             self.contribution_schedule, ContributionSchedule
         ):
             raise TypeError("contribution_schedule must be a ContributionSchedule or None")
+        if not isinstance(self.position_rebalance_policy, PositionRebalancePolicy):
+            raise TypeError("position_rebalance_policy must be a PositionRebalancePolicy")
 
     def snapshot(
         self,
@@ -507,6 +712,8 @@ class BacktestConfig:
             "data_snapshot_reference": dict(data_snapshot_reference),
             "engine_version": ENGINE_VERSION,
         }
+        if not self.position_rebalance_policy.is_legacy_compatible:
+            snapshot["position_rebalance_policy"] = self.position_rebalance_policy.to_dict()
         if effective_start_date is not None:
             snapshot["effective_start_date"] = effective_start_date.isoformat()
         if effective_end_date is not None:
@@ -543,6 +750,7 @@ class BacktestResult:
     total_capital_invested: float | None = None
     investment_profit: float | None = None
     holding_segments: tuple[HoldingSegment, ...] | None = None
+    rebalance_decisions: tuple[RebalanceDecision, ...] = ()
 
     def __post_init__(self) -> None:
         requested_start = self.requested_start_date or self.start_date
@@ -585,6 +793,10 @@ class BacktestResult:
         object.__setattr__(self, "contribution_events", contributions)
         object.__setattr__(self, "external_cash_flows", flows)
         object.__setattr__(self, "holding_segments", holdings)
+        decisions = tuple(self.rebalance_decisions)
+        if not all(isinstance(item, RebalanceDecision) for item in decisions):
+            raise TypeError("rebalance_decisions must contain RebalanceDecision values")
+        object.__setattr__(self, "rebalance_decisions", decisions)
         object.__setattr__(self, "cumulative_contributions", cumulative)
         object.__setattr__(self, "total_capital_invested", total_invested)
         object.__setattr__(self, "investment_profit", profit)

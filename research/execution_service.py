@@ -504,6 +504,13 @@ class ExperimentExecutionService:
                 if experiment.backtest_configuration.contribution_schedule is not None
                 else None
             ),
+            position_rebalance_policy=(
+                experiment.backtest_configuration.position_rebalance_policy.to_dict()
+                if not (
+                    experiment.backtest_configuration.position_rebalance_policy.is_legacy_compatible
+                )
+                else None
+            ),
         )
         if frozen.mismatch_fields(actual):
             raise _ExecutionFailure(
