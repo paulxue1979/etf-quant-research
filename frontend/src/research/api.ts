@@ -9,6 +9,13 @@ import type {
   SelectionDecision,
   SelectionRequest,
   OosResearchView,
+  OptimizationFilter,
+  OptimizationHeatmap,
+  OptimizationMetricRegistry,
+  OptimizationPareto,
+  OptimizationResults,
+  OptimizationSensitivity,
+  OptimizationStability,
 } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -123,5 +130,72 @@ export const researchApi = {
   },
   getOfficialOosResearchView(protocolId: string) {
     return requestJson<OosResearchView>(`/research/protocols/${encodeURIComponent(protocolId)}/oos`);
+  },
+  getOptimizationMetricRegistry() {
+    return requestJson<OptimizationMetricRegistry>("/research/optimization/metrics");
+  },
+  getOptimizationResults(
+    protocolId: string,
+    experimentId: string,
+    filter: OptimizationFilter = {},
+  ) {
+    return requestJson<OptimizationResults>(path(protocolId, experimentId, "optimization/results"), {
+      method: "POST",
+      body: JSON.stringify({ filter }),
+    });
+  },
+  getOptimizationHeatmap(
+    protocolId: string,
+    experimentId: string,
+    request: {
+      x_parameter: string;
+      y_parameter: string;
+      metric_id: string;
+      fixed_parameter_values: Record<string, unknown>;
+      filter: OptimizationFilter;
+    },
+  ) {
+    return requestJson<OptimizationHeatmap>(path(protocolId, experimentId, "optimization/heatmap"), {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  getOptimizationPareto(
+    protocolId: string,
+    experimentId: string,
+    objectiveIds: string[],
+    filter: OptimizationFilter,
+  ) {
+    return requestJson<OptimizationPareto>(path(protocolId, experimentId, "optimization/pareto"), {
+      method: "POST",
+      body: JSON.stringify({ objective_ids: objectiveIds, filter }),
+    });
+  },
+  getOptimizationStability(
+    protocolId: string,
+    experimentId: string,
+    centerCandidateId: string,
+    metricId: string,
+    filter: OptimizationFilter,
+  ) {
+    return requestJson<OptimizationStability>(path(protocolId, experimentId, "optimization/stability"), {
+      method: "POST",
+      body: JSON.stringify({ center_candidate_id: centerCandidateId, metric_id: metricId, filter }),
+    });
+  },
+  getOptimizationSensitivity(
+    protocolId: string,
+    experimentId: string,
+    request: {
+      parameter: string;
+      metric_ids: string[];
+      fixed_parameter_values: Record<string, unknown>;
+      filter: OptimizationFilter;
+    },
+  ) {
+    return requestJson<OptimizationSensitivity>(path(protocolId, experimentId, "optimization/sensitivity"), {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
   },
 };

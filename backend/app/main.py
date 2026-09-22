@@ -7,6 +7,7 @@ from backend.app.backtest_lab import router as backtest_lab_router
 from backend.app.backtest_report_api import router as backtest_report_router
 from backend.app.grid_search_api import router as grid_search_router
 from backend.app.oos_research_api import router as oos_research_router
+from backend.app.optimization_research_api import router as optimization_research_router
 from backend.app.research_execution_api import router as research_execution_router
 from backend.app.research_experiment_api import router as research_experiment_router
 from backend.app.research_protocol_api import router as research_protocol_router
@@ -33,6 +34,7 @@ app.include_router(research_execution_router)
 app.include_router(grid_search_router)
 app.include_router(research_experiment_router)
 app.include_router(oos_research_router)
+app.include_router(optimization_research_router)
 
 
 @app.get("/health", tags=["system"])

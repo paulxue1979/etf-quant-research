@@ -158,6 +158,177 @@ export interface HandoffResponse {
   provenance?: Record<string, unknown>;
 }
 
+export type OptimizationMetricStatus = "available" | "unavailable" | "not_applicable" | "failed" | "excluded";
+
+export interface OptimizationMetricDefinition {
+  metric_id: string;
+  display_name: string;
+  source_path: string[];
+  direction: "maximize" | "minimize";
+  format: "percent" | "ratio" | "integer" | "currency" | "days";
+  category: string;
+  nullable: boolean;
+  heatmap_eligible: boolean;
+  pareto_eligible: boolean;
+}
+
+export interface OptimizationMetricRegistry {
+  schema_version: string;
+  metrics: OptimizationMetricDefinition[];
+  max_drawdown_semantics: string;
+  turnover_semantics: string;
+}
+
+export interface OptimizationProjectedMetric {
+  metric_id: string;
+  value: number | null;
+  status: OptimizationMetricStatus;
+  reason: string | null;
+}
+
+export interface OptimizationCandidate {
+  experiment_id: string;
+  candidate_id: string;
+  candidate_index: number;
+  parameter_set_hash: string;
+  candidate_set_hash: string;
+  parameter_values: Record<string, unknown>;
+  execution_status: string;
+  result_status: string;
+  experiment_result_id: string | null;
+  result_hash: string | null;
+  derived_strategy_version_id: string | null;
+  derived_strategy_version_hash: string | null;
+  backtest_configuration_hash: string | null;
+  backtest_run_id: string | null;
+  is_start: string | null;
+  is_end: string | null;
+  engine_version: string | null;
+  analysis_version: string | null;
+  failure_code: string | null;
+  failure_summary: string | null;
+  metrics: Record<string, OptimizationProjectedMetric>;
+}
+
+export interface OptimizationFilter {
+  statuses?: string[];
+  candidate_ids?: string[];
+  minimum_trade_count?: number;
+  maximum_turnover?: number;
+  maximum_drawdown_magnitude?: number;
+  minimum_cagr?: number;
+  minimum_sharpe?: number;
+  minimum_exposure?: number;
+  maximum_exposure?: number;
+  parameters?: Record<string, { exact?: unknown; minimum?: number; maximum?: number }>;
+}
+
+export interface OptimizationResults {
+  schema_version: string;
+  experiment_id: string;
+  protocol_id: string;
+  is_start: string;
+  is_end: string;
+  is_only: boolean;
+  parameter_space: {
+    parameters: Array<{
+      name: string;
+      type: string;
+      min: number | null;
+      max: number | null;
+      step: number | null;
+      precision: number | null;
+      allowed_values: unknown[];
+    }>;
+  };
+  source_count: number;
+  filtered_count: number;
+  applied_filter: OptimizationFilter;
+  candidates: OptimizationCandidate[];
+  exclusions: Record<string, string[]>;
+}
+
+export interface OptimizationHeatmap {
+  schema_version: string;
+  experiment_id: string;
+  metric: OptimizationMetricDefinition;
+  x_parameter: string;
+  y_parameter: string;
+  x_values: unknown[];
+  y_values: unknown[];
+  fixed_parameter_values: Record<string, unknown>;
+  applied_filter: OptimizationFilter;
+  source_count: number;
+  filtered_count: number;
+  aggregation: null;
+  interpolation: false;
+  cells: Array<{
+    x_value: unknown;
+    y_value: unknown;
+    candidate_id: string | null;
+    candidate_index: number | null;
+    parameter_set_hash: string | null;
+    metric: OptimizationProjectedMetric;
+    cell_status: OptimizationMetricStatus | "pruned";
+    supporting_metrics: Record<string, OptimizationProjectedMetric>;
+  }>;
+}
+
+export interface OptimizationPareto {
+  schema_version: string;
+  objectives: OptimizationMetricDefinition[];
+  source_count: number;
+  filtered_count: number;
+  eligible_count: number;
+  excluded_count: number;
+  frontier: OptimizationAnalysisPoint[];
+  dominated: OptimizationAnalysisPoint[];
+  exclusions: Record<string, string[]>;
+  applied_filter: OptimizationFilter;
+}
+
+export interface OptimizationAnalysisPoint {
+  candidate_id: string;
+  candidate_index: number;
+  parameter_values: Record<string, unknown>;
+  metrics: Record<string, OptimizationProjectedMetric>;
+}
+
+export interface OptimizationStability {
+  schema_version: string;
+  center_candidate_id: string;
+  metric: OptimizationMetricDefinition;
+  center_metric: OptimizationProjectedMetric;
+  topology: string;
+  topology_uses_filtered_universe: false;
+  statistics: Record<string, number | null>;
+  neighbors: Array<{
+    changed_parameter: string;
+    from_value: unknown;
+    to_value: unknown;
+    candidate_id: string | null;
+    candidate_index: number | null;
+    status: string;
+    metric: OptimizationProjectedMetric;
+  }>;
+}
+
+export interface OptimizationSensitivity {
+  schema_version: string;
+  parameter: string;
+  parameter_values: unknown[];
+  metrics: OptimizationMetricDefinition[];
+  fixed_parameter_values: Record<string, unknown>;
+  interpolation: false;
+  points: Array<{
+    parameter_value: unknown;
+    candidate_id: string | null;
+    candidate_index: number | null;
+    status: string;
+    metrics: Record<string, OptimizationProjectedMetric>;
+  }>;
+}
+
 export interface GridSearchTemplate {
   definition: Record<string, unknown>;
   parameter_space: Record<string, unknown>;
