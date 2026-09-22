@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from research.canonical import canonical_json
 from research.exceptions import (
@@ -13,6 +15,35 @@ from research.exceptions import (
     ExperimentResultPersistenceError,
 )
 from research.experiment_result import ExperimentResult
+
+
+@dataclass(frozen=True)
+class ExperimentResultSummary:
+    """Lightweight experiment result row; ``result_json`` is never selected."""
+
+    experiment_result_id: str | None
+    experiment_id: str
+    candidate_id: str | None
+    candidate_index: int
+    parameter_set_hash: str
+    result_status: str
+    derived_strategy_version_id: str | None
+    derived_strategy_version_hash: str | None
+    backtest_run_id: str | None
+    is_start: str | None
+    is_end: str | None
+    price_field_used: str | None
+    engine_version: str | None
+    analysis_version: str | None
+    performance_summary: dict[str, Any]
+    result_hash: str | None
+    created_at: str | None
+    completed_at: str | None = None
+    failure_code: str | None = None
+    failure_summary: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.__dict__)
 
 
 class ExperimentResultRepository:
@@ -149,9 +180,7 @@ class ExperimentResultRepository:
             ) from exc
         except sqlite3.Error as exc:
             self._rollback(connection)
-            raise ExperimentResultPersistenceError(
-                "could not persist experiment result"
-            ) from exc
+            raise ExperimentResultPersistenceError("could not persist experiment result") from exc
         finally:
             connection.close()
 
@@ -279,15 +308,110 @@ class ExperimentResultRepository:
         finally:
             connection.close()
 
+    def list_summaries(
+        self, experiment_id: str, *, limit: int = 100, offset: int = 0
+    ) -> tuple[int, tuple[ExperimentResultSummary, ...]]:
+        """Return an experiment-scoped page without selecting result_json."""
+        if not experiment_id or not 1 <= limit <= 500 or offset < 0:
+            raise ExperimentResultPersistenceError("invalid experiment result summary page")
+        connection = self._connect()
+        try:
+            candidate_table_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+                    "AND name IN ('experiment_candidates', 'candidate_executions')"
+                ).fetchone()[0]
+            )
+            if candidate_table_count == 2:
+                return self._list_candidate_summaries(
+                    connection, experiment_id, limit=limit, offset=offset
+                )
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM research_experiment_results WHERE experiment_id = ?",
+                    (experiment_id,),
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                """
+                SELECT experiment_result_id, experiment_id, candidate_id, candidate_index,
+                       parameter_set_hash, derived_strategy_version_id,
+                       derived_strategy_version_hash, backtest_run_id, is_start, is_end,
+                       price_field_used, engine_version, analysis_version,
+                       performance_summary_json, result_hash, created_at
+                FROM research_experiment_results
+                WHERE experiment_id = ?
+                ORDER BY candidate_index ASC, experiment_result_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (experiment_id, limit, offset),
+            ).fetchall()
+            summaries = tuple(self._decode_summary(row) for row in rows)
+            return total, summaries
+        except ExperimentResultPersistenceError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
+            raise ExperimentResultPersistenceError(
+                "stored experiment result summaries failed integrity checks"
+            ) from exc
+        finally:
+            connection.close()
+
+    @classmethod
+    def _list_candidate_summaries(
+        cls,
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[int, tuple[ExperimentResultSummary, ...]]:
+        total = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM experiment_candidates WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()[0]
+        )
+        rows = connection.execute(
+            """
+            SELECT r.experiment_result_id, c.experiment_id,
+                   COALESCE(r.candidate_id, e.candidate_id) AS candidate_id,
+                   c.candidate_index, c.parameter_set_hash,
+                   CASE
+                       WHEN r.experiment_result_id IS NOT NULL THEN 'completed'
+                       WHEN e.status IS NOT NULL THEN e.status
+                       ELSE 'pending'
+                   END AS result_status,
+                   COALESCE(r.derived_strategy_version_id, e.derived_strategy_version_id)
+                       AS derived_strategy_version_id,
+                   COALESCE(r.derived_strategy_version_hash, e.derived_strategy_version_hash)
+                       AS derived_strategy_version_hash,
+                   r.backtest_run_id, r.is_start, r.is_end, r.price_field_used,
+                   r.engine_version, r.analysis_version, r.performance_summary_json,
+                   r.result_hash, COALESCE(r.created_at, e.created_at) AS created_at,
+                   e.completed_at, e.failure_code, e.failure_message AS failure_summary
+            FROM experiment_candidates c
+            LEFT JOIN candidate_executions e
+              ON e.experiment_id = c.experiment_id
+             AND e.candidate_index = c.candidate_index
+            LEFT JOIN research_experiment_results r
+              ON r.experiment_id = c.experiment_id
+             AND r.candidate_index = c.candidate_index
+            WHERE c.experiment_id = ?
+            ORDER BY c.candidate_index ASC
+            LIMIT ? OFFSET ?
+            """,
+            (experiment_id, limit, offset),
+        ).fetchall()
+        return total, tuple(cls._decode_summary(row) for row in rows)
+
     def clear(self) -> None:
         """Remove results; intended for isolated tests only."""
         connection = self._connect()
         try:
             connection.execute("DELETE FROM research_experiment_results")
         except sqlite3.Error as exc:
-            raise ExperimentResultPersistenceError(
-                "could not clear experiment results"
-            ) from exc
+            raise ExperimentResultPersistenceError("could not clear experiment results") from exc
         finally:
             connection.close()
 
@@ -349,12 +473,10 @@ class ExperimentResultRepository:
                     row["backtest_run_id"] != result.backtest_run_id,
                     row["is_start"] != result.is_start.isoformat(),
                     row["is_end"] != result.is_end.isoformat(),
-                    row["warmup_start"] != (
-                        result.warmup_start.isoformat() if result.warmup_start else None
-                    ),
-                    row["warmup_end"] != (
-                        result.warmup_end.isoformat() if result.warmup_end else None
-                    ),
+                    row["warmup_start"]
+                    != (result.warmup_start.isoformat() if result.warmup_start else None),
+                    row["warmup_end"]
+                    != (result.warmup_end.isoformat() if result.warmup_end else None),
                     row["price_field_used"] != result.price_field_used.value,
                     row["backtest_configuration_hash"] != result.backtest_configuration_hash,
                     row["engine_version"] != result.engine_version,
@@ -377,6 +499,48 @@ class ExperimentResultRepository:
             raise ExperimentResultPersistenceError(
                 "stored experiment result failed integrity checks"
             ) from exc
+
+    @classmethod
+    def _decode_summary(cls, row: sqlite3.Row) -> ExperimentResultSummary:
+        raw_summary = row["performance_summary_json"]
+        performance_summary = (
+            json.loads(raw_summary, parse_constant=_reject_nonfinite)
+            if raw_summary is not None
+            else {}
+        )
+        if not isinstance(performance_summary, dict):
+            raise ExperimentResultPersistenceError("stored experiment result summary is invalid")
+        cls._assert_safe(performance_summary)
+        return ExperimentResultSummary(
+            experiment_result_id=_optional_text(row["experiment_result_id"]),
+            experiment_id=str(row["experiment_id"]),
+            candidate_id=_optional_text(row["candidate_id"]),
+            candidate_index=int(row["candidate_index"]),
+            parameter_set_hash=str(row["parameter_set_hash"]),
+            result_status=str(row["result_status"])
+            if "result_status" in row.keys()
+            else "completed",
+            derived_strategy_version_id=_optional_text(row["derived_strategy_version_id"]),
+            derived_strategy_version_hash=_optional_text(row["derived_strategy_version_hash"]),
+            backtest_run_id=_optional_text(row["backtest_run_id"]),
+            is_start=_optional_text(row["is_start"]),
+            is_end=_optional_text(row["is_end"]),
+            price_field_used=_optional_text(row["price_field_used"]),
+            engine_version=_optional_text(row["engine_version"]),
+            analysis_version=_optional_text(row["analysis_version"]),
+            performance_summary=performance_summary,
+            result_hash=_optional_text(row["result_hash"]),
+            created_at=_optional_text(row["created_at"]),
+            completed_at=(
+                _optional_text(row["completed_at"]) if "completed_at" in row.keys() else None
+            ),
+            failure_code=(
+                _optional_text(row["failure_code"]) if "failure_code" in row.keys() else None
+            ),
+            failure_summary=(
+                _optional_text(row["failure_summary"]) if "failure_summary" in row.keys() else None
+            ),
+        )
 
     @classmethod
     def _safe_json(cls, payload: object) -> str:
@@ -403,9 +567,7 @@ class ExperimentResultRepository:
         elif isinstance(payload, str) and re.search(
             r"(?:TIINGO_API_KEY|API_KEY|BEGIN\s+PRIVATE\s+KEY)", payload, re.IGNORECASE
         ):
-            raise ExperimentResultPersistenceError(
-                "sensitive result values are not allowed"
-            )
+            raise ExperimentResultPersistenceError("sensitive result values are not allowed")
 
     @staticmethod
     def _rollback(connection: sqlite3.Connection) -> None:
@@ -415,8 +577,12 @@ class ExperimentResultRepository:
             pass
 
 
+def _optional_text(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
 def _reject_nonfinite(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value}")
 
 
-__all__ = ["ExperimentResultRepository"]
+__all__ = ["ExperimentResultRepository", "ExperimentResultSummary"]

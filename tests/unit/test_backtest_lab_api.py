@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 
 from analytics.models import MetricValue
 from backend.app import backtest_lab
-from backend.app.backtest_repository import BacktestPersistenceError, BacktestRunRecord
+from backend.app.backtest_models import BacktestRunMetadata
+from backend.app.backtest_repository import (
+    BacktestMetadataPage,
+    BacktestPersistenceError,
+    BacktestRunRecord,
+)
 from backend.app.backtest_service import BacktestServiceError
 from backend.app.main import app
 from tests.unit.test_backtest_repository import _run
@@ -37,6 +42,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
             get=lambda run_id: None,
             list=lambda strategy_id: (),
             list_records=lambda strategy_id=None: (),
+            list_metadata=lambda strategy_id=None, **kwargs: BacktestMetadataPage(
+                items=(),
+                total=0,
+                limit=kwargs.get("limit", 50),
+                offset=kwargs.get("offset", 0),
+                sort_by=kwargs.get("sort_by", "created_at"),
+                order=kwargs.get("order", "desc"),
+            ),
             get_records=lambda run_ids: (),
         ),
     )
@@ -152,10 +165,10 @@ def test_get_backtest_returns_404_for_unknown_run(
 def test_list_backtests_returns_safe_persistence_error(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail(strategy_id: str) -> tuple[object, ...]:
+    def fail(strategy_id: str, **kwargs: object) -> tuple[object, ...]:
         raise BacktestPersistenceError("database path leaked")
 
-    monkeypatch.setattr(backtest_lab.backtest_repository, "list", fail)
+    monkeypatch.setattr(backtest_lab.backtest_repository, "list_metadata", fail)
 
     response = client.get("/strategies/repo/backtests")
 
@@ -197,10 +210,18 @@ def test_research_history_returns_saved_runs_without_running_backtests(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record = _record(cagr_not_evaluable=True)
+    metadata = BacktestRunMetadata.from_run(record.run)
     monkeypatch.setattr(
         backtest_lab.backtest_repository,
-        "list_records",
-        lambda strategy_id=None: (record,),
+        "list_metadata",
+        lambda strategy_id=None, **kwargs: BacktestMetadataPage(
+            items=(metadata,),
+            total=1,
+            limit=kwargs.get("limit", 50),
+            offset=kwargs.get("offset", 0),
+            sort_by=kwargs.get("sort_by", "created_at"),
+            order=kwargs.get("order", "desc"),
+        ),
     )
     monkeypatch.setattr(
         backtest_lab,

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import research_experiment_api as api
+from backend.app.experiment_result_repository import ExperimentResultSummary
 from backend.app.experiment_results_read_service import ExperimentResultsReadModelError
 from backend.app.main import app
 from research.experiment_selection import ExperimentSelectionMethod
@@ -78,6 +79,45 @@ def test_routes_are_registered_under_research_namespace(client: TestClient) -> N
     assert response.status_code == 200
     assert response.json()["candidate_set"] == {"candidate_set_hash": "d" * 64}
     assert response.json()["provenance"]["candidate_order"] == "candidate_index_ascending"
+
+
+def test_result_summary_route_is_paginated_without_full_result_loading(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = ExperimentResultSummary(
+        experiment_result_id="result-1",
+        experiment_id="experiment-1",
+        candidate_id="candidate-0",
+        candidate_index=0,
+        parameter_set_hash="a" * 64,
+        result_status="completed",
+        derived_strategy_version_id="derived-v1",
+        derived_strategy_version_hash="b" * 64,
+        backtest_run_id="backtest-1",
+        is_start="2026-01-01",
+        is_end="2026-01-31",
+        price_field_used="adjusted_close",
+        engine_version="phase-3",
+        analysis_version="phase-4i.0",
+        performance_summary={"cagr": {"value": 0.1, "status": "available", "reason": None}},
+        result_hash="c" * 64,
+        created_at="2026-02-01T00:00:00+00:00",
+    )
+    monkeypatch.setattr(
+        api.experiment_result_repository,
+        "list_summaries",
+        lambda experiment_id, *, limit, offset: (1, (summary,)),
+    )
+
+    response = client.get(
+        "/research/protocols/protocol-1/experiments/experiment-1/result-summaries?limit=1"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["candidate_index"] == 0
+    assert payload["provenance"]["analytics_recomputed"] is False
 
 
 def test_experiment_not_found_is_structured(

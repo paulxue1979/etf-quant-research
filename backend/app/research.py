@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from analytics.models import MetricValue
+from backend.app.backtest_models import BacktestRunMetadata
 from backend.app.backtest_repository import BacktestRunRecord
 from backtest.models import canonical_decimal
 
@@ -81,6 +82,34 @@ def summary_payload(record: BacktestRunRecord) -> dict[str, Any]:
         "data_snapshot_reference": dict(result.data_snapshot_reference),
         "provenance": dict(run.provenance),
         "metrics": metric_payload(record),
+    }
+
+
+def metadata_summary_payload(metadata: BacktestRunMetadata) -> dict[str, Any]:
+    """Build the history contract from metadata without loading run_json."""
+    return {
+        "backtest_run_id": metadata.backtest_run_id,
+        "strategy_id": metadata.strategy_id,
+        "strategy_version_id": metadata.strategy_version_id,
+        "strategy_version_content_hash": metadata.strategy_version_content_hash,
+        "created_at": metadata.created_at,
+        "start_date": metadata.start_date,
+        "end_date": metadata.end_date,
+        "initial_capital": metadata.initial_capital,
+        "final_equity": metadata.final_equity,
+        "price_field_used": metadata.price_field_used,
+        "engine_version": metadata.engine_version,
+        "analysis_version": metadata.analysis_version,
+        "configuration_snapshot": dict(metadata.configuration_snapshot),
+        "data_snapshot_reference": dict(metadata.data_snapshot_reference),
+        "provenance": dict(metadata.provenance),
+        "metrics": {name: dict(value) for name, value in metadata.metrics.items()},
+        "metadata_projection_version": metadata.projection_version,
+        "metadata_projection_status": metadata.projection_status,
+        "result_available": metadata.projection_status != "missing",
+        "experiment_id": metadata.experiment_id,
+        "candidate_id": metadata.candidate_id,
+        "candidate_index": metadata.candidate_index,
     }
 
 

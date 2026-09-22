@@ -42,6 +42,8 @@ const EMPTY_FORM = {
   contributionDate: "",
 };
 
+const RESEARCH_PAGE_SIZE = 50;
+
 function number(value: string, fallback = 0): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -125,8 +127,13 @@ function ResearchHistory({
   sortBy,
   order,
   loading,
+  total,
+  limit,
+  offset,
   onSortBy,
   onOrder,
+  onPrevious,
+  onNext,
   onToggle,
   onCompare,
 }: {
@@ -135,8 +142,13 @@ function ResearchHistory({
   sortBy: ResearchSortBy;
   order: "asc" | "desc";
   loading: boolean;
+  total: number;
+  limit: number;
+  offset: number;
   onSortBy: (value: ResearchSortBy) => void;
   onOrder: (value: "asc" | "desc") => void;
+  onPrevious: () => void;
+  onNext: () => void;
   onToggle: (runId: string) => void;
   onCompare: () => void;
 }) {
@@ -153,6 +165,11 @@ function ResearchHistory({
         const selected = selectedRunIds.includes(item.backtest_run_id);
         return <tr key={item.backtest_run_id}><td><input aria-label={`Select research run ${item.backtest_run_id}`} type="checkbox" checked={selected} disabled={!selected && selectedRunIds.length >= 10} onChange={() => onToggle(item.backtest_run_id)} /></td><td>{item.strategy_id}</td><td>{item.strategy_version_id}</td><td className="research-hash" title={item.strategy_version_content_hash}>{item.strategy_version_content_hash}</td><td>{item.backtest_run_id}</td><td>{item.start_date} to {item.end_date}</td><td>{item.initial_capital.toLocaleString(undefined, { style: "currency", currency: "USD" })}</td><td>{item.price_field_used.toUpperCase()}</td><td>{item.engine_version}</td><td>{item.analysis_version}</td></tr>;
       })}</tbody></table></div>}
+      <div className="research-controls" aria-label="Research history pagination">
+        <button className="button button-secondary" type="button" onClick={onPrevious} disabled={loading || offset === 0}>Previous</button>
+        <span className="muted">{total === 0 ? "0 runs" : `${offset + 1}-${Math.min(offset + runs.length, total)} of ${total}`}</span>
+        <button className="button button-secondary" type="button" onClick={onNext} disabled={loading || offset + limit >= total}>Next</button>
+      </div>
     </section>
   );
 }
@@ -241,6 +258,8 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportSeriesError, setReportSeriesError] = useState<string | null>(null);
   const [researchRuns, setResearchRuns] = useState<ResearchBacktestSummary[]>([]);
+  const [researchTotal, setResearchTotal] = useState(0);
+  const [researchOffset, setResearchOffset] = useState(0);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [researchSortBy, setResearchSortBy] = useState<ResearchSortBy>("created_at");
   const [researchOrder, setResearchOrder] = useState<"asc" | "desc">("desc");
@@ -254,9 +273,12 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     setResearchBusy(true);
     setResearchError(null);
     try {
-      const response = await backtestApi.listResearchRuns(researchSortBy, researchOrder);
+      const response = await backtestApi.listResearchRuns(researchSortBy, researchOrder, {
+        limit: RESEARCH_PAGE_SIZE,
+        offset: researchOffset,
+      });
       setResearchRuns(response.items);
-      setSelectedRunIds((current) => current.filter((runId) => response.items.some((item) => item.backtest_run_id === runId)));
+      setResearchTotal(response.total);
     } catch (reason) {
       setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to load saved research runs.");
     } finally {
@@ -277,7 +299,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
 
   useEffect(() => {
     void loadResearchRuns();
-  }, [researchSortBy, researchOrder]);
+  }, [researchSortBy, researchOrder, researchOffset]);
 
   useEffect(() => {
     if (!strategyId) {
@@ -360,7 +382,8 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
       if (seriesResult.status === "fulfilled") setReportSeries(seriesResult.value);
       else setReportSeriesError(seriesResult.reason instanceof BacktestApiError ? seriesResult.reason.message : "Unable to load versioned report series.");
       setReportLoading(false);
-      void loadResearchRuns();
+      if (researchOffset === 0) void loadResearchRuns();
+      else setResearchOffset(0);
     } catch (reason) {
       setError(reason instanceof BacktestApiError ? reason.message : "Backtest request failed.");
     } finally {
@@ -456,8 +479,19 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
           sortBy={researchSortBy}
           order={researchOrder}
           loading={researchBusy}
-          onSortBy={setResearchSortBy}
-          onOrder={setResearchOrder}
+          total={researchTotal}
+          limit={RESEARCH_PAGE_SIZE}
+          offset={researchOffset}
+          onSortBy={(value) => {
+            setResearchOffset(0);
+            setResearchSortBy(value);
+          }}
+          onOrder={(value) => {
+            setResearchOffset(0);
+            setResearchOrder(value);
+          }}
+          onPrevious={() => setResearchOffset((current) => Math.max(0, current - RESEARCH_PAGE_SIZE))}
+          onNext={() => setResearchOffset((current) => current + RESEARCH_PAGE_SIZE)}
           onToggle={toggleResearchRun}
           onCompare={() => void compareSelectedRuns()}
         />

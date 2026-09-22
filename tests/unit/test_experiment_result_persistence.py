@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -63,6 +65,12 @@ def test_finalize_result_atomically_persists_result_and_completed_state(tmp_path
     assert terminal.payload["result_id"] == result.experiment_result_id
     execution = executions.get_execution(outcome.candidate_execution_id or "")
     assert execution is not None and execution.status is CandidateExecutionStatus.COMPLETED
+    total, summaries = reopened_results.list_summaries(outcome.experiment_id, limit=10)
+    assert total == 2
+    completed = next(item for item in summaries if item.result_status == "completed")
+    assert completed.experiment_result_id == result.experiment_result_id
+    assert completed.backtest_run_id == result.backtest_run_id
+    assert "cagr" in completed.performance_summary
 
 
 def test_finalize_result_retry_is_idempotent_after_restart(tmp_path) -> None:
@@ -142,10 +150,13 @@ def test_concurrent_identical_finalization_has_one_result_and_one_terminal_event
 
     assert results[0] == results[1]
     assert len(ExperimentResultRepository(database).list()) == 1
-    assert sum(
-        event.to_status is ExperimentStatus.COMPLETED
-        for event in ExperimentRepository(database).list_events(outcome.experiment_id)
-    ) == 1
+    assert (
+        sum(
+            event.to_status is ExperimentStatus.COMPLETED
+            for event in ExperimentRepository(database).list_events(outcome.experiment_id)
+        )
+        == 1
+    )
 
 
 def test_direct_completed_transition_is_blocked_without_result(tmp_path) -> None:
@@ -161,6 +172,127 @@ def test_direct_completed_transition_is_blocked_without_result(tmp_path) -> None
         )
 
     assert error.value.code == "EXPERIMENT_RESULT_REQUIRED"
+
+
+def test_experiment_summaries_are_scoped_paged_and_ignore_full_result_json(tmp_path) -> None:
+    db_path = tmp_path / "research.db"
+    repository = ExperimentResultRepository(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE experiment_candidates (
+                experiment_id TEXT NOT NULL,
+                candidate_index INTEGER NOT NULL,
+                parameter_set_hash TEXT NOT NULL,
+                PRIMARY KEY(experiment_id, candidate_index)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE candidate_executions (
+                experiment_id TEXT NOT NULL,
+                candidate_index INTEGER NOT NULL,
+                candidate_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                derived_strategy_version_id TEXT,
+                derived_strategy_version_hash TEXT,
+                created_at TEXT,
+                completed_at TEXT,
+                failure_code TEXT,
+                failure_message TEXT
+            )
+            """
+        )
+        for experiment_id, candidate_index in (
+            ("experiment-a", 1),
+            ("experiment-a", 0),
+            ("experiment-b", 0),
+        ):
+            suffix = f"{experiment_id}-{candidate_index}"
+            connection.execute(
+                """
+                INSERT INTO research_experiment_results(
+                    experiment_result_id, experiment_id, candidate_id, candidate_index,
+                    parameter_set_hash, parameter_space_hash, candidate_set_hash,
+                    base_strategy_version_id, base_strategy_version_hash,
+                    derived_strategy_version_id, derived_strategy_version_hash, binding_hash,
+                    backtest_run_id, is_start, is_end, warmup_start, warmup_end,
+                    price_field_used, backtest_configuration_hash, engine_version,
+                    analysis_version, data_snapshot_reference_json,
+                    performance_summary_json, result_hash, created_at, result_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    f"result-{suffix}",
+                    experiment_id,
+                    f"candidate-{candidate_index}",
+                    candidate_index,
+                    "a" * 64,
+                    "b" * 64,
+                    "c" * 64,
+                    "base-v1",
+                    "d" * 64,
+                    f"derived-{candidate_index}",
+                    "e" * 64,
+                    "f" * 64,
+                    f"backtest-{suffix}",
+                    "2026-01-01",
+                    "2026-01-31",
+                    None,
+                    None,
+                    "adjusted_close",
+                    "1" * 64,
+                    "phase-3",
+                    "phase-4i.0",
+                    "{}",
+                    json.dumps({"cagr": {"value": candidate_index / 10}}),
+                    "2" * 64,
+                    "2026-02-01T00:00:00+00:00",
+                    "not-json",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO experiment_candidates VALUES (?, ?, ?)",
+                (experiment_id, candidate_index, "a" * 64),
+            )
+        connection.execute(
+            "INSERT INTO experiment_candidates VALUES (?, ?, ?)",
+            ("experiment-a", 2, "3" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO candidate_executions(
+                experiment_id, candidate_index, candidate_id, status,
+                created_at, failure_code, failure_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "experiment-a",
+                2,
+                "candidate-2",
+                "failed",
+                "2026-02-01T00:00:00+00:00",
+                "NOT_EVALUABLE",
+                "canonical metric unavailable",
+            ),
+        )
+        connection.commit()
+
+    total, first_page = repository.list_summaries("experiment-a", limit=1, offset=0)
+    _, second_page = repository.list_summaries("experiment-a", limit=1, offset=1)
+    _, all_items = repository.list_summaries("experiment-a", limit=10, offset=0)
+
+    assert total == 3
+    assert first_page[0].candidate_index == 0
+    assert second_page[0].candidate_index == 1
+    assert all(item.experiment_id == "experiment-a" for item in all_items)
+    assert all_items[2].result_status == "failed"
+    assert all_items[2].failure_code == "NOT_EVALUABLE"
+    assert all_items[2].performance_summary == {}
 
 
 def test_conflicting_result_for_same_candidate_is_rejected(tmp_path) -> None:

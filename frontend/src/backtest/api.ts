@@ -126,8 +126,17 @@ export const backtestApi = {
     );
   },
 
-  listResearchRuns(sortBy: ResearchSortBy, order: "asc" | "desc"): Promise<ResearchBacktestList> {
-    const query = new URLSearchParams({ limit: "50", sort_by: sortBy, order });
+  listResearchRuns(
+    sortBy: ResearchSortBy,
+    order: "asc" | "desc",
+    page: { limit?: number; offset?: number } = {},
+  ): Promise<ResearchBacktestList> {
+    const query = new URLSearchParams({
+      limit: String(page.limit ?? 50),
+      offset: String(page.offset ?? 0),
+      sort_by: sortBy,
+      order,
+    });
     return requestJson<ResearchBacktestList>(`/research/backtests?${query.toString()}`);
   },
 

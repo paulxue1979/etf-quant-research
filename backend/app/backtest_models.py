@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -43,6 +44,31 @@ from data.models import PriceField
 from portfolio.models import PortfolioSnapshot, Position
 
 ANALYSIS_VERSION = "phase-4i.0"
+METADATA_PROJECTION_VERSION = "phase-11g.1"
+METADATA_METRIC_NAMES = (
+    "cagr",
+    "sharpe_ratio",
+    "sortino_ratio",
+    "max_drawdown",
+    "total_return",
+    "annualized_volatility",
+    "calmar_ratio",
+    "win_rate",
+    "profit_factor",
+    "average_trade_return",
+    "best_trade",
+    "worst_trade",
+    "average_holding_period",
+    "turnover",
+)
+_METADATA_SENSITIVE_KEY = re.compile(
+    r"(?:api[_-]?key|access[_-]?token|authorization|credential|password|secret)",
+    re.IGNORECASE,
+)
+_METADATA_SENSITIVE_VALUE = re.compile(
+    r"(?:TIINGO_API_KEY|API_KEY|BEGIN\s+PRIVATE\s+KEY|authorization\s*:)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -199,6 +225,108 @@ class BacktestRun:
         )
 
 
+@dataclass(frozen=True)
+class BacktestRunMetadata:
+    """Rebuildable, bounded read projection of an immutable backtest run."""
+
+    backtest_run_id: str
+    strategy_id: str
+    strategy_version_id: str
+    created_at: str
+    strategy_version_content_hash: str
+    start_date: str
+    end_date: str
+    price_field_used: str
+    engine_version: str
+    analysis_version: str
+    initial_capital: float
+    final_equity: float
+    configuration_snapshot: Mapping[str, Any]
+    data_snapshot_reference: Mapping[str, Any]
+    provenance: Mapping[str, Any]
+    metrics: Mapping[str, Mapping[str, Any]]
+    metric_values: Mapping[str, float | None]
+    experiment_id: str | None = None
+    candidate_id: str | None = None
+    candidate_index: int | None = None
+    projection_status: str = "available"
+    projection_version: str = METADATA_PROJECTION_VERSION
+
+    @classmethod
+    def from_run(cls, run: BacktestRun) -> BacktestRunMetadata:
+        analysis = run.performance_analysis
+        trade = analysis.trade_metrics
+        metric_objects = {
+            "total_return": analysis.total_return,
+            "cagr": analysis.cagr,
+            "annualized_volatility": analysis.annualized_volatility,
+            "sharpe_ratio": analysis.sharpe_ratio,
+            "sortino_ratio": analysis.sortino_ratio,
+            "max_drawdown": analysis.max_drawdown,
+            "calmar_ratio": analysis.calmar_ratio,
+            "win_rate": trade.win_rate,
+            "profit_factor": trade.profit_factor,
+            "average_trade_return": trade.average_trade_return,
+            "best_trade": trade.best_trade,
+            "worst_trade": trade.worst_trade,
+            "average_holding_period": trade.average_holding_period,
+            "turnover": trade.turnover,
+        }
+        provenance = dict(run.provenance)
+        configuration = dict(run.backtest_result.configuration_snapshot)
+        experiment_id = _optional_string(provenance.get("experiment_id")) or _optional_string(
+            configuration.get("experiment_id")
+        )
+        candidate_id = _optional_string(provenance.get("candidate_id")) or _optional_string(
+            configuration.get("candidate_id")
+        )
+        candidate_index = provenance.get("candidate_index", configuration.get("candidate_index"))
+        if candidate_index is not None:
+            if isinstance(candidate_index, bool) or not isinstance(candidate_index, int):
+                raise ValueError("candidate_index must be an integer when present")
+            if candidate_index < 0:
+                raise ValueError("candidate_index must be non-negative")
+        metrics = {name: metric_objects[name].to_dict() for name in METADATA_METRIC_NAMES}
+        return cls(
+            backtest_run_id=run.backtest_run_id,
+            strategy_id=run.strategy_id,
+            strategy_version_id=run.strategy_version_id,
+            created_at=run.created_at.isoformat(),
+            strategy_version_content_hash=run.strategy_version_content_hash,
+            start_date=run.backtest_result.start_date.isoformat(),
+            end_date=run.backtest_result.end_date.isoformat(),
+            price_field_used=analysis.price_field_used.value,
+            engine_version=run.backtest_result.engine_version,
+            analysis_version=ANALYSIS_VERSION,
+            initial_capital=run.backtest_result.initial_capital,
+            final_equity=run.backtest_result.final_equity,
+            configuration_snapshot=configuration,
+            data_snapshot_reference=dict(run.backtest_result.data_snapshot_reference),
+            provenance=provenance,
+            metrics=metrics,
+            metric_values={
+                name: metric_objects[name].value if metric_objects[name].is_evaluable else None
+                for name in METADATA_METRIC_NAMES
+            },
+            experiment_id=experiment_id,
+            candidate_id=candidate_id,
+            candidate_index=candidate_index,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = {
+            "configuration_snapshot": dict(self.configuration_snapshot),
+            "data_snapshot_reference": dict(self.data_snapshot_reference),
+            "provenance": dict(self.provenance),
+            "metrics": {name: dict(value) for name, value in self.metrics.items()},
+            "projection_status": self.projection_status,
+            "projection_version": self.projection_version,
+            "result_available": True,
+        }
+        _assert_metadata_safe(payload)
+        return payload
+
+
 def _freeze_json_value(value: Any) -> Any:
     """Freeze a strict JSON value so persisted report provenance is immutable."""
     if value is None or isinstance(value, (str, bool)):
@@ -218,6 +346,27 @@ def _freeze_json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_json_value(item) for item in value)
     raise TypeError("strategy_provenance must contain JSON-compatible values")
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("optional metadata identifiers must be non-empty strings")
+    return value.strip()
+
+
+def _assert_metadata_safe(value: object) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if _METADATA_SENSITIVE_KEY.search(str(key)):
+                raise ValueError("metadata projection contains a sensitive field")
+            _assert_metadata_safe(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _assert_metadata_safe(item)
+    elif isinstance(value, str) and _METADATA_SENSITIVE_VALUE.search(value):
+        raise ValueError("metadata projection contains a sensitive value")
 
 
 def _thaw_json_value(value: Any) -> Any:
@@ -761,6 +910,9 @@ def dumps(payload: Mapping[str, Any]) -> str:
 __all__ = [
     "ANALYSIS_VERSION",
     "BacktestRun",
+    "BacktestRunMetadata",
+    "METADATA_METRIC_NAMES",
+    "METADATA_PROJECTION_VERSION",
     "deserialize_backtest_result",
     "deserialize_performance_analysis",
     "dumps",

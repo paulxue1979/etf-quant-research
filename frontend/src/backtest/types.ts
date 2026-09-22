@@ -464,6 +464,12 @@ export interface ResearchBacktestSummary {
   data_snapshot_reference: Record<string, unknown>;
   provenance: Record<string, unknown>;
   metrics: ResearchMetrics;
+  metadata_projection_version?: string;
+  metadata_projection_status?: "available" | "missing";
+  result_available?: boolean;
+  experiment_id?: string | null;
+  candidate_id?: string | null;
+  candidate_index?: number | null;
 }
 
 export interface ResearchBacktestList {

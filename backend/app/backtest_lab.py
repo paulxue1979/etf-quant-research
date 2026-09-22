@@ -11,7 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from backend.app.backtest_models import BacktestRun
+from backend.app.backtest_models import BacktestRun, BacktestRunMetadata
 from backend.app.backtest_repository import BacktestPersistenceError, BacktestRepository
 from backend.app.backtest_service import (
     BacktestService,
@@ -21,8 +21,7 @@ from backend.app.backtest_service import (
 from backend.app.research import (
     ComparisonInclude,
     compare_records,
-    sorted_records,
-    summary_payload,
+    metadata_summary_payload,
 )
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
 from backtest.models import ContributionFrequency, ContributionSchedule, ExecutionRule
@@ -247,16 +246,16 @@ class ResearchComparisonRequest(BaseModel):
         return normalized
 
 
-def _run_summary(run: BacktestRun) -> BacktestRunSummary:
+def _run_summary(metadata: BacktestRunMetadata) -> BacktestRunSummary:
     return BacktestRunSummary(
-        backtest_run_id=run.backtest_run_id,
-        strategy_id=run.strategy_id,
-        strategy_version_id=run.strategy_version_id,
-        created_at=run.created_at,
-        start_date=run.backtest_result.start_date,
-        end_date=run.backtest_result.end_date,
-        final_equity=run.backtest_result.final_equity,
-        price_field_used=run.performance_analysis.price_field_used,
+        backtest_run_id=metadata.backtest_run_id,
+        strategy_id=metadata.strategy_id,
+        strategy_version_id=metadata.strategy_version_id,
+        created_at=datetime.fromisoformat(metadata.created_at),
+        start_date=date.fromisoformat(metadata.start_date),
+        end_date=date.fromisoformat(metadata.end_date),
+        final_equity=metadata.final_equity,
+        price_field_used=PriceField(metadata.price_field_used),
     )
 
 
@@ -341,7 +340,8 @@ def get_backtest(backtest_run_id: str) -> dict[str, Any]:
 @router.get("/strategies/{strategy_id}/backtests", response_model=list[BacktestRunSummary])
 def list_backtests(strategy_id: str) -> list[BacktestRunSummary]:
     try:
-        return [_run_summary(run) for run in backtest_repository.list(strategy_id)]
+        page = backtest_repository.list_metadata(strategy_id, limit=100, offset=0)
+        return [_run_summary(metadata) for metadata in page.items]
     except BacktestPersistenceError as exc:
         raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
 
@@ -372,16 +372,18 @@ def list_research_backtests(
 ) -> dict[str, Any]:
     """List persisted research runs only; this route never runs a backtest or fetches data."""
     try:
-        records = sorted_records(
-            backtest_repository.list_records(strategy_id),
+        page = backtest_repository.list_metadata(
+            strategy_id,
             sort_by=sort_by,
             order=order,
+            limit=limit,
+            offset=offset,
         )
     except BacktestPersistenceError as exc:
         raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
     return {
-        "items": [summary_payload(record) for record in records[offset : offset + limit]],
-        "total": len(records),
+        "items": [metadata_summary_payload(metadata) for metadata in page.items],
+        "total": page.total,
         "limit": limit,
         "offset": offset,
         "sort_by": sort_by,

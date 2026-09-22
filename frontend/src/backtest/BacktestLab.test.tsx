@@ -288,7 +288,7 @@ function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
   };
 }
 
-function mockBacktestApi(options: { seriesFails?: boolean } = {}) {
+function mockBacktestApi(options: { seriesFails?: boolean; paginatedHistory?: boolean } = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
@@ -311,7 +311,15 @@ function mockBacktestApi(options: { seriesFails?: boolean } = {}) {
       metric_availability: {},
       items: [],
     }), { status: 200 });
-    if (url.includes("/research/backtests")) return new Response(JSON.stringify(researchHistory()), { status: 200 });
+    if (url.includes("/research/backtests")) {
+      const history = researchHistory();
+      if (options.paginatedHistory) {
+        const offset = Number(new URL(url).searchParams.get("offset") ?? 0);
+        const items = offset === 50 ? [researchRun("backtest-research-z", "allocation-z")] : history.items;
+        return new Response(JSON.stringify({ ...history, items, total: 51, offset }), { status: 200 });
+      }
+      return new Response(JSON.stringify(history), { status: 200 });
+    }
     if (url.endsWith("/research/protocols") && (!init || !init.method)) return new Response(JSON.stringify([]), { status: 200 });
     if (url.endsWith("/research/protocols") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail()), { status: 201 });
     if (url.endsWith("/candidate-sets") && init?.method === "POST") return new Response(JSON.stringify(protocolDetail("draft", "open")), { status: 201 });
@@ -417,6 +425,22 @@ describe("Backtest Lab", () => {
     }
     expect(screen.getByRole("checkbox", { name: "Select research run backtest-research-k" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("Maximum 10 runs selected");
+  });
+
+  it("pages research history in the API while preserving selected run ids", async () => {
+    const fetchMock = mockBacktestApi({ paginatedHistory: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("1-11 of 51")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select research run backtest-research-a" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    await waitFor(() => expect(screen.getByText("backtest-research-z")).toBeInTheDocument());
+    expect(screen.getByText("1 / 10 selected")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("offset=50"),
+      expect.any(Object),
+    );
   });
 
   it("creates and locks an OOS research protocol before IS evaluation", async () => {

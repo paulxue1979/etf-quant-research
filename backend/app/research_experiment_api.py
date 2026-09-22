@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.backtest_repository import BacktestRepository
@@ -223,6 +223,49 @@ def get_experiment_results(protocol_id: str, experiment_id: str) -> dict[str, An
             exc,
             fallback_code="RESULT_READ_UNAVAILABLE",
             fallback_message="experiment results are unavailable",
+        ) from exc
+
+
+@router.get("/protocols/{protocol_id}/experiments/{experiment_id}/result-summaries")
+def get_experiment_result_summaries(
+    protocol_id: str,
+    experiment_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """Return optimization-ready result metadata without loading result_json."""
+    experiment = _load_experiment(experiment_id)
+    if experiment.protocol_id != protocol_id:
+        raise _raise_http(
+            ResearchExperimentApiError(
+                409,
+                "EXPERIMENT_PROTOCOL_MISMATCH",
+                "experiment does not belong to the requested protocol",
+            )
+        )
+    try:
+        total, summaries = experiment_result_repository.list_summaries(
+            experiment_id, limit=limit, offset=offset
+        )
+        return {
+            "experiment_id": experiment_id,
+            "protocol_id": protocol_id,
+            "items": [item.to_dict() for item in summaries],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "ordering": "candidate_index_ascending",
+            "provenance": {
+                "source": "research_experiment_results.performance_summary_json",
+                "analytics_recomputed": False,
+                "ranking_applied": False,
+            },
+        }
+    except Exception as exc:
+        raise _safe_error(
+            exc,
+            fallback_code="RESULT_SUMMARY_UNAVAILABLE",
+            fallback_message="experiment result summaries are unavailable",
         ) from exc
 
 
