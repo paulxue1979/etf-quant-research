@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { ColorType, CrosshairMode, LineSeries, LineType, createChart, type Time } from "lightweight-charts";
 
 import { comparisonTooltipRows, type ComparisonChartSeries } from "./comparisonCharts";
-import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
+import { configureResponsiveMinBarSpacing, trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
 interface MultiStrategyChartProps {
   kind: "twr" | "drawdown" | "portfolio_value" | "capital_invested" | "investment_profit";
@@ -44,10 +44,14 @@ function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visible
       grid: { vertLines: { color: "#1d2a31" }, horzLines: { color: "#1d2a31" } },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: { borderColor: "#2b3942" },
-      timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4, minBarSpacing: 0.1 },
     });
+    const pointCount = new Set(visibleSeries.flatMap((item) => item.points.map((point) => point.date))).size;
     const resize = () => {
-      if (container.clientWidth > 0) chart.resize(container.clientWidth, height);
+      if (container.clientWidth > 0) {
+        chart.resize(container.clientWidth, height);
+        configureResponsiveMinBarSpacing(chart, pointCount);
+      }
     };
     resize();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
@@ -68,7 +72,6 @@ function MultiStrategyChart({ kind, allSeries, hiddenRunIds, focusRunId, visible
         if (!valuesByTime.has(point.date)) valuesByTime.set(point.date, { series: line, value: point.value });
       }
     }
-    chart.timeScale().fitContent();
     const disposeSync = onReady({
       chart,
       series: chartSeries,

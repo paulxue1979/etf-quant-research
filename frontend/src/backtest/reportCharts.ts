@@ -310,13 +310,8 @@ export function buildChartBundle(report: BacktestReport | null, series: Backtest
   const actualAllocation = allocationSeries(report?.allocations?.actual, "actual");
   const markers = strategyMarkers(report);
   const capitalMarkers = contributionMarkers(report);
-  const allSeries = [equity, capital, strategy, benchmark, drawdown, benchmarkDrawdown, ...targetAllocation, ...actualAllocation];
-  const dates = [...new Set([
-    ...allSeries.flatMap((item) => item.points.map((point) => point.date)),
-    ...regime.map((point) => point.date),
-    ...markers.map((marker) => marker.date),
-    ...capitalMarkers.map((marker) => marker.date),
-  ])].sort();
+  const financialSeries = [equity, capital, strategy, benchmark, drawdown, benchmarkDrawdown];
+  const dates = [...new Set(financialSeries.flatMap((item) => item.points.map((point) => point.date)))].sort();
   const provenanceStatus = report?.strategy_provenance?.status;
   return {
     portfolio: [equity, capital],

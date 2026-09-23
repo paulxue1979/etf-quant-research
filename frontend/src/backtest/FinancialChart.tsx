@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ColorType, CrosshairMode, LineSeries, LineType, createChart, createSeriesMarkers, type SeriesMarker, type Time } from "lightweight-charts";
 
 import { availabilityText, formatChartValue, type ChartMarker, type ChartSeries } from "./reportCharts";
-import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
+import { configureResponsiveMinBarSpacing, trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
 interface FinancialChartProps {
   title: string;
@@ -34,11 +34,15 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       grid: { vertLines: { color: "#1d2a31" }, horzLines: { color: "#1d2a31" } },
       crosshair: { mode: CrosshairMode.Magnet },
       rightPriceScale: { borderColor: "#2b3942" },
-      timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4, minBarSpacing: 0.1 },
     });
+    let pointCount = 0;
     const resize = () => {
       const width = container.clientWidth;
-      if (width > 0) chart.resize(width, height);
+      if (width > 0) {
+        chart.resize(width, height);
+        configureResponsiveMinBarSpacing(chart, pointCount);
+      }
     };
     resize();
     const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
@@ -76,6 +80,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
         byTime.set(point.date, existing);
       }
     }
+    pointCount = valuesByTime.size;
     if (markerAnchor && markerDates) {
       const visibleMarkers: SeriesMarker<Time>[] = markers.flatMap((marker) => markerDates?.has(marker.date) ? [{
         time: marker.date as Time,
@@ -87,7 +92,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       }] : []);
       createSeriesMarkers(markerAnchor, visibleMarkers);
     }
-    chart.timeScale().fitContent();
+    configureResponsiveMinBarSpacing(chart, pointCount);
     const crosshairHandler = (event: { time?: Time; point?: { x: number; y: number } | null }) => {
       const time = event.time;
       if (typeof time !== "string") { setHover(null); return; }

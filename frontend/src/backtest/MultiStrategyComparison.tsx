@@ -106,6 +106,12 @@ export function MultiStrategyComparison({ comparison }: { comparison: ResearchCo
       disposeCrosshair();
     };
   }, [sync]);
+  const comparisonKey = comparison.runs.map((run) => run.backtest_run_id).join(",");
+  useEffect(() => {
+    if (!fullRange) return;
+    sync.initialize(fullRange);
+    setSelectedRange("MAX");
+  }, [comparisonKey, fullRange?.from, fullRange?.to, sync]);
 
   const toggleRun = (runId: string) => {
     setHiddenRunIds((current) => {
@@ -133,7 +139,7 @@ export function MultiStrategyComparison({ comparison }: { comparison: ResearchCo
     const range = comparisonPresetRange(fullRange, preset);
     if (!range) return;
     if (preset === "MAX") sync.showFullHistory(range);
-    else sync.setRange(range);
+    else sync.setRange(range, preset);
   };
   const fitAll = () => {
     setSelectedRange("MAX");

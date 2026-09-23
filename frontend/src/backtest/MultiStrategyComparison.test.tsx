@@ -7,6 +7,7 @@ import type { ComparisonCompatibilityStatus, ResearchComparison } from "./types"
 const harness = vi.hoisted(() => ({
   listeners: new Set<() => void>(),
   crosshairListeners: new Set<(time: string | null) => void>(),
+  initialize: vi.fn(),
   setRange: vi.fn(),
   showFullHistory: vi.fn(),
   resetView: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("./chartSync", () => ({
     register() { return () => undefined; }
     subscribeViewportChange(handler: () => void) { harness.listeners.add(handler); return () => harness.listeners.delete(handler); }
     subscribeCrosshairChange(handler: (time: string | null) => void) { harness.crosshairListeners.add(handler); return () => harness.crosshairListeners.delete(handler); }
+    initialize = harness.initialize;
     setRange = harness.setRange;
     showFullHistory = harness.showFullHistory;
     resetView = harness.resetView;
@@ -35,6 +37,7 @@ afterEach(() => {
   cleanup();
   harness.listeners.clear();
   harness.crosshairListeners.clear();
+  harness.initialize.mockClear();
   harness.setRange.mockClear();
   harness.showFullHistory.mockClear();
   harness.resetView.mockClear();
@@ -141,7 +144,7 @@ describe("MultiStrategyComparison", () => {
     render(<MultiStrategyComparison comparison={payload()} />);
 
     await user.click(screen.getByRole("button", { name: "1Y" }));
-    expect(harness.setRange).toHaveBeenCalledWith({ from: "2024-01-03", to: "2025-01-03" });
+    expect(harness.setRange).toHaveBeenCalledWith({ from: "2024-01-03", to: "2025-01-03" }, "1Y");
     await user.click(screen.getByRole("button", { name: "MAX" }));
     expect(harness.showFullHistory).toHaveBeenLastCalledWith({ from: "2000-01-03", to: "2025-01-03" });
     await user.dblClick(screen.getByRole("button", { name: /Strategy 1/ }));

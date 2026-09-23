@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ColorType, CrosshairMode, HistogramSeries, createChart, type Time } from "lightweight-charts";
 
 import type { ChartStatus, RegimePoint } from "./reportCharts";
-import { trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
+import { configureResponsiveMinBarSpacing, trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
 interface StrategyRegimeStripProps {
   points: RegimePoint[];
@@ -40,11 +40,14 @@ export function StrategyRegimeStrip({ points, status, reason, height, onReady }:
       grid: { vertLines: { color: "#1d2a31" }, horzLines: { visible: false } },
       crosshair: { mode: CrosshairMode.Normal, horzLine: { visible: false, labelVisible: false } },
       rightPriceScale: { visible: false },
-      timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: "#2b3942", timeVisible: false, rightOffset: 4, minBarSpacing: 0.1 },
     });
     const resize = () => {
       const width = container.clientWidth;
-      if (width > 0) chart.resize(width, height);
+      if (width > 0) {
+        chart.resize(width, height);
+        configureResponsiveMinBarSpacing(chart, points.length);
+      }
     };
     resize();
     const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
@@ -55,7 +58,6 @@ export function StrategyRegimeStrip({ points, status, reason, height, onReady }:
       priceFormat: { type: "custom", formatter: () => "" },
     });
     strip.setData(points.map((point) => ({ time: point.date as Time, value: 1, color: point.color })));
-    chart.timeScale().fitContent();
     const pointsByDate = new Map(points.map((point) => [point.date, point]));
     const crosshairHandler = (event: { time?: Time }) => {
       setHover(typeof event.time === "string" ? pointsByDate.get(event.time) ?? null : null);

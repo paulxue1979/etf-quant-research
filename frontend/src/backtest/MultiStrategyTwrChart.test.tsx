@@ -9,6 +9,7 @@ const chartHarness = vi.hoisted(() => ({
   resize: vi.fn(),
   remove: vi.fn(),
   createChart: vi.fn(),
+  timeScaleWidth: 840,
   resizeCallback: null as (() => void) | null,
 }));
 
@@ -32,7 +33,9 @@ beforeEach(() => {
   chartHarness.lineOptions = [];
   chartHarness.resize.mockClear();
   chartHarness.remove.mockClear();
+  chartHarness.timeScaleWidth = 840;
   chartHarness.createChart.mockImplementation(() => ({
+    applyOptions: vi.fn(),
     addSeries: vi.fn((_series, options: Record<string, unknown>) => {
       const line = { setData: vi.fn() };
       chartHarness.lines.push(line);
@@ -40,6 +43,8 @@ beforeEach(() => {
       return line;
     }),
     timeScale: () => ({
+      width: vi.fn(() => chartHarness.timeScaleWidth),
+      applyOptions: vi.fn(),
       fitContent: vi.fn(),
       subscribeVisibleTimeRangeChange: vi.fn(),
       unsubscribeVisibleTimeRangeChange: vi.fn(),

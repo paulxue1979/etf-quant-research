@@ -40,6 +40,12 @@ export function BacktestReportCharts({ report, series, markerReport = null, mark
   const registerActualAllocation = useCallback((chart: Parameters<ChartSyncController["register"]>[1]) => sync.register("actual-allocation", chart), [sync]);
   useEffect(() => sync.subscribeViewportChange(() => setSelectedRange("CUSTOM")), [sync]);
   const fullRange = bundle.range ? { from: bundle.range.from, to: bundle.range.to } : undefined;
+  const domainKey = report?.identity?.backtest_run_id ?? series?.identity?.backtest_run_id ?? "empty";
+  useEffect(() => {
+    if (!fullRange) return;
+    sync.initialize(fullRange);
+    setSelectedRange("MAX");
+  }, [domainKey, fullRange?.from, fullRange?.to, sync]);
   const selectRange = (preset: typeof presets[number]) => {
     setSelectedRange(preset);
     if (preset === "MAX") {
@@ -47,7 +53,7 @@ export function BacktestReportCharts({ report, series, markerReport = null, mark
       return;
     }
     const range = rangeForPreset(bundle, preset);
-    if (range) sync.setRange({ from: range.from, to: range.to });
+    if (range) sync.setRange({ from: range.from, to: range.to }, preset);
   };
   const fitAll = () => {
     setSelectedRange("MAX");

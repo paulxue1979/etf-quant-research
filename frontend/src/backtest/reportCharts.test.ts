@@ -90,7 +90,21 @@ describe("report chart projection", () => {
     const bundle = buildChartBundle(report(), series());
     expect(bundle.anchorDate).toBe("2025-01-01");
     expect(rangeForPreset(bundle, "1Y")).toEqual({ from: "2024-01-01", to: "2025-01-01" });
+    expect(rangeForPreset(bundle, "3Y")).toEqual({ from: "2022-01-01", to: "2025-01-01" });
+    expect(rangeForPreset(bundle, "5Y")).toEqual({ from: "2020-01-01", to: "2025-01-01" });
     expect(rangeForPreset(bundle, "MAX")).toEqual({ from: "2020-01-01", to: "2025-01-01" });
+  });
+
+  it("retains the earliest and latest dates for a 6000-point financial history", () => {
+    const points = Array.from({ length: 6001 }, (_, index) => ({
+      date: new Date(Date.UTC(2000, 0, 3 + index)).toISOString().slice(0, 10),
+      value: 100 + index,
+    }));
+    points[points.length - 1] = { date: "2026-09-16", value: 6100 };
+    const bundle = buildChartBundle(report(), series({ equity: { status: "available", points } }));
+
+    expect(bundle.range).toEqual({ from: "2000-01-03", to: "2026-09-16" });
+    expect(bundle.anchorDate).toBe("2026-09-16");
   });
 
   it("creates external-cash-flow markers without calling them strategy signals", () => {
@@ -176,6 +190,20 @@ describe("report chart projection", () => {
     ]);
     expect(bundle.strategyMarkers.filter((marker) => marker.kind === "signal")).toHaveLength(2);
     expect(bundle.strategyMarkers.at(2)?.details).toContain("Execution: Not executed");
+  });
+
+  it("keeps marker-only dates outside the canonical MAX range", () => {
+    const value = report();
+    value.strategy_provenance = {
+      status: "available",
+      records: [],
+      markers: [{ date: "2026-01-02", marker_type: "execution", signal_date: "2026-01-01", execution_date: "2026-01-02", execution_status: "filled", rebalance_cause: "target", order_count: 1, fill_count: 1 }],
+    };
+
+    const bundle = buildChartBundle(value, series());
+
+    expect(bundle.range).toEqual({ from: "2020-01-01", to: "2025-01-01" });
+    expect(bundle.strategyMarkers[0]?.date).toBe("2026-01-02");
   });
 
   it("builds dynamic target and actual allocation series without treating SGOV as cash", () => {

@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { SyncedChart } from "./chartSync";
-import { ChartSyncController, trackViewportGestures } from "./chartSync";
+import { ChartSyncController, configureResponsiveMinBarSpacing, trackViewportGestures } from "./chartSync";
 
 function fakeChart() {
   let rangeHandler: ((range: { from: string; to: string } | null) => void) | undefined;
   let crosshairHandler: ((event: { time?: string | null; seriesData: Map<unknown, unknown> }) => void) | undefined;
   let rangeError: Error | null = null;
   const timeScale = {
+    width: vi.fn(() => 1000),
+    applyOptions: vi.fn(),
     subscribeVisibleTimeRangeChange: (handler: typeof rangeHandler) => { rangeHandler = handler; },
     unsubscribeVisibleTimeRangeChange: () => { rangeHandler = undefined; },
     setVisibleRange: vi.fn((range: { from: string; to: string }) => {
@@ -19,6 +21,7 @@ function fakeChart() {
   };
   const chart = {
     timeScale: () => timeScale,
+    applyOptions: vi.fn(),
     subscribeCrosshairMove: (handler: typeof crosshairHandler) => { crosshairHandler = handler; },
     unsubscribeCrosshairMove: () => { crosshairHandler = undefined; },
     setCrosshairPosition: vi.fn(),
@@ -48,6 +51,18 @@ function synced(
 }
 
 describe("ChartSyncController", () => {
+  it("derives bounded bar spacing from the rendered time-scale width and data density", () => {
+    const chart = fakeChart();
+    chart.chart.timeScale().width.mockReturnValue(208);
+
+    expect(configureResponsiveMinBarSpacing(chart.chart as never, 4_000)).toBe(0.052);
+    expect(chart.chart.applyOptions).toHaveBeenCalledWith({ timeScale: { minBarSpacing: 0.052 } });
+
+    chart.chart.timeScale().width.mockReturnValue(840);
+    expect(configureResponsiveMinBarSpacing(chart.chart as never, 2)).toBe(0.1);
+    expect(chart.chart.applyOptions).toHaveBeenLastCalledWith({ timeScale: { minBarSpacing: 0.1 } });
+  });
+
   it("synchronizes visible ranges without recursively rebroadcasting them", () => {
     const source = fakeChart();
     const target = fakeChart();
@@ -131,6 +146,60 @@ describe("ChartSyncController", () => {
     }
   });
 
+  it("stores user viewport changes as CUSTOM and applies the current range to late charts", () => {
+    const first = fakeChart();
+    const replacement = fakeChart();
+    const controller = new ChartSyncController();
+    controller.register("first", synced(first, new Map()));
+
+    controller.initialize({ from: "2000-01-03", to: "2025-12-31" });
+    expect(controller.getViewportState()).toEqual({ mode: "MAX", range: { from: "2000-01-03", to: "2025-12-31" } });
+
+    first.triggerRange({ from: "2024-01-02", to: "2025-12-31" });
+    expect(controller.getViewportState()).toEqual({ mode: "CUSTOM", range: { from: "2024-01-02", to: "2025-12-31" } });
+
+    controller.register("replacement", synced(replacement, new Map()));
+    expect(replacement.chart.timeScale().setVisibleRange).toHaveBeenCalledWith({ from: "2024-01-02", to: "2025-12-31" });
+    expect(replacement.chart.timeScale().fitContent).not.toHaveBeenCalled();
+  });
+
+  it("preserves the shared CUSTOM range across chart recreation", () => {
+    const original = fakeChart();
+    const recreated = fakeChart();
+    const controller = new ChartSyncController();
+    controller.register("chart", synced(original, new Map()));
+
+    controller.setRange({ from: "2023-01-03", to: "2025-12-31" });
+    expect(controller.getViewportState().mode).toBe("CUSTOM");
+    controller.register("replacement", synced(recreated, new Map()));
+
+    expect(recreated.chart.timeScale().setVisibleRange).toHaveBeenCalledWith({ from: "2023-01-03", to: "2025-12-31" });
+  });
+
+  it("reapplies the authoritative range after a recreated chart completes layout", () => {
+    const callbacks: Array<FrameRequestCallback> = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    try {
+      const original = fakeChart();
+      const recreated = fakeChart();
+      const controller = new ChartSyncController();
+      controller.register("chart", synced(original, new Map()));
+      controller.initialize({ from: "2000-01-03", to: "2026-09-16" });
+
+      controller.register("replacement", synced(recreated, new Map()));
+      expect(recreated.chart.timeScale().setVisibleRange).toHaveBeenCalledTimes(1);
+
+      callbacks.splice(0).forEach((callback) => callback(0));
+      expect(recreated.chart.timeScale().setVisibleRange).toHaveBeenCalledTimes(2);
+      expect(recreated.chart.timeScale().setVisibleRange).toHaveBeenLastCalledWith({ from: "2000-01-03", to: "2026-09-16" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("resets transient chart state before restoring full history", () => {
     const first = fakeChart();
     const second = fakeChart();
@@ -184,6 +253,26 @@ describe("ChartSyncController", () => {
 
     expect(target.chart.timeScale().setVisibleRange).toHaveBeenCalledOnce();
     expect(viewportChanged).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale non-user range that would overwrite the authoritative MAX range", () => {
+    const source = fakeChart();
+    const lateChart = fakeChart();
+    const controller = new ChartSyncController();
+    controller.register("source", synced(source, new Map()));
+    controller.initialize({ from: "2000-01-03", to: "2026-09-16" });
+    controller.register("late", synced(lateChart, new Map(), () => false));
+
+    lateChart.triggerRange({ from: "2018-01-02", to: "2026-09-16" });
+
+    expect(controller.getViewportState()).toEqual({
+      mode: "MAX",
+      range: { from: "2000-01-03", to: "2026-09-16" },
+    });
+    expect(source.chart.timeScale().setVisibleRange).not.toHaveBeenCalledWith({
+      from: "2018-01-02",
+      to: "2026-09-16",
+    });
   });
 
   it("consumes pointer and wheel gestures once for viewport classification", () => {

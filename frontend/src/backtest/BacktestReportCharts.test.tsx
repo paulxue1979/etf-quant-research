@@ -7,6 +7,7 @@ import type { BacktestMarkerReport, BacktestMarkerType, BacktestReport, Backtest
 
 const syncHarness = vi.hoisted(() => ({
   listeners: new Set<() => void>(),
+  initialize: vi.fn(),
   setRange: vi.fn(),
   showFullHistory: vi.fn(),
   resetView: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("./chartSync", () => ({
       syncHarness.listeners.add(handler);
       return () => syncHarness.listeners.delete(handler);
     }
+    initialize = syncHarness.initialize;
     setRange = syncHarness.setRange;
     showFullHistory = syncHarness.showFullHistory;
     resetView = syncHarness.resetView;
@@ -38,6 +40,7 @@ import { BacktestReportCharts } from "./BacktestReportCharts";
 afterEach(() => {
   cleanup();
   syncHarness.listeners.clear();
+  syncHarness.initialize.mockClear();
   syncHarness.setRange.mockClear();
   syncHarness.showFullHistory.mockClear();
   syncHarness.resetView.mockClear();
@@ -183,6 +186,7 @@ describe("BacktestReportCharts", () => {
     expect(chart).toHaveAttribute("data-marker-count", "2");
     expect(twr).toHaveAttribute("data-marker-count", "2");
     expect(screen.getByText("2 events shown")).toBeInTheDocument();
+    expect(syncHarness.initialize).toHaveBeenCalledTimes(1);
   });
 
   it("supports marker filters, deterministic major mode, and explicit marker errors", async () => {
@@ -221,7 +225,7 @@ describe("BacktestReportCharts", () => {
     expect(syncHarness.setRange).toHaveBeenCalledWith({
       from: "2025-01-02",
       to: "2025-01-03",
-    });
+    }, "1Y");
 
     await user.click(screen.getByRole("button", { name: "MAX" }));
     expect(syncHarness.showFullHistory).toHaveBeenLastCalledWith({
