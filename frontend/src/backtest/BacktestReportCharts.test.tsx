@@ -201,6 +201,27 @@ describe("BacktestReportCharts", () => {
     expect(screen.getByText("0 events shown · 2 hidden by filters")).toBeInTheDocument();
   });
 
+  it("keeps toolbar controls grouped and marker toggles outside viewport ownership", async () => {
+    const user = userEvent.setup();
+    render(<BacktestReportCharts report={report()} series={reportSeries()} markerReport={markerReport()} />);
+
+    expect(screen.getByRole("group", { name: "Event categories" })).toContainElement(screen.getByRole("checkbox", { name: "Target Allocations" }));
+    expect(screen.getByRole("group", { name: "Marker density" })).toContainElement(screen.getByRole("checkbox", { name: "Major only" }));
+    expect(screen.getByRole("group", { name: "Display threshold" })).toContainElement(screen.getByRole("spinbutton", { name: "Major marker threshold" }));
+    expect(screen.getByRole("status")).toHaveTextContent("events shown");
+
+    act(() => {
+      for (const listener of syncHarness.listeners) listener();
+    });
+    expect(screen.getByText("Custom view")).toBeInTheDocument();
+    const initCount = syncHarness.initialize.mock.calls.length;
+    const rangeCalls = syncHarness.setRange.mock.calls.length + syncHarness.showFullHistory.mock.calls.length;
+    await user.click(screen.getByRole("checkbox", { name: "Executions" }));
+    expect(screen.getByText("Custom view")).toBeInTheDocument();
+    expect(syncHarness.initialize).toHaveBeenCalledTimes(initCount);
+    expect(syncHarness.setRange.mock.calls.length + syncHarness.showFullHistory.mock.calls.length).toBe(rangeCalls);
+  });
+
   it("notifies the parent about marker filters outside the child state updater", async () => {
     const user = userEvent.setup();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);

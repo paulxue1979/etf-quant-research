@@ -101,6 +101,35 @@ describe("event marker chart projection", () => {
     expect(projected.markers.at(-1)?.details).toContain("Execution: NO_EXECUTION_SESSION");
   });
 
+  it("preserves backend group identity and canonical execution sides", () => {
+    const payload = report([
+      marker("SIGNAL", "2025-01-03", { signal_date: "2025-01-03" }),
+      marker("EXECUTION", "2025-01-03", { fills: [{ side: "BUY", symbol: "QQQ", quantity: 2, fill_price: 100, notional: 200 }] }),
+      marker("EXECUTION", "2025-01-06", { fills: [{ side: "SELL", symbol: "TQQQ", quantity: 1, fill_price: 50, notional: 50 }] }),
+    ]);
+    payload.groups = [{
+      group_id: "group-2025-01-03",
+      date: "2025-01-03",
+      marker_count: 2,
+      marker_types: ["SIGNAL", "EXECUTION"],
+      summary: "Signal and execution",
+      marker_ids: [payload.markers[0].marker_id, payload.markers[1].marker_id],
+    }];
+
+    const projected = projectEventMarkers(payload, new Set(["SIGNAL", "EXECUTION"]), false, 0.1);
+
+    expect(projected.markers[0]).toMatchObject({
+      kind: "group",
+      groupId: "group-2025-01-03",
+      markerIds: [payload.markers[0].marker_id, payload.markers[1].marker_id],
+      markerTypes: ["SIGNAL", "EXECUTION"],
+      markerCount: 2,
+    });
+    expect(projected.markers[0].events?.map((event) => event.markerId)).toEqual(payload.groups[0].marker_ids);
+    expect(projected.markers[1]).toMatchObject({ label: "SELL TQQQ", shortLabel: "SELL TQQQ", direction: "SELL" });
+    expect(projected.markers[1].details).toEqual(expect.arrayContaining(["SELL TQQQ", "Notional: $50.00"]));
+  });
+
   it("projects one thousand dense events without silent display truncation", () => {
     const start = new Date("2000-01-03T00:00:00Z");
     const events = Array.from({ length: 1_000 }, (_, index) => {

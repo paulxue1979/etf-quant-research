@@ -326,13 +326,31 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .benchmark-capital-note > div:last-child { display: grid; justify-items: end; gap: 4px; }
 .benchmark-capital-note small { color: var(--muted); }
 .financial-chart-controls { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; }
-.marker-toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.marker-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.marker-toggle input { flex: 0 0 auto; width: auto; margin: 0; padding: 0; }
 .marker-toolbar { display: grid; gap: 10px; margin: 0; padding: 12px 0; border: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .marker-toolbar legend { padding: 0 10px 0 0; color: var(--text); font-size: 12px; font-weight: 700; }
-.marker-filter-grid, .marker-density-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 16px; }
-.marker-density-controls { color: var(--muted); font-size: 11px; }
-.marker-density-controls > label:not(.marker-toggle) { display: inline-flex; align-items: center; gap: 7px; }
-.marker-density-controls input[type="number"] { width: 78px; min-height: 30px; padding: 4px 7px; }
+.marker-toolbar-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, auto) minmax(130px, auto) minmax(190px, auto); gap: 12px 20px; align-items: end; }
+.marker-toolbar-section { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.marker-toolbar-label { color: #7f919b; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.marker-filter-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 4px 14px; }
+.marker-threshold-label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+.marker-threshold-label input[type="number"] { width: 100%; min-height: 32px; padding: 4px 7px; }
+.marker-status { color: var(--muted); font-size: 11px; }
+.marker-details-panel { display: grid; gap: 12px; margin-top: 12px; padding: 14px; border: 1px solid #38505b; background: #0c1419; }
+.marker-details-panel > header { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
+.marker-details-panel h4, .marker-details-panel h5, .marker-details-panel p { margin: 0; }
+.marker-details-panel h4 { margin-top: 4px; font-size: 15px; }
+.marker-details-panel header small, .marker-event-detail > small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.marker-details-close { flex: 0 0 auto; }
+.marker-event-list { display: grid; gap: 10px; }
+.marker-event-detail { display: grid; gap: 7px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--line); }
+.marker-event-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.marker-event-heading strong { font-size: 10px; text-transform: uppercase; }
+.marker-event-heading code { min-width: 0; color: var(--muted); font-size: 9px; overflow-wrap: anywhere; text-align: right; }
+.marker-event-detail h5 { font-size: 13px; }
+.marker-event-detail p { color: var(--muted); font-size: 11px; }
+.marker-event-detail ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: #c8d3d8; font-size: 11px; }
 .contribution-marker { background: #d2a956; color: #0b1216; }
 .range-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .range-controls .button { min-width: 48px; padding: 7px 9px; }
@@ -403,8 +421,8 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .oos-provenance-list { grid-template-columns: 180px minmax(0, 1fr); }
 .oos-provenance-list > div { display: contents; }
 .oos-provenance-list dd { white-space: pre-wrap; }
-@media (max-width: 900px) { .backtest-layout, .chart-grid, .result-tables { grid-template-columns: minmax(0, 1fr); } .backtest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-item { border-bottom: 1px solid var(--line); } .comparison-legend-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } }
-@media (max-width: 600px) { .backtest-shell { padding: 22px 14px 40px; } .backtest-topbar, .result-header, .financial-charts-toolbar, .wealth-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .result-equity { text-align: left; } .backtest-metrics, .capital-summary-grid, .capital-return-grid, .contribution-schedule-summary, .wealth-summary dl { grid-template-columns: minmax(0, 1fr); } .capital-summary-item, .contribution-schedule-summary div { border-right: 0; border-bottom: 1px solid var(--line); } .research-controls { align-items: stretch; } .research-controls label, .research-controls .button { width: 100%; } .provenance-panel dl, .protocol-summary { grid-template-columns: minmax(0, 1fr); gap: 4px; } .financial-charts-toolbar { align-items: start; } .financial-chart-controls, .wealth-mode-control { justify-content: flex-start; } .range-controls { min-width: 0; justify-content: flex-start; } .holding-controls, .holding-controls form { display: grid; align-items: stretch; } .holding-controls label { width: 100%; } .holding-pagination { justify-content: space-between; } .benchmark-capital-note { display: grid; } .benchmark-capital-note > div:last-child { justify-items: start; } .comparison-legend-item { max-width: 100%; } .comparison-metrics .subsection-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .comparison-metrics-table .strategy-column { min-width: 220px; max-width: 220px; } .contribution-header { align-items: flex-start; flex-direction: column; } .contribution-config { min-width: 0; padding: 14px 12px; } .contribution-toggle { max-width: 100%; } }
+@media (max-width: 900px) { .backtest-layout, .chart-grid, .result-tables { grid-template-columns: minmax(0, 1fr); } .backtest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capital-summary-item { border-bottom: 1px solid var(--line); } .comparison-legend-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .marker-toolbar-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; } .marker-category-section { grid-column: 1 / -1; } }
+@media (max-width: 600px) { .backtest-shell { padding: 22px 14px 40px; } .backtest-topbar, .result-header, .financial-charts-toolbar, .wealth-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .result-equity { text-align: left; } .backtest-metrics, .capital-summary-grid, .capital-return-grid, .contribution-schedule-summary, .wealth-summary dl { grid-template-columns: minmax(0, 1fr); } .capital-summary-item, .contribution-schedule-summary div { border-right: 0; border-bottom: 1px solid var(--line); } .research-controls { align-items: stretch; } .research-controls label, .research-controls .button { width: 100%; } .provenance-panel dl, .protocol-summary { grid-template-columns: minmax(0, 1fr); gap: 4px; } .financial-charts-toolbar { align-items: start; } .financial-chart-controls, .wealth-mode-control { justify-content: flex-start; } .range-controls { min-width: 0; justify-content: flex-start; } .holding-controls, .holding-controls form { display: grid; align-items: stretch; } .holding-controls label { width: 100%; } .holding-pagination { justify-content: space-between; } .benchmark-capital-note { display: grid; } .benchmark-capital-note > div:last-child { justify-items: start; } .comparison-legend-item { max-width: 100%; } .comparison-metrics .subsection-heading { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; } .comparison-metrics-table .strategy-column { min-width: 220px; max-width: 220px; } .contribution-header { align-items: flex-start; flex-direction: column; } .contribution-config { min-width: 0; padding: 14px 12px; } .contribution-toggle { max-width: 100%; } .marker-toolbar-layout { grid-template-columns: minmax(0, 1fr); } .marker-category-section { grid-column: auto; } .marker-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; } .marker-details-panel > header, .marker-event-heading { display: grid; } .marker-event-heading code { text-align: left; } }
 
 .research-shell { width: min(1500px, 100%); margin: 0 auto; padding: 30px 34px 60px; }
 .research-loader { margin-top: 22px; }

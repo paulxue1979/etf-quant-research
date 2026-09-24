@@ -1,5 +1,5 @@
 import type { BacktestEventMarker, BacktestMarkerReport, BacktestMarkerType } from "./types";
-import type { ChartMarker } from "./reportCharts";
+import type { ChartMarker, ChartMarkerEvent } from "./reportCharts";
 
 export const MARKER_FILTERS: Array<{ type: BacktestMarkerType; label: string }> = [
   { type: "SIGNAL", label: "Signals" },
@@ -38,6 +38,25 @@ const KIND: Record<BacktestMarkerType, ChartMarker["kind"]> = {
   REGIME_TRANSITION: "regime",
 };
 
+const EVENT_ORDER: Record<BacktestMarkerType, number> = {
+  CONTRIBUTION: 0,
+  SIGNAL: 1,
+  REGIME_TRANSITION: 2,
+  TARGET_ALLOCATION_TRANSITION: 3,
+  ACTUAL_ALLOCATION_TRANSITION: 4,
+  REBALANCE_DECISION: 5,
+  EXECUTION: 6,
+};
+
+export interface GroupedChartMarker extends ChartMarker {
+  kind: "group";
+  groupId: string;
+  markerCount: number;
+  markerIds: string[];
+  markerTypes: BacktestMarkerType[];
+  events: ChartMarkerEvent[];
+}
+
 export interface MarkerProjection {
   markers: ChartMarker[];
   visibleEventCount: number;
@@ -59,18 +78,26 @@ export function projectEventMarkers(
     current.push(marker);
     byDate.set(marker.event_date, current);
   }
+  const groupsByDate = new Map(report.groups.map((group) => [group.date, group]));
   const markers = [...byDate.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([date, events]) => {
-    const ordered = events;
+    const ordered = [...events].sort(markerOrder);
     if (ordered.length === 1) return chartMarker(ordered[0]);
-    return {
+    const backendGroup = groupsByDate.get(date);
+    const grouped: GroupedChartMarker = {
       date,
-      kind: "group" as const,
+      kind: "group",
       label: `${ordered.length} Events`,
       shortLabel: String(ordered.length),
       color: COLORS.GROUP,
       categories: ordered.map((item) => item.marker_type),
-      details: ordered.flatMap((item) => [`${item.title}: ${item.summary}`, ...markerDetails(item)]),
+      details: ordered.map((item) => `${item.title}: ${item.summary}`),
+      groupId: backendGroup?.group_id ?? ordered[0].group_key,
+      markerCount: ordered.length,
+      markerIds: ordered.map((item) => item.marker_id),
+      markerTypes: ordered.map((item) => item.marker_type),
+      events: ordered.map(markerEvent),
     };
+    return grouped;
   });
   return {
     markers,
@@ -86,14 +113,59 @@ function isMajor(marker: BacktestEventMarker, threshold: number): boolean {
 }
 
 function chartMarker(marker: BacktestEventMarker): ChartMarker {
+  const execution = marker.marker_type === "EXECUTION" ? executionPresentation(marker) : null;
   return {
     date: marker.event_date,
     kind: KIND[marker.marker_type],
-    label: `${marker.title} · ${marker.summary}`,
-    shortLabel: marker.short_label,
-    color: COLORS[marker.marker_type],
+    label: execution?.label ?? `${marker.title} · ${marker.summary}`,
+    shortLabel: execution?.shortLabel ?? marker.short_label,
+    color: execution?.color ?? COLORS[marker.marker_type],
     categories: [marker.marker_type],
     details: markerDetails(marker),
+    markerId: marker.marker_id,
+    markerIds: [marker.marker_id],
+    markerTypes: [marker.marker_type],
+    markerCount: 1,
+    direction: execution?.direction,
+    events: [markerEvent(marker)],
+  };
+}
+
+function markerOrder(left: BacktestEventMarker, right: BacktestEventMarker): number {
+  return EVENT_ORDER[left.marker_type] - EVENT_ORDER[right.marker_type]
+    || left.source_event_reference.localeCompare(right.source_event_reference)
+    || left.marker_id.localeCompare(right.marker_id);
+}
+
+function markerEvent(marker: BacktestEventMarker): ChartMarkerEvent {
+  return {
+    markerId: marker.marker_id,
+    markerType: marker.marker_type,
+    title: marker.title,
+    summary: marker.summary,
+    sourceEventType: marker.source_event_type,
+    sourceEventReference: marker.source_event_reference,
+    details: markerDetails(marker),
+  };
+}
+
+function executionPresentation(marker: BacktestEventMarker): {
+  label: string;
+  shortLabel: string;
+  color: string;
+  direction?: "BUY" | "SELL" | "MIXED";
+} {
+  const fills = Array.isArray(marker.details.fills) ? marker.details.fills.filter(isRecord) : [];
+  const sides = [...new Set(fills.map((fill) => text(fill.side).toUpperCase()).filter((side) => side === "BUY" || side === "SELL"))];
+  const symbols = [...new Set(fills.map((fill) => text(fill.symbol)).filter((symbol) => symbol !== "N/A"))];
+  const direction = sides.length === 1 ? sides[0] as "BUY" | "SELL" : sides.length > 1 ? "MIXED" : undefined;
+  const sideLabel = direction === "MIXED" ? "BUY / SELL" : direction ?? "EXECUTION";
+  const symbolLabel = symbols.length === 1 ? ` ${symbols[0]}` : symbols.length > 1 ? ` ${symbols.length} ASSETS` : "";
+  return {
+    label: `${sideLabel}${symbolLabel}`,
+    shortLabel: `${sideLabel}${symbolLabel}`,
+    color: direction === "SELL" ? "#ff8b8b" : direction === "BUY" ? COLORS.EXECUTION : COLORS.GROUP,
+    direction,
   };
 }
 
@@ -107,7 +179,14 @@ function markerDetails(marker: BacktestEventMarker): string[] {
       `Cause: ${text(details.rebalance_cause)}`,
       ...fills.flatMap((fill) => {
         if (!isRecord(fill)) return [];
-        return [`${text(fill.side)} ${text(fill.symbol)} · ${text(fill.quantity)} @ ${money(fill.fill_price)} · commission ${money(fill.commission)}`];
+        return [
+          `${text(fill.side).toUpperCase()} ${text(fill.symbol)}`,
+          `Quantity: ${text(fill.quantity)}`,
+          `Fill price: ${money(fill.fill_price)}`,
+          `Notional: ${money(fill.notional)}`,
+          `Commission: ${money(fill.commission)}`,
+          `Slippage: ${money(fill.slippage)}`,
+        ];
       }),
     ];
   }

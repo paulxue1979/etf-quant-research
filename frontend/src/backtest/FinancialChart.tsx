@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ColorType, CrosshairMode, LineSeries, LineType, createChart, createSeriesMarkers, type SeriesMarker, type Time } from "lightweight-charts";
+import { ColorType, CrosshairMode, LineSeries, LineType, createChart, createSeriesMarkers, type MouseEventParams, type SeriesMarker, type Time } from "lightweight-charts";
 
+import { MarkerDetailsPanel } from "./MarkerDetailsPanel";
 import { availabilityText, formatChartValue, type ChartMarker, type ChartSeries } from "./reportCharts";
 import { configureResponsiveMinBarSpacing, trackViewportGestures, type SyncedChart, type SyncSeries } from "./chartSync";
 
@@ -24,6 +25,8 @@ function ChartState({ series }: { series: ChartSeries[] }) {
 export function FinancialChart({ title, description, series, markers = [], height, onReady, showDollarDifference = false }: FinancialChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ date: string; values: Array<{ label: string; value: string; color: string }>; details: string[] } | null>(null);
+  const [selectedMarkerKey, setSelectedMarkerKey] = useState<string | null>(null);
+  const selectedMarker = markers.find((marker) => markerKey(marker) === selectedMarkerKey) ?? null;
   useEffect(() => {
     if (!containerRef.current || !series.some((item) => item.points.length)) return undefined;
     const container = containerRef.current;
@@ -51,6 +54,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     const valuesByTime = new Map<string, { series: SyncSeries; value: number }>();
     const byTime = new Map<string, Array<{ label: string; value: string; color: string; raw: number }>>();
     const detailsByTime = new Map<string, string[]>();
+    const markersByTime = new Map(markers.map((marker) => [marker.date, marker]));
     for (const marker of markers) {
       const current = detailsByTime.get(marker.date) ?? [];
       current.push(marker.label, ...marker.details);
@@ -84,8 +88,8 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     if (markerAnchor && markerDates) {
       const visibleMarkers: SeriesMarker<Time>[] = markers.flatMap((marker) => markerDates?.has(marker.date) ? [{
         time: marker.date as Time,
-        position: ["signal", "regime", "target-allocation"].includes(marker.kind) ? "aboveBar" as const : "belowBar" as const,
-        shape: marker.kind === "signal" ? "arrowDown" as const : marker.kind === "execution" ? "arrowUp" as const : marker.kind === "rebalance" ? "square" as const : "circle" as const,
+        position: markerPosition(marker),
+        shape: markerShape(marker),
         color: marker.color,
         text: marker.shortLabel ?? marker.kind.slice(0, 1).toUpperCase(),
         size: 1,
@@ -110,7 +114,14 @@ export function FinancialChart({ title, description, series, markers = [], heigh
         details: detailsByTime.get(time) ?? [],
       });
     };
+    const clickHandler = (event: MouseEventParams<Time>) => {
+      const time = event.time;
+      if (typeof time !== "string") return;
+      const marker = markersByTime.get(time);
+      if (marker) setSelectedMarkerKey(markerKey(marker));
+    };
     chart.subscribeCrosshairMove(crosshairHandler);
+    chart.subscribeClick(clickHandler);
     const disposeSync = onReady({
       chart,
       series: chartSeries,
@@ -123,6 +134,7 @@ export function FinancialChart({ title, description, series, markers = [], heigh
       viewportGestures.dispose();
       resizeObserver?.disconnect();
       chart.unsubscribeCrosshairMove(crosshairHandler);
+      chart.unsubscribeClick(clickHandler);
       chart.remove();
     };
   }, [height, markers, onReady, series, showDollarDifference]);
@@ -132,7 +144,26 @@ export function FinancialChart({ title, description, series, markers = [], heigh
     <div className="financial-chart-canvas" style={{ minHeight: height }} ref={containerRef} />
     <ChartState series={series} />
     {hover && <div className="financial-chart-tooltip" role="status"><strong>{hover.date}</strong>{hover.values.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}: {item.value}</span>)}{hover.details.map((detail, index) => <span className="marker-detail" key={`${detail}-${index}`}>{detail}</span>)}</div>}
+    {selectedMarker && <MarkerDetailsPanel marker={selectedMarker} onClose={() => setSelectedMarkerKey(null)} />}
     <div className="financial-chart-legend">{series.map((item) => <span key={item.key} className={item.status !== "available" ? "is-unavailable" : undefined}><i style={{ background: item.color }} />{item.label}<small>{availabilityText(item)}</small></span>)}</div>
     {markers.length > 0 && <div className="marker-legend" aria-label="Chart marker legend">{[...new Map(markers.flatMap((item) => item.categories?.length ? item.categories.map((category) => [category, { label: category.replaceAll("_", " "), color: item.color, shortLabel: category.slice(0, 1) }]) : [[item.kind, { label: item.kind.replaceAll("-", " "), color: item.color, shortLabel: item.shortLabel ?? item.kind.slice(0, 1) }]])).values()].map((item) => <span key={item.label}><i style={{ color: item.color }}>{item.shortLabel}</i>{item.label}</span>)}</div>}
   </section>;
+}
+
+function markerKey(marker: ChartMarker): string {
+  return marker.groupId ?? marker.markerId ?? `${marker.date}:${marker.kind}:${marker.label}`;
+}
+
+function markerShape(marker: ChartMarker): "arrowUp" | "arrowDown" | "square" | "circle" {
+  if (marker.direction === "BUY") return "arrowUp";
+  if (marker.direction === "SELL") return "arrowDown";
+  if (marker.kind === "signal") return "arrowDown";
+  if (marker.kind === "rebalance" || marker.direction === "MIXED") return "square";
+  return "circle";
+}
+
+function markerPosition(marker: ChartMarker): "aboveBar" | "belowBar" {
+  if (marker.direction === "SELL") return "aboveBar";
+  if (marker.direction === "BUY") return "belowBar";
+  return ["signal", "regime", "target-allocation"].includes(marker.kind) ? "aboveBar" : "belowBar";
 }

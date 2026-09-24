@@ -45,6 +45,23 @@ export interface ChartMarker {
   color: string;
   categories?: string[];
   details: string[];
+  markerId?: string;
+  groupId?: string;
+  markerIds?: string[];
+  markerTypes?: string[];
+  markerCount?: number;
+  direction?: "BUY" | "SELL" | "MIXED";
+  events?: ChartMarkerEvent[];
+}
+
+export interface ChartMarkerEvent {
+  markerId: string;
+  markerType: string;
+  title: string;
+  summary: string;
+  sourceEventType: string;
+  sourceEventReference: string;
+  details: string[];
 }
 
 export interface ChartBundle {
