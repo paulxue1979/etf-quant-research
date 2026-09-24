@@ -12,6 +12,8 @@ export type ComparisonOperator =
 export type LogicalOperator = "and" | "or";
 export type RebalanceFrequency = "daily" | "weekly" | "monthly" | "on_signal_change";
 export type NoMatchBehavior = "use_fallback" | "hold_previous_allocation";
+export type StrategyMode = "rule_based" | "regime_state_machine";
+export type ValueZoneTrigger = "match" | "enter" | "exit";
 
 export interface EditorOperand {
   id: string;
@@ -56,6 +58,55 @@ export interface EditorAllocationRule {
   remainingSymbol: string;
 }
 
+export interface EditorRegime {
+  id: string;
+  stateId: string;
+  displayName: string;
+  description: string;
+  allocations: EditorAllocation[];
+  metadata: Record<string, string>;
+  source?: Record<string, unknown>;
+}
+
+export interface EditorRegimeTransition {
+  id: string;
+  transitionId: string;
+  fromState: string;
+  toState: string;
+  priority: string;
+  description: string;
+  condition: EditorRuleGroup;
+  valueZoneId: string;
+  valueZoneTrigger: ValueZoneTrigger;
+  source?: Record<string, unknown>;
+}
+
+export interface EditorValueZone {
+  id: string;
+  zoneId: string;
+  displayName: string;
+  asset: string;
+  timeframe: Timeframe;
+  indicatorKind: "ma" | "ema";
+  period: string;
+  priceField: PriceField;
+  entryThresholdPercent: string;
+  exitThresholdPercent: string;
+  entryOperator: ComparisonOperator;
+  exitOperator: ComparisonOperator;
+  priority: string;
+  metadata: Record<string, string>;
+  source?: Record<string, unknown>;
+}
+
+export interface RegimeEditorState {
+  initialRegime: string;
+  regimes: EditorRegime[];
+  transitions: EditorRegimeTransition[];
+  valueZones: EditorValueZone[];
+  template: "blank" | "long_term_value_trend";
+}
+
 export interface EditorState {
   strategyId: string;
   name: string;
@@ -68,7 +119,8 @@ export interface EditorState {
   initialAllocations: EditorAllocation[];
   rebalanceFrequency: RebalanceFrequency;
   rebalanceThresholdPercent: string;
-  strategyMode?: string;
+  strategyMode?: StrategyMode;
+  regime?: RegimeEditorState;
   isDirty?: boolean;
   sourceSchemaVersion?: string;
   sourcePayload?: StrategyPayload;
@@ -121,7 +173,7 @@ export interface StrategyPayload {
   fallback: { name: string; allocations: StrategyAllocationPayload[] };
   no_match_behavior?: NoMatchBehavior;
   initial_allocation?: { allocations: StrategyAllocationPayload[] };
-  strategy_mode?: string;
+  strategy_mode?: StrategyMode;
   initial_regime?: string | null;
   regimes?: unknown[];
   transitions?: unknown[];

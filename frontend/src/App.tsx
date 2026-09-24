@@ -4,6 +4,7 @@ import { BacktestLab } from "./backtest/BacktestLab";
 import { ExperimentResearch } from "./research/ExperimentResearch";
 import { OosResearchView } from "./research/OosResearchView";
 import { strategyApi, StrategyApiError } from "./strategy/api";
+import { RegimeStateMachineEditor } from "./strategy/RegimeStateMachineEditor";
 import {
   allocationTotalPercent,
   comparisonOptions,
@@ -14,6 +15,7 @@ import {
   rebalanceOptions,
   toStrategyPayload,
   validateEditorState,
+  validateRegimeEditor,
 } from "./strategy/editor";
 import type {
   EditorAllocation,
@@ -471,6 +473,15 @@ function VersionHistory({
 }
 
 function Preview({ state }: { state: EditorState }) {
+  if (state.strategyMode === "regime_state_machine" && state.regime) {
+    return (
+      <section className="panel preview-panel">
+        <div className="section-header"><div><span className="eyebrow">SERIALIZED STRATEGY PREVIEW</span><h2>{state.name || "Untitled strategy"}</h2></div><span className="preview-tag">REGIME STATE MACHINE</span></div>
+        <div className="preview-grid"><div><span>Initial State</span><strong>{state.regime.initialRegime || "Undefined"}</strong></div><div><span>States</span><strong>{state.regime.regimes.length}</strong></div><div><span>Transitions</span><strong>{state.regime.transitions.length}</strong></div><div><span>Value Zones</span><strong>{state.regime.valueZones.length}</strong></div></div>
+        <div className="preview-rule"><span className="eyebrow">FLOW SUMMARY</span><p>{state.regime.transitions.map((transition) => `${transition.fromState} → ${transition.toState}`).join(" · ") || "No transitions configured"}</p></div>
+      </section>
+    );
+  }
   const firstRule = state.rules[0];
   const noMatchSummary =
     state.noMatchBehavior === "hold_previous_allocation"
@@ -534,7 +545,12 @@ export function App() {
   async function validateCurrent(): Promise<ValidationResult> {
     setBusy("validate");
     setNotice(null);
-    const localErrors = validateEditorState(state);
+    const localErrors = [
+      ...validateEditorState(state),
+      ...(state.strategyMode === "regime_state_machine" && state.regime
+        ? validateRegimeEditor(state.regime, state.assets).filter((issue) => !issue.code.startsWith("Unreachable"))
+        : []),
+    ];
     if (localErrors.length > 0) {
       const result = { ...emptyValidation, errors: localErrors };
       setValidation(result);
@@ -632,7 +648,7 @@ export function App() {
       {state.strategyMode === "regime_state_machine" && (
         <div className="strategy-mode-notice" role="status">
           <strong>REGIME STATE MACHINE</strong>
-          <span>This version is preserved read-only in Strategy Lab. Regimes, transitions, and value zones are kept in the source payload for PHASE 12E.</span>
+          <span>States, transitions and Value Zones are edited through the existing backend domain payload. Runtime semantics remain backend-owned.</span>
         </div>
       )}
       <div className="workspace">
@@ -665,6 +681,13 @@ export function App() {
                   <option value="raw_close">RAW_CLOSE</option>
                 </select>
               </label>
+              <label>
+                Strategy Mode
+                <select aria-label="Strategy mode" value={state.strategyMode ?? "rule_based"} onChange={(event) => dispatch({ type: "strategyMode", value: event.target.value as "rule_based" | "regime_state_machine" })}>
+                  <option value="rule_based">Rule Based</option>
+                  <option value="regime_state_machine">Regime State Machine</option>
+                </select>
+              </label>
             </div>
           </section>
 
@@ -691,6 +714,15 @@ export function App() {
             </div>
           </section>
 
+          {state.strategyMode === "regime_state_machine" && state.regime ? (
+            <RegimeStateMachineEditor
+              state={state}
+              model={state.regime}
+              issues={validation.errors}
+              onChange={(regime) => dispatch({ type: "regime", value: regime })}
+            />
+          ) : (
+            <>
           <div className="section-title-row">
             <div>
               <span className="eyebrow">DECISION TREE</span>
@@ -783,6 +815,8 @@ export function App() {
               </div>
             )}
           </section>
+            </>
+          )}
 
           <section className="panel rebalance-panel">
             <div className="section-header">
