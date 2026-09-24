@@ -2,7 +2,7 @@
 
 美股 ETF 量化研究与策略回测平台。
 
-当前 V1.3 提供 Strategy Lab、Backtest Lab、日线与完成周线研究、显式 Regime State Machine、多资产 Target Allocation、受控 Grid Search、参数稳健性分析、Research Protocol、研究员选择与冻结后的官方 OOS Research View。系统定位为历史数据研究与回测工具，不是投资建议、收益保证或实盘交易系统。
+当前 V1.3.1 提供 Strategy Lab、Backtest Lab、日线与完成周线研究、显式 Regime State Machine、多资产 Target Allocation、受控 Grid Search、参数稳健性分析、Research Protocol、研究员选择与冻结后的官方 OOS Research View。系统定位为历史数据研究与回测工具，不是投资建议、收益保证或实盘交易系统。
 
 ## 项目结构
 
@@ -75,6 +75,7 @@ pnpm build
 - `docs/release/v1.0-final-release-gate.md` 记录 V1.0 发布验收范围、测试矩阵与已知限制。
 - `docs/release/v1.2-release-gate.md` 记录 V1.2 多策略比较与长历史验收。
 - `docs/release/v1.3.0.md` 记录 V1.3 功能、兼容性、升级路径、限制与最终验证证据。
+- `docs/release/v1.3.1.md` 记录 V1.3.1 UI、UX、图表交互与策略编排增强及最终验收。
 - `docs/release/ETF-Quant-Research-System-V1.0-architecture-evolution.md` 记录各阶段架构演进与提交历史。
 
 ## 研究语义
