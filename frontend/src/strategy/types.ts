@@ -68,6 +68,10 @@ export interface EditorState {
   initialAllocations: EditorAllocation[];
   rebalanceFrequency: RebalanceFrequency;
   rebalanceThresholdPercent: string;
+  strategyMode?: string;
+  isDirty?: boolean;
+  sourceSchemaVersion?: string;
+  sourcePayload?: StrategyPayload;
 }
 
 export interface StrategyOperandPayload {
@@ -99,6 +103,7 @@ export interface StrategyAllocationPayload {
 }
 
 export interface StrategyPayload {
+  [key: string]: unknown;
   strategy_schema_version?: StrategySchemaVersion;
   strategy_id: string;
   name: string;
@@ -116,6 +121,11 @@ export interface StrategyPayload {
   fallback: { name: string; allocations: StrategyAllocationPayload[] };
   no_match_behavior?: NoMatchBehavior;
   initial_allocation?: { allocations: StrategyAllocationPayload[] };
+  strategy_mode?: string;
+  initial_regime?: string | null;
+  regimes?: unknown[];
+  transitions?: unknown[];
+  value_zones?: unknown[];
   rebalance_policy: { frequency: RebalanceFrequency; threshold: number | null };
 }
 

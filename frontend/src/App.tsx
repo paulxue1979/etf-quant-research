@@ -37,9 +37,15 @@ function percent(value: number): string {
 }
 
 function operandLabel(operand: EditorOperand): string {
-  if (operand.type === "price") return `${operand.asset} Price`;
+  if (operand.type === "price") return `${operand.asset} ${operand.timeframe.toUpperCase()} Close`;
   if (operand.type === "constant") return `Constant ${operand.value || "0"}`;
-  return `${operand.asset} ${operand.type.toUpperCase()}${operand.period || "?"}`;
+  return `${operand.asset} ${operand.timeframe.toUpperCase()} ${operand.type.toUpperCase()}${operand.period || "?"}`;
+}
+
+function thresholdLabel(value: string): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  return `${numeric >= 0 ? "+" : ""}${numeric}%`;
 }
 
 function issueForPath(issues: ValidationIssue[], pathPart: string): ValidationIssue | undefined {
@@ -94,6 +100,19 @@ function OperandEditor({
           ))}
         </select>
       )}
+      {operand.type !== "constant" && (
+        <label className="operand-timeframe">
+          Timeframe
+          <select
+            aria-label="Operand timeframe"
+            value={operand.timeframe}
+            onChange={(event) => set({ timeframe: event.target.value as EditorOperand["timeframe"] })}
+          >
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </label>
+      )}
       {operand.type === "constant" && (
         <input
           aria-label="Constant value"
@@ -114,7 +133,7 @@ function OperandEditor({
         />
       )}
       {operand.type !== "constant" && (
-        <span className="operand-price-field">{priceField.toUpperCase()}</span>
+        <span className="operand-price-field">Price: {priceField.toUpperCase()}</span>
       )}
       <span className="operand-preview">{operandLabel(operand)}</span>
     </div>
@@ -166,14 +185,14 @@ function ConditionEditor({
           onChange={(right) => update({ right })}
         />
         <label className="threshold-input">
-          Relative %
+          Relative Threshold (%)
           <input
             aria-label="Relative threshold percent"
             inputMode="decimal"
             disabled={condition.operator === "equal"}
             value={condition.thresholdPercent}
             onChange={(event) => update({ thresholdPercent: event.target.value })}
-            placeholder="0"
+            placeholder="+3 / -4 / 0"
           />
         </label>
         <button className="button button-quiet" type="button" onClick={onRemove}>
@@ -185,7 +204,7 @@ function ConditionEditor({
         <strong>{comparisonOptions.find((option) => option.value === condition.operator)?.label}</strong>
         <span>{operandLabel(condition.right)}</span>
         {condition.thresholdPercent && condition.operator !== "equal" && (
-          <em>{Number(condition.thresholdPercent) >= 0 ? "+" : ""}{condition.thresholdPercent}%</em>
+          <em>{thresholdLabel(condition.thresholdPercent)}</em>
         )}
       </div>
       <FieldError issue={issue} />
@@ -610,6 +629,12 @@ export function App() {
           <span className="status-pill">{state.priceField.toUpperCase()}</span>
         </div>
       </header>
+      {state.strategyMode === "regime_state_machine" && (
+        <div className="strategy-mode-notice" role="status">
+          <strong>REGIME STATE MACHINE</strong>
+          <span>This version is preserved read-only in Strategy Lab. Regimes, transitions, and value zones are kept in the source payload for PHASE 12E.</span>
+        </div>
+      )}
       <div className="workspace">
         <div className="main-column">
           <section className="panel basic-panel">

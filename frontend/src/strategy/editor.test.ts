@@ -10,6 +10,12 @@ import {
 } from "./editor";
 import type { EditorState, StrategyPayload } from "./types";
 
+function firstCondition(state: EditorState) {
+  const condition = state.rules[0].condition.children[0];
+  if (condition.type !== "condition") throw new Error("expected a condition");
+  return condition;
+}
+
 describe("strategy editor serialization", () => {
   it("keeps the demo strategy in the domain wire shape", () => {
     const state = createDefaultEditorState();
@@ -66,6 +72,125 @@ describe("strategy editor serialization", () => {
       operator: "less_than",
       threshold: { type: "relative", value: -0.03 },
       left: { type: "constant", value: -1.25 },
+    });
+  });
+
+  it.each([
+    ["price", "daily"],
+    ["price", "weekly"],
+    ["ma", "daily"],
+    ["ma", "weekly"],
+    ["ema", "daily"],
+    ["ema", "weekly"],
+  ] as const)("serializes %s %s timeframe explicitly", (type, timeframe) => {
+    const state = createDefaultEditorState();
+    const condition = firstCondition(state);
+    const operand = { ...condition.left, type, timeframe, period: type === "price" ? "" : "20" };
+    state.rules[0].condition.children[0] = { ...condition, left: operand };
+
+    const serialized = toStrategyPayload(state).rules[0].condition.children[0];
+    expect(serialized.type).toBe("condition");
+    if (serialized.type !== "condition") return;
+    expect(serialized.left).toMatchObject({ type, timeframe });
+  });
+
+  it("does not expose or serialize a timeframe for CONSTANT operands", () => {
+    const state = createDefaultEditorState();
+    const condition = firstCondition(state);
+    state.rules[0].condition.children[0] = {
+      ...condition,
+      left: { ...condition.left, type: "constant", value: "1.25", timeframe: "weekly" },
+    };
+
+    const serialized = toStrategyPayload(state).rules[0].condition.children[0];
+    expect(serialized.type).toBe("condition");
+    if (serialized.type !== "condition") return;
+    expect(serialized.left).toEqual({ type: "constant", asset: "QQQ", value: 1.25 });
+  });
+
+  it("supports mixed timeframe operands without applying a frontend restriction", () => {
+    const state = createDefaultEditorState();
+    const condition = firstCondition(state);
+    state.rules[0].condition.children[0] = {
+      ...condition,
+      left: { ...condition.left, timeframe: "daily" },
+      right: { ...condition.right, timeframe: "weekly", period: "200" },
+    };
+
+    const serialized = toStrategyPayload(state).rules[0].condition.children[0];
+    expect(serialized.type).toBe("condition");
+    if (serialized.type !== "condition") return;
+    expect(serialized.left.timeframe).toBe("daily");
+    expect(serialized.right.timeframe).toBe("weekly");
+  });
+
+  it.each([
+    ["3", 0.03],
+    ["-4", -0.04],
+    ["0", 0],
+    ["2.5", 0.025],
+  ] as const)("serializes relative threshold %s%% as %s", (input, expected) => {
+    const state = createDefaultEditorState();
+    const condition = firstCondition(state);
+    state.rules[0].condition.children[0] = { ...condition, thresholdPercent: input };
+    const serialized = toStrategyPayload(state).rules[0].condition.children[0];
+    expect(serialized.type).toBe("condition");
+    if (serialized.type !== "condition") return;
+    expect(serialized.threshold).toEqual({ type: "relative", value: expected });
+  });
+
+  it("preserves absent threshold separately from explicit zero on a no-edit round trip", () => {
+    const absent = toStrategyPayload(createDefaultEditorState());
+    const absentCondition = absent.rules[0].condition.children[0];
+    expect(absentCondition.type).toBe("condition");
+    if (absentCondition.type !== "condition") return;
+    absentCondition.threshold = null;
+    delete absentCondition.left.timeframe;
+    delete absentCondition.right.timeframe;
+    delete absent.strategy_schema_version;
+    absent.unknown_field = { preserved: true };
+
+    const zero = JSON.parse(JSON.stringify(absent)) as StrategyPayload;
+    const zeroCondition = zero.rules[0].condition.children[0];
+    expect(zeroCondition.type).toBe("condition");
+    if (zeroCondition.type !== "condition") return;
+    zeroCondition.threshold = { type: "relative", value: 0 };
+
+    expect(toStrategyPayload(fromStrategyPayload(absent))).toEqual(absent);
+    expect(toStrategyPayload(fromStrategyPayload(zero))).toEqual(zero);
+  });
+
+  it("preserves current schema, regime fields, and unknown source fields until an edit", () => {
+    const payload = toStrategyPayload(createDefaultEditorState());
+    payload.strategy_mode = "regime_state_machine";
+    payload.initial_regime = "defensive";
+    payload.regimes = [{ state_id: "defensive", metadata: { owner: "research" } }];
+    payload.transitions = [{ transition_id: "recover" }];
+    payload.value_zones = [{ zone_id: "value-1" }];
+    payload.extra_metadata = { source: "fixture" };
+
+    const restored = fromStrategyPayload(payload);
+    expect(restored.strategyMode).toBe("regime_state_machine");
+    expect(restored.isDirty).toBe(false);
+    expect(toStrategyPayload(restored)).toEqual(payload);
+  });
+
+  it("tracks only user edits as dirty and turns an intentional timeframe change into a payload change", () => {
+    const source = toStrategyPayload(createDefaultEditorState());
+    const restored = fromStrategyPayload(source);
+    expect(restored.isDirty).toBe(false);
+    const condition = firstCondition(restored);
+    const edited = editorReducer(restored, {
+      type: "condition",
+      ruleId: restored.rules[0].id,
+      conditionId: condition.id,
+      condition: { ...condition, left: { ...condition.left, timeframe: "weekly" } },
+    });
+
+    expect(edited.isDirty).toBe(true);
+    expect(toStrategyPayload(edited).rules[0].condition.children[0]).toMatchObject({
+      type: "condition",
+      left: { timeframe: "weekly" },
     });
   });
 

@@ -129,6 +129,8 @@ export function createDefaultEditorState(): EditorState {
     initialAllocations: [],
     rebalanceFrequency: "weekly",
     rebalanceThresholdPercent: "5",
+    strategyMode: "rule_based",
+    isDirty: false,
   };
 }
 
@@ -209,7 +211,7 @@ export type EditorAction =
   | { type: "rebalance"; field: "frequency" | "threshold"; value: string }
   | { type: "replace"; state: EditorState };
 
-export function editorReducer(state: EditorState, action: EditorAction): EditorState {
+function reduceEditorState(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "basic":
       return { ...state, [action.field]: action.value };
@@ -323,12 +325,21 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   }
 }
 
+export function editorReducer(state: EditorState, action: EditorAction): EditorState {
+  const next = reduceEditorState(state, action);
+  return action.type === "replace" ? { ...next, isDirty: false } : { ...next, isDirty: true };
+}
+
 function toNumber(value: string, field: string): number {
   const numeric = Number(value);
   if (value.trim() === "" || !Number.isFinite(numeric)) {
     throw new Error(`${field} must be a finite number`);
   }
   return numeric;
+}
+
+function formatPercentValue(value: number): string {
+  return String(Number((value * 100).toFixed(8)));
 }
 
 function toWeightPayload(allocation: EditorAllocation): StrategyAllocationPayload {
@@ -344,7 +355,6 @@ function toOperandPayload(operand: EditorOperand, priceField: PriceField): Strat
       type: "constant",
       asset: operand.asset,
       value: toNumber(operand.value, "constant"),
-      timeframe: "daily",
     };
   }
   if (operand.type === "price") {
@@ -397,7 +407,11 @@ function toRuleGroupPayload(group: EditorRuleGroup, priceField: PriceField): Str
 }
 
 export function toStrategyPayload(state: EditorState): StrategyPayload {
+  if (!state.isDirty && state.sourcePayload) {
+    return clonePayload(state.sourcePayload);
+  }
   const payload: StrategyPayload = {
+    ...(state.sourcePayload ? clonePayload(state.sourcePayload) : {}),
     strategy_schema_version: "2.0",
     strategy_id: state.strategyId.trim(),
     name: state.name,
@@ -451,7 +465,7 @@ function fromRuleNode(
       left: fromOperandPayload(node.left),
       operator: node.operator,
       right: fromOperandPayload(node.right),
-      thresholdPercent: node.threshold ? String(node.threshold.value * 100) : "",
+      thresholdPercent: node.threshold ? formatPercentValue(node.threshold.value) : "",
     };
   }
   return {
@@ -501,8 +515,16 @@ export function fromStrategyPayload(payload: StrategyPayload): EditorState {
     rebalanceThresholdPercent:
       payload.rebalance_policy.threshold === null
         ? ""
-        : String(payload.rebalance_policy.threshold * 100),
+        : formatPercentValue(payload.rebalance_policy.threshold),
+    strategyMode: payload.strategy_mode ?? "rule_based",
+    isDirty: false,
+    sourceSchemaVersion: payload.strategy_schema_version ?? "1.0",
+    sourcePayload: clonePayload(payload),
   };
+}
+
+function clonePayload(payload: StrategyPayload): StrategyPayload {
+  return JSON.parse(JSON.stringify(payload)) as StrategyPayload;
 }
 
 export function allocationTotalPercent(allocations: EditorAllocation[]): number {
@@ -598,6 +620,13 @@ function ruleNumericIssues(rule: EditorAllocationRule, index: number): Validatio
         if (issue) issues.push(issue);
       }
       [child.left, child.right].forEach((operand) => {
+        if (operand.type !== "constant" && !["daily", "weekly"].includes(operand.timeframe)) {
+          issues.push({
+            code: "InvalidTimeframe",
+            path: `rules[${index}].condition.${child.id}.${operand.id}.timeframe`,
+            message: "Timeframe must be Daily or Weekly.",
+          });
+        }
         const field = operand.type === "constant" ? operand.value : operand.period;
         if (operand.type === "price") return;
         const issue = numericIssue(
@@ -606,6 +635,16 @@ function ruleNumericIssues(rule: EditorAllocationRule, index: number): Validatio
           operand.type === "constant" ? "Constant" : "Indicator period",
         );
         if (issue) issues.push(issue);
+        else if (operand.type === "ma" || operand.type === "ema") {
+          const period = Number(operand.period);
+          if (!Number.isInteger(period) || period <= 0) {
+            issues.push({
+              code: "InvalidIndicatorPeriod",
+              path: `rules[${index}].condition.${child.id}.${operand.id}.period`,
+              message: "Indicator period must be a positive integer.",
+            });
+          }
+        }
       });
     });
   };
