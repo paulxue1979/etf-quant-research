@@ -250,6 +250,29 @@ class ResearchComparisonRequest(BaseModel):
         return normalized
 
 
+class BulkTrashRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    backtest_run_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("backtest_run_ids")
+    @classmethod
+    def unique_ids(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if not all(normalized) or len(set(normalized)) != len(normalized):
+            raise ValueError("backtest run ids must be unique and non-empty")
+        return normalized
+
+
+class ProtectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    protected: StrictBool
+
+
+class PermanentDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Literal["DELETE"]
+
+
 def _run_summary(metadata: BacktestRunMetadata) -> BacktestRunSummary:
     return BacktestRunSummary(
         backtest_run_id=metadata.backtest_run_id,
@@ -373,6 +396,13 @@ def list_research_backtests(
     order: Literal["asc", "desc"] = "desc",
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    lifecycle_status: Literal["ACTIVE", "TRASHED", "ALL"] = "ACTIVE",
+    run_type: Literal["MANUAL", "GRID_CANDIDATE", "OFFICIAL_OOS"] | None = None,
+    search: str | None = Query(default=None, max_length=120),
+    created_from: str | None = Query(default=None, max_length=40),
+    created_to: str | None = Query(default=None, max_length=40),
+    date_from: str | None = Query(default=None, max_length=20),
+    date_to: str | None = Query(default=None, max_length=20),
 ) -> dict[str, Any]:
     """List persisted research runs only; this route never runs a backtest or fetches data."""
     try:
@@ -382,6 +412,13 @@ def list_research_backtests(
             order=order,
             limit=limit,
             offset=offset,
+            lifecycle_status=lifecycle_status,
+            run_type=run_type,
+            search=search,
+            created_from=created_from,
+            created_to=created_to,
+            date_from=date_from,
+            date_to=date_to,
         )
     except BacktestPersistenceError as exc:
         raise HTTPException(status_code=500, detail="backtest persistence is unavailable") from exc
@@ -392,6 +429,102 @@ def list_research_backtests(
         "offset": offset,
         "sort_by": sort_by,
         "order": order,
+    }
+
+
+def _management_error(exc: BacktestPersistenceError) -> HTTPException:
+    return HTTPException(status_code=500, detail="backtest lifecycle persistence is unavailable")
+
+
+@router.post("/backtests/{backtest_run_id}/trash")
+def trash_backtest(backtest_run_id: str) -> dict[str, Any]:
+    try:
+        result = backtest_repository.trash(backtest_run_id)
+    except BacktestPersistenceError as exc:
+        raise _management_error(exc) from exc
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="backtest run was not found")
+    if result == "protected":
+        raise HTTPException(
+            status_code=409, detail="protected backtest run must be unprotected first"
+        )
+    return {"backtest_run_id": backtest_run_id, "result": result}
+
+
+@router.post("/backtests/{backtest_run_id}/restore")
+def restore_backtest(backtest_run_id: str) -> dict[str, Any]:
+    try:
+        result = backtest_repository.restore(backtest_run_id)
+    except BacktestPersistenceError as exc:
+        raise _management_error(exc) from exc
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="backtest run was not found")
+    return {"backtest_run_id": backtest_run_id, "result": result}
+
+
+@router.post("/backtests/{backtest_run_id}/protection")
+def protect_backtest(backtest_run_id: str, request: ProtectionRequest) -> dict[str, Any]:
+    try:
+        result = backtest_repository.set_protected(backtest_run_id, request.protected)
+    except BacktestPersistenceError as exc:
+        raise _management_error(exc) from exc
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="backtest run was not found")
+    return {"backtest_run_id": backtest_run_id, "is_protected": request.protected}
+
+
+@router.get("/research/backtests/{backtest_run_id}/dependencies")
+def get_backtest_dependencies(backtest_run_id: str) -> dict[str, Any]:
+    try:
+        if backtest_repository.get_metadata(backtest_run_id) is None:
+            raise HTTPException(status_code=404, detail="backtest run was not found")
+        dependencies = backtest_repository.dependencies(backtest_run_id)
+    except BacktestPersistenceError as exc:
+        raise _management_error(exc) from exc
+    return {
+        "backtest_run_id": backtest_run_id,
+        "dependencies": [dependency.__dict__ for dependency in dependencies],
+        "can_permanently_delete": not dependencies,
+    }
+
+
+@router.post("/backtests/{backtest_run_id}/permanent-delete")
+def permanently_delete_backtest(
+    backtest_run_id: str, request: PermanentDeleteRequest
+) -> dict[str, Any]:
+    try:
+        result = backtest_repository.permanently_delete(backtest_run_id)
+    except BacktestPersistenceError as exc:
+        raise _management_error(exc) from exc
+    if isinstance(result, tuple):
+        return {
+            "backtest_run_id": backtest_run_id,
+            "result": "blocked_dependencies",
+            "dependencies": [dependency.__dict__ for dependency in result],
+        }
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="backtest run was not found")
+    if result == "must_be_trashed":
+        raise HTTPException(status_code=409, detail="backtest run must be in Trash first")
+    if result == "protected":
+        raise HTTPException(
+            status_code=409, detail="protected backtest run must be unprotected first"
+        )
+    return {"backtest_run_id": backtest_run_id, "result": result}
+
+
+@router.post("/research/backtests/bulk-trash")
+def bulk_trash_backtests(request: BulkTrashRequest) -> dict[str, Any]:
+    try:
+        result = backtest_repository.bulk_trash(tuple(request.backtest_run_ids))
+    except BacktestPersistenceError as exc:
+        raise _management_error(exc) from exc
+    return {
+        "requested": result.requested,
+        "trashed": list(result.trashed),
+        "skipped_protected": list(result.skipped_protected),
+        "blocked_dependencies": list(result.blocked_dependencies),
+        "not_found": list(result.not_found),
     }
 
 

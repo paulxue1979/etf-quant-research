@@ -21,6 +21,8 @@ import type {
   ResearchComparison,
   ResearchMetrics,
   ResearchSortBy,
+  RunLifecycleFilter,
+  RunTypeFilter,
   StrategyCatalogItem,
 } from "./types";
 import type { PriceField, StrategyVersionSummary } from "../strategy/types";
@@ -142,6 +144,18 @@ function ResearchHistory({
   onToggle,
   onCompare,
   onOpenStrategyVersion,
+  lifecycleStatus,
+  runType,
+  search,
+  onLifecycleStatus,
+  onRunType,
+  onSearch,
+  onTrash,
+  onRestore,
+  onProtect,
+  onView,
+  onPermanentDelete,
+  onBulkTrash,
 }: {
   runs: ResearchBacktestSummary[];
   selectedRunIds: string[];
@@ -158,20 +172,38 @@ function ResearchHistory({
   onToggle: (runId: string) => void;
   onCompare: () => void;
   onOpenStrategyVersion?: (strategyId: string, versionId: string) => void;
+  lifecycleStatus: RunLifecycleFilter;
+  runType: RunTypeFilter | "";
+  search: string;
+  onLifecycleStatus: (value: RunLifecycleFilter) => void;
+  onRunType: (value: RunTypeFilter | "") => void;
+  onSearch: (value: string) => void;
+  onTrash: (runId: string) => void;
+  onRestore: (runId: string) => void;
+  onProtect: (runId: string, value: boolean) => void;
+  onView: (runId: string) => void;
+  onPermanentDelete: (runId: string) => void;
+  onBulkTrash: () => void;
 }) {
   return (
     <section className="panel research-history">
       <div className="section-header compact"><div><span className="eyebrow">RESEARCH HISTORY</span><h2>Saved backtest runs</h2></div><span className="draft-label">{selectedRunIds.length} / 10 selected</span></div>
       <div className="research-controls">
+        <label>View<select aria-label="Run lifecycle view" value={lifecycleStatus} onChange={(event) => onLifecycleStatus(event.target.value as RunLifecycleFilter)}><option value="ACTIVE">Active</option><option value="TRASHED">Trash</option><option value="ALL">All</option></select></label>
+        <label>Run type<select aria-label="Run type filter" value={runType} onChange={(event) => onRunType(event.target.value as RunTypeFilter | "")}><option value="">All run types</option><option value="MANUAL">Manual</option><option value="GRID_CANDIDATE">Grid Candidate</option><option value="OFFICIAL_OOS">Official OOS</option></select></label>
+        <label>Search<input aria-label="Search backtest runs" value={search} placeholder="Run ID, strategy or version" onChange={(event) => onSearch(event.target.value)} /></label>
         <label>Sort by<select aria-label="Research sort metric" value={sortBy} onChange={(event) => onSortBy(event.target.value as ResearchSortBy)}>{researchSortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         <label>Order<select aria-label="Research sort order" value={order} onChange={(event) => onOrder(event.target.value as "asc" | "desc")}><option value="desc">Descending</option><option value="asc">Ascending</option></select></label>
         <button className="button button-primary" type="button" onClick={onCompare} disabled={loading || selectedRunIds.length < 2}>Compare selected</button>
+        <button className="button button-secondary" type="button" onClick={onBulkTrash} disabled={loading || selectedRunIds.length === 0 || lifecycleStatus === "TRASHED"}>Delete selected</button>
       </div>
       {selectedRunIds.length === 10 && <p className="selection-limit" role="status">Maximum 10 runs selected. Remove one run before selecting another.</p>}
-      {runs.length === 0 ? <p className="muted">No saved backtest runs yet.</p> : <div className="table-scroll"><table className="research-table"><thead><tr><th>Select</th><th>Strategy</th><th>Version</th><th>Hash</th><th>Run</th><th>Date</th><th>Initial capital</th><th>Price field</th><th>Engine</th><th>Analysis</th><th>Strategy view</th></tr></thead><tbody>{runs.map((item) => {
+      {runs.length === 0 ? <p className="muted">No saved backtest runs in this view.</p> : <div className="table-scroll"><table className="research-table"><thead><tr><th>Select</th><th>Run type</th><th>Status</th><th>Strategy</th><th>Version</th><th>Hash</th><th>Run</th><th>Date</th><th>Initial capital</th><th>Price field</th><th>Actions</th></tr></thead><tbody>{runs.map((item) => {
         const selected = selectedRunIds.includes(item.backtest_run_id);
         const canOpen = Boolean(item.strategy_id && item.strategy_version_id);
-        return <tr key={item.backtest_run_id}><td><input aria-label={`Select research run ${item.backtest_run_id}`} type="checkbox" checked={selected} disabled={!selected && selectedRunIds.length >= 10} onChange={() => onToggle(item.backtest_run_id)} /></td><td>{item.strategy_id || "Unavailable"}</td><td>{item.strategy_version_id || "Unavailable"}</td><td className="research-hash" title={item.strategy_version_content_hash}>{item.strategy_version_content_hash}</td><td>{item.backtest_run_id}</td><td>{item.start_date} to {item.end_date}</td><td>{item.initial_capital.toLocaleString(undefined, { style: "currency", currency: "USD" })}</td><td>{item.price_field_used.toUpperCase()}</td><td>{item.engine_version}</td><td>{item.analysis_version}</td><td>{canOpen && onOpenStrategyVersion ? <button className="button button-quiet" type="button" onClick={() => onOpenStrategyVersion(item.strategy_id, item.strategy_version_id)}>Open Strategy Version</button> : <span className="muted">Strategy version reference unavailable</span>}</td></tr>;
+        const typeLabel = item.run_type === "GRID_CANDIDATE" ? "GRID" : item.run_type === "OFFICIAL_OOS" ? "OOS" : "MANUAL";
+        const trashed = item.lifecycle_status === "TRASHED";
+        return <tr key={item.backtest_run_id}><td><input aria-label={`Select research run ${item.backtest_run_id}`} type="checkbox" checked={selected} disabled={!selected && selectedRunIds.length >= 10} onChange={() => onToggle(item.backtest_run_id)} /></td><td><span className={`run-type-badge run-type-${typeLabel.toLowerCase()}`}>{typeLabel}</span></td><td><span className={trashed ? "status-badge is-trashed" : "status-badge"}>{trashed ? "Trash" : "Active"}</span>{item.is_protected && <span className="protected-badge">Protected</span>}</td><td>{item.strategy_id || "Unavailable"}</td><td>{item.strategy_version_id || "Unavailable"}</td><td className="research-hash" title={item.strategy_version_content_hash}>{item.strategy_version_content_hash}</td><td>{item.backtest_run_id}</td><td>{item.start_date} to {item.end_date}</td><td>{item.initial_capital.toLocaleString(undefined, { style: "currency", currency: "USD" })}</td><td>{item.price_field_used.toUpperCase()}</td><td className="run-management-actions"><button className="button button-quiet" type="button" onClick={() => onView(item.backtest_run_id)}>View</button>{trashed ? <><button className="button button-quiet" type="button" onClick={() => onRestore(item.backtest_run_id)}>Restore</button><button className="button button-danger" type="button" onClick={() => onPermanentDelete(item.backtest_run_id)}>Delete permanently</button></> : <><button className="button button-quiet" type="button" onClick={() => onProtect(item.backtest_run_id, !item.is_protected)}>{item.is_protected ? "Unprotect" : "Protect"}</button><button className="button button-danger" type="button" onClick={() => onTrash(item.backtest_run_id)} disabled={Boolean(item.is_protected)}>Delete</button></>}{canOpen && onOpenStrategyVersion ? <button className="button button-quiet" type="button" onClick={() => onOpenStrategyVersion(item.strategy_id, item.strategy_version_id)}>Strategy</button> : null}</td></tr>;
       })}</tbody></table></div>}
       <div className="research-controls" aria-label="Research history pagination">
         <button className="button button-secondary" type="button" onClick={onPrevious} disabled={loading || offset === 0}>Previous</button>
@@ -281,6 +313,9 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [researchSortBy, setResearchSortBy] = useState<ResearchSortBy>("created_at");
   const [researchOrder, setResearchOrder] = useState<"asc" | "desc">("desc");
+  const [lifecycleStatus, setLifecycleStatus] = useState<RunLifecycleFilter>("ACTIVE");
+  const [runType, setRunType] = useState<RunTypeFilter | "">("");
+  const [runSearch, setRunSearch] = useState("");
   const [comparison, setComparison] = useState<ResearchComparison | null>(null);
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchError, setResearchError] = useState<string | null>(null);
@@ -294,6 +329,9 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
       const response = await backtestApi.listResearchRuns(researchSortBy, researchOrder, {
         limit: RESEARCH_PAGE_SIZE,
         offset: researchOffset,
+        lifecycleStatus,
+        runType: runType || undefined,
+        search: runSearch.trim() || undefined,
       });
       setResearchRuns(response.items);
       setResearchTotal(response.total);
@@ -333,7 +371,7 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
 
   useEffect(() => {
     void loadResearchRuns();
-  }, [researchSortBy, researchOrder, researchOffset]);
+  }, [researchSortBy, researchOrder, researchOffset, lifecycleStatus, runType, runSearch]);
 
   useEffect(() => {
     if (!strategyId) {
@@ -465,6 +503,32 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
     }
   }
 
+  function confirmTrash(runId: string) {
+    if (window.confirm(`Move backtest run ${runId} to Trash? The Strategy and StrategyVersion will be kept.`)) {
+      void backtestApi.trash(runId).then(() => { setSelectedRunIds((current) => current.filter((id) => id !== runId)); void loadResearchRuns(); }).catch((reason) => setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to move run to Trash."));
+    }
+  }
+
+  function confirmBulkTrash() {
+    if (window.confirm(`Move ${selectedRunIds.length} selected backtest runs to Trash? Protected runs will be skipped.`)) {
+      void backtestApi.bulkTrash(selectedRunIds).then((result) => { setResearchError(`Trash result: ${result.trashed.length} moved, ${result.skipped_protected.length} protected, ${result.not_found.length} not found.`); setSelectedRunIds([]); void loadResearchRuns(); }).catch((reason) => setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to process selected runs."));
+    }
+  }
+
+  function confirmPermanentDelete(runId: string) {
+    const confirmation = window.prompt("Permanent deletion is destructive. Type DELETE to confirm.");
+    if (confirmation === "DELETE") {
+      void backtestApi.permanentlyDelete(runId).then((result) => { setResearchError(result.result === "blocked_dependencies" ? "Permanent deletion blocked by research dependencies." : "Run permanently deleted."); void loadResearchRuns(); }).catch((reason) => setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to permanently delete run."));
+    }
+  }
+
+  function viewExistingRun(runId: string) {
+    setError(null);
+    void Promise.all([backtestApi.get(runId), backtestApi.getReport(runId), backtestApi.getReportSeries(runId, ["equity", "capital", "twr", "drawdown", "benchmark_twr", "benchmark_drawdown"]), backtestApi.getReportMarkers(runId, { types: [...DEFAULT_MARKER_TYPES].sort() })]).then(([loadedRun, loadedReport, loadedSeries, loadedMarkers]) => {
+      setRun(loadedRun); setReport(loadedReport); setReportSeries(loadedSeries); setMarkerReport(loadedMarkers);
+    }).catch((reason) => setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to view the saved run."));
+  }
+
   return (
     <main className="backtest-shell">
       <header className="backtest-topbar">
@@ -541,6 +605,18 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
           onToggle={toggleResearchRun}
           onCompare={() => void compareSelectedRuns()}
           onOpenStrategyVersion={onOpenStrategyVersion}
+          lifecycleStatus={lifecycleStatus}
+          runType={runType}
+          search={runSearch}
+          onLifecycleStatus={(value) => { setResearchOffset(0); setLifecycleStatus(value); }}
+          onRunType={(value) => { setResearchOffset(0); setRunType(value); }}
+          onSearch={(value) => { setResearchOffset(0); setRunSearch(value); }}
+          onTrash={confirmTrash}
+          onRestore={(runId) => void backtestApi.restore(runId).then(() => void loadResearchRuns()).catch((reason) => setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to restore run."))}
+          onProtect={(runId, value) => void backtestApi.setProtected(runId, value).then(() => void loadResearchRuns()).catch((reason) => setResearchError(reason instanceof BacktestApiError ? reason.message : "Unable to update protection."))}
+          onView={viewExistingRun}
+          onPermanentDelete={confirmPermanentDelete}
+          onBulkTrash={confirmBulkTrash}
         />
         {comparison && <MultiStrategyComparison comparison={comparison} />}
       </section>

@@ -534,6 +534,10 @@ export interface ResearchBacktestSummary {
   experiment_id?: string | null;
   candidate_id?: string | null;
   candidate_index?: number | null;
+  lifecycle_status?: "ACTIVE" | "TRASHED";
+  deleted_at?: string | null;
+  is_protected?: boolean;
+  run_type?: "MANUAL" | "GRID_CANDIDATE" | "OFFICIAL_OOS";
 }
 
 export interface ResearchBacktestList {
@@ -543,6 +547,26 @@ export interface ResearchBacktestList {
   offset: number;
   sort_by: ResearchSortBy;
   order: "asc" | "desc";
+}
+
+export type RunLifecycleFilter = "ACTIVE" | "TRASHED" | "ALL";
+export type RunTypeFilter = "MANUAL" | "GRID_CANDIDATE" | "OFFICIAL_OOS";
+export interface BacktestRunDependency {
+  kind: string;
+  identifier: string;
+  detail: string;
+}
+export interface BacktestRunDependencies {
+  backtest_run_id: string;
+  dependencies: BacktestRunDependency[];
+  can_permanently_delete: boolean;
+}
+export interface BulkTrashResult {
+  requested: number;
+  trashed: string[];
+  skipped_protected: string[];
+  blocked_dependencies: string[];
+  not_found: string[];
 }
 
 export type ComparisonCompatibilityStatus = "COMPARABLE" | "WARNING" | "INCOMPATIBLE" | "UNKNOWN";

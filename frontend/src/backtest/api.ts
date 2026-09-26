@@ -11,6 +11,10 @@ import type {
   HoldingReport,
   HoldingSort,
   ResearchBacktestList,
+  RunLifecycleFilter,
+  RunTypeFilter,
+  BacktestRunDependencies,
+  BulkTrashResult,
   ResearchComparison,
   ResearchProtocolCreateRequest,
   ResearchProtocolDetail,
@@ -153,15 +157,55 @@ export const backtestApi = {
   listResearchRuns(
     sortBy: ResearchSortBy,
     order: "asc" | "desc",
-    page: { limit?: number; offset?: number } = {},
+    page: { limit?: number; offset?: number; lifecycleStatus?: RunLifecycleFilter; runType?: RunTypeFilter; search?: string; createdFrom?: string; createdTo?: string; dateFrom?: string; dateTo?: string } = {},
   ): Promise<ResearchBacktestList> {
     const query = new URLSearchParams({
       limit: String(page.limit ?? 50),
       offset: String(page.offset ?? 0),
       sort_by: sortBy,
       order,
+      lifecycle_status: page.lifecycleStatus ?? "ACTIVE",
     });
+    if (page.runType) query.set("run_type", page.runType);
+    if (page.search) query.set("search", page.search);
+    if (page.createdFrom) query.set("created_from", page.createdFrom);
+    if (page.createdTo) query.set("created_to", page.createdTo);
+    if (page.dateFrom) query.set("date_from", page.dateFrom);
+    if (page.dateTo) query.set("date_to", page.dateTo);
     return requestJson<ResearchBacktestList>(`/research/backtests?${query.toString()}`);
+  },
+
+  trash(runId: string): Promise<{ backtest_run_id: string; result: string }> {
+    return requestJson(`/backtests/${encodeURIComponent(runId)}/trash`, { method: "POST" });
+  },
+
+  restore(runId: string): Promise<{ backtest_run_id: string; result: string }> {
+    return requestJson(`/backtests/${encodeURIComponent(runId)}/restore`, { method: "POST" });
+  },
+
+  setProtected(runId: string, protectedValue: boolean): Promise<{ backtest_run_id: string; is_protected: boolean }> {
+    return requestJson(`/backtests/${encodeURIComponent(runId)}/protection`, {
+      method: "POST",
+      body: JSON.stringify({ protected: protectedValue }),
+    });
+  },
+
+  dependencies(runId: string): Promise<BacktestRunDependencies> {
+    return requestJson(`/research/backtests/${encodeURIComponent(runId)}/dependencies`);
+  },
+
+  permanentlyDelete(runId: string): Promise<{ backtest_run_id: string; result: string; dependencies?: BacktestRunDependencies["dependencies"] }> {
+    return requestJson(`/backtests/${encodeURIComponent(runId)}/permanent-delete`, {
+      method: "POST",
+      body: JSON.stringify({ confirmation: "DELETE" }),
+    });
+  },
+
+  bulkTrash(runIds: string[]): Promise<BulkTrashResult> {
+    return requestJson("/research/backtests/bulk-trash", {
+      method: "POST",
+      body: JSON.stringify({ backtest_run_ids: runIds }),
+    });
   },
 
   compare(runIds: string[]): Promise<ResearchComparison> {

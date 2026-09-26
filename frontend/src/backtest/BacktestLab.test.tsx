@@ -460,6 +460,23 @@ describe("Backtest Lab", () => {
     );
   });
 
+  it("exposes lifecycle, run type and search filters for managed history", async () => {
+    const fetchMock = mockBacktestApi();
+    render(<BacktestLab onBack={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("Saved backtest runs")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Run lifecycle view"), { target: { value: "TRASHED" } });
+    fireEvent.change(screen.getByLabelText("Run type filter"), { target: { value: "GRID_CANDIDATE" } });
+    fireEvent.change(screen.getByLabelText("Search backtest runs"), { target: { value: "candidate" } });
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => {
+      const url = String(input);
+      return url.includes("lifecycle_status=TRASHED")
+        && url.includes("run_type=GRID_CANDIDATE")
+        && url.includes("search=candidate");
+    })).toBe(true));
+  });
+
   it("creates and locks an OOS research protocol before IS evaluation", async () => {
     const fetchMock = mockBacktestApi();
     render(<BacktestLab onBack={vi.fn()} />);

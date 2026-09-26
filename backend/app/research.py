@@ -112,6 +112,10 @@ def metadata_summary_payload(metadata: BacktestRunMetadata) -> dict[str, Any]:
         "experiment_id": metadata.experiment_id,
         "candidate_id": metadata.candidate_id,
         "candidate_index": metadata.candidate_index,
+        "lifecycle_status": metadata.lifecycle_status,
+        "deleted_at": metadata.deleted_at,
+        "is_protected": metadata.is_protected,
+        "run_type": metadata.run_type,
     }
 
 

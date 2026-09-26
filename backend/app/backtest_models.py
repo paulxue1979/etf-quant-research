@@ -251,6 +251,10 @@ class BacktestRunMetadata:
     candidate_index: int | None = None
     projection_status: str = "available"
     projection_version: str = METADATA_PROJECTION_VERSION
+    lifecycle_status: str = "ACTIVE"
+    deleted_at: str | None = None
+    is_protected: bool = False
+    run_type: str = "MANUAL"
 
     @classmethod
     def from_run(cls, run: BacktestRun) -> BacktestRunMetadata:
@@ -287,6 +291,12 @@ class BacktestRunMetadata:
             if candidate_index < 0:
                 raise ValueError("candidate_index must be non-negative")
         metrics = {name: metric_objects[name].to_dict() for name in METADATA_METRIC_NAMES}
+        run_type = "GRID_CANDIDATE" if experiment_id or candidate_id else "MANUAL"
+        if any(
+            key in provenance
+            for key in ("oos_result_id", "oos_execution_id", "official_oos", "protocol_id")
+        ):
+            run_type = "OFFICIAL_OOS"
         return cls(
             backtest_run_id=run.backtest_run_id,
             strategy_id=run.strategy_id,
@@ -311,6 +321,7 @@ class BacktestRunMetadata:
             experiment_id=experiment_id,
             candidate_id=candidate_id,
             candidate_index=candidate_index,
+            run_type=run_type,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -322,6 +333,10 @@ class BacktestRunMetadata:
             "projection_status": self.projection_status,
             "projection_version": self.projection_version,
             "result_available": True,
+            "lifecycle_status": self.lifecycle_status,
+            "deleted_at": self.deleted_at,
+            "is_protected": self.is_protected,
+            "run_type": self.run_type,
         }
         _assert_metadata_safe(payload)
         return payload

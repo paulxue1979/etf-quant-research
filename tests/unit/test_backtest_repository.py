@@ -219,6 +219,57 @@ def test_clear_removes_only_persisted_runs(tmp_path) -> None:
     assert repository.list() == ()
 
 
+def test_run_management_trash_restore_protect_and_permanent_delete(tmp_path) -> None:
+    repository = BacktestRepository(tmp_path / "backtests.db")
+    run = _run()
+    repository.create(run)
+
+    assert repository.trash(run.backtest_run_id) == "trashed"
+    assert repository.trash(run.backtest_run_id) == "already_trashed"
+    assert repository.list_metadata(lifecycle_status="ACTIVE").total == 0
+    assert repository.list_metadata(lifecycle_status="TRASHED").total == 1
+    assert repository.restore(run.backtest_run_id) == "restored"
+    assert repository.restore(run.backtest_run_id) == "already_active"
+    assert repository.set_protected(run.backtest_run_id, True) == "updated"
+    assert repository.trash(run.backtest_run_id) == "protected"
+    assert repository.set_protected(run.backtest_run_id, False) == "updated"
+    assert repository.trash(run.backtest_run_id) == "trashed"
+    assert repository.permanently_delete(run.backtest_run_id) == "deleted"
+    assert repository.get(run.backtest_run_id) is None
+
+
+def test_run_management_bulk_trash_reports_protected_and_missing(tmp_path) -> None:
+    repository = BacktestRepository(tmp_path / "backtests.db")
+    first = _run()
+    second = replace(
+        first,
+        backtest_run_id="repo-run-2",
+        performance_analysis=replace(first.performance_analysis, backtest_run_id="repo-run-2"),
+    )
+    repository.create(first)
+    repository.create(second)
+    repository.set_protected(second.backtest_run_id, True)
+
+    result = repository.bulk_trash((first.backtest_run_id, second.backtest_run_id, "missing"))
+
+    assert result.requested == 3
+    assert result.trashed == (first.backtest_run_id,)
+    assert result.skipped_protected == (second.backtest_run_id,)
+    assert result.not_found == ("missing",)
+
+
+def test_run_management_filters_search_dates_and_type(tmp_path) -> None:
+    repository = BacktestRepository(tmp_path / "backtests.db")
+    run = _run()
+    repository.create(run)
+
+    page = repository.list_metadata(search="repo-run", date_from="2026-01-02", run_type="MANUAL")
+
+    assert page.total == 1
+    assert page.items[0].run_type == "MANUAL"
+    assert page.items[0].lifecycle_status == "ACTIVE"
+
+
 def test_metadata_history_is_paged_without_loading_full_artifacts(tmp_path) -> None:
     repository = BacktestRepository(tmp_path / "backtests.db")
     first = _run()

@@ -12,6 +12,7 @@ from backend.app.backtest_models import BacktestRunMetadata
 from backend.app.backtest_repository import (
     BacktestMetadataPage,
     BacktestPersistenceError,
+    BacktestRunDependency,
     BacktestRunRecord,
 )
 from backend.app.backtest_service import BacktestServiceError
@@ -160,6 +161,56 @@ def test_get_backtest_returns_404_for_unknown_run(
 
     assert response.status_code == 404
     assert response.json() == {"detail": "backtest run was not found"}
+
+
+def test_run_management_endpoints_return_typed_lifecycle_results(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        backtest_lab.backtest_repository, "trash", lambda run_id: "trashed", raising=False
+    )
+    monkeypatch.setattr(
+        backtest_lab.backtest_repository, "restore", lambda run_id: "restored", raising=False
+    )
+    monkeypatch.setattr(
+        backtest_lab.backtest_repository,
+        "set_protected",
+        lambda run_id, value: "updated",
+        raising=False,
+    )
+
+    assert client.post("/backtests/run-1/trash").json() == {
+        "backtest_run_id": "run-1",
+        "result": "trashed",
+    }
+    assert client.post("/backtests/run-1/restore").json() == {
+        "backtest_run_id": "run-1",
+        "result": "restored",
+    }
+    assert client.post("/backtests/run-1/protection", json={"protected": True}).json() == {
+        "backtest_run_id": "run-1",
+        "is_protected": True,
+    }
+
+
+def test_permanent_delete_exposes_dependency_descriptors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependency = BacktestRunDependency(
+        "OFFICIAL_OOS", "oos-1", "Official OOS / Protocol protocol-1"
+    )
+    monkeypatch.setattr(
+        backtest_lab.backtest_repository,
+        "permanently_delete",
+        lambda run_id: (dependency,),
+        raising=False,
+    )
+
+    response = client.post("/backtests/run-1/permanent-delete", json={"confirmation": "DELETE"})
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "blocked_dependencies"
+    assert response.json()["dependencies"][0]["identifier"] == "oos-1"
 
 
 def test_list_backtests_returns_safe_persistence_error(

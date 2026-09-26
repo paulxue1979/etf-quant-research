@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from backend.app.backtest_models import (
@@ -55,11 +56,31 @@ class BacktestMetadataBackfillReport:
     inserted: int
 
 
+@dataclass(frozen=True)
+class BacktestRunDependency:
+    kind: str
+    identifier: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class BulkTrashResult:
+    requested: int
+    trashed: tuple[str, ...]
+    skipped_protected: tuple[str, ...]
+    blocked_dependencies: tuple[str, ...]
+    not_found: tuple[str, ...]
+
+
 class BacktestRepository:
     """Durable repository that never updates or overwrites a completed run."""
 
     SCHEMA_VERSION = 1
     METADATA_TABLE = "backtest_run_metadata"
+    MANAGEMENT_TABLE = "backtest_run_management"
+    ACTIVE = "ACTIVE"
+    TRASHED = "TRASHED"
+    RUN_TYPES = ("MANUAL", "GRID_CANDIDATE", "OFFICIAL_OOS")
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = (
@@ -177,6 +198,29 @@ class BacktestRepository:
             "ON backtest_run_metadata("
             "experiment_id, candidate_index, created_at DESC, backtest_run_id DESC)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backtest_run_management (
+                backtest_run_id TEXT PRIMARY KEY,
+                lifecycle_status TEXT NOT NULL DEFAULT 'ACTIVE'
+                    CHECK(lifecycle_status IN ('ACTIVE', 'TRASHED')),
+                deleted_at TEXT,
+                is_protected INTEGER NOT NULL DEFAULT 0 CHECK(is_protected IN (0, 1)),
+                run_type TEXT NOT NULL DEFAULT 'MANUAL'
+                    CHECK(run_type IN ('MANUAL', 'GRID_CANDIDATE', 'OFFICIAL_OOS')),
+                FOREIGN KEY(backtest_run_id) REFERENCES backtest_runs(backtest_run_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_management_status_created "
+            "ON backtest_run_management(lifecycle_status, deleted_at, backtest_run_id)"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO backtest_run_management(backtest_run_id) "
+            "SELECT backtest_run_id FROM backtest_runs"
+        )
 
     def create(self, run: BacktestRun) -> BacktestRun:
         """Insert one immutable run; repeated inputs still receive a new id."""
@@ -253,6 +297,14 @@ class BacktestRepository:
                 """,
                 cls._metadata_values(metadata),
             )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO backtest_run_management(
+                    backtest_run_id, lifecycle_status, deleted_at, is_protected, run_type
+                ) VALUES (?, 'ACTIVE', NULL, 0, ?)
+                """,
+                (run.backtest_run_id, metadata.run_type),
+            )
         except sqlite3.IntegrityError as exc:
             raise BacktestPersistenceError("backtest run already exists") from exc
         except (sqlite3.Error, TypeError, ValueError, OverflowError) as exc:
@@ -313,6 +365,13 @@ class BacktestRepository:
         order: str = "desc",
         limit: int = 50,
         offset: int = 0,
+        lifecycle_status: str = "ACTIVE",
+        run_type: str | None = None,
+        search: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> BacktestMetadataPage:
         """List only bounded metadata columns; never selects or decodes run_json."""
         if sort_by != "created_at" and sort_by not in METADATA_METRIC_NAMES:
@@ -321,20 +380,34 @@ class BacktestRepository:
             raise BacktestPersistenceError("unsupported backtest metadata sort order")
         if not 1 <= limit <= 100 or offset < 0:
             raise BacktestPersistenceError("invalid backtest metadata page")
-        where, params = self._metadata_filters(strategy_id, strategy_version_id, experiment_id)
+        where, params = self._metadata_filters(
+            strategy_id,
+            strategy_version_id,
+            experiment_id,
+            lifecycle_status=lifecycle_status,
+            run_type=run_type,
+            search=search,
+            created_from=created_from,
+            created_to=created_to,
+            date_from=date_from,
+            date_to=date_to,
+        )
         sort_sql = self._metadata_sort(sort_by, order)
         connection = self._connect()
         try:
             total = int(
                 connection.execute(
                     f"SELECT COUNT(*) FROM backtest_runs r LEFT JOIN backtest_run_metadata m "
-                    f"ON m.backtest_run_id = r.backtest_run_id {where}",
+                    f"ON m.backtest_run_id = r.backtest_run_id "
+                    f"LEFT JOIN backtest_run_management rm "
+                    f"ON rm.backtest_run_id = r.backtest_run_id {where}",
                     params,
                 ).fetchone()[0]
             )
             rows = connection.execute(
                 f"{self._metadata_select()} LEFT JOIN backtest_run_metadata m "
-                f"ON m.backtest_run_id = r.backtest_run_id {where} "
+                f"ON m.backtest_run_id = r.backtest_run_id LEFT JOIN backtest_run_management rm "
+                f"ON rm.backtest_run_id = r.backtest_run_id {where} "
                 f"ORDER BY {sort_sql} LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
@@ -454,6 +527,184 @@ class BacktestRepository:
         finally:
             connection.close()
 
+    def dependencies(self, backtest_run_id: str) -> tuple[BacktestRunDependency, ...]:
+        """Return durable research-chain references that block permanent deletion."""
+        connection = self._connect()
+        try:
+            return self._dependencies_in_connection(connection, backtest_run_id)
+        except sqlite3.Error as exc:
+            raise BacktestPersistenceError("could not inspect backtest dependencies") from exc
+        finally:
+            connection.close()
+
+    def trash(self, backtest_run_id: str) -> str:
+        """Move a run to trash; repeated trash requests are idempotent."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT lifecycle_status, is_protected FROM backtest_run_management "
+                "WHERE backtest_run_id = ?",
+                (backtest_run_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                return "not_found"
+            if int(row["is_protected"]):
+                connection.execute("ROLLBACK")
+                return "protected"
+            if row["lifecycle_status"] == self.TRASHED:
+                connection.execute("COMMIT")
+                return "already_trashed"
+            connection.execute(
+                "UPDATE backtest_run_management SET lifecycle_status = 'TRASHED', "
+                "deleted_at = ? WHERE backtest_run_id = ?",
+                (datetime.now(UTC).isoformat(), backtest_run_id),
+            )
+            connection.execute("COMMIT")
+            return "trashed"
+        except sqlite3.Error as exc:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise BacktestPersistenceError("could not move backtest run to trash") from exc
+        finally:
+            connection.close()
+
+    def bulk_trash(self, backtest_run_ids: tuple[str, ...]) -> BulkTrashResult:
+        trashed: list[str] = []
+        skipped: list[str] = []
+        not_found: list[str] = []
+        for run_id in dict.fromkeys(backtest_run_ids):
+            result = self.trash(run_id)
+            if result in {"trashed", "already_trashed"}:
+                trashed.append(run_id)
+            elif result == "protected":
+                skipped.append(run_id)
+            else:
+                not_found.append(run_id)
+        return BulkTrashResult(
+            len(backtest_run_ids), tuple(trashed), tuple(skipped), (), tuple(not_found)
+        )
+
+    def restore(self, backtest_run_id: str) -> str:
+        return self._set_status(backtest_run_id, self.ACTIVE)
+
+    def set_protected(self, backtest_run_id: str, protected: bool) -> str:
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                "UPDATE backtest_run_management SET is_protected = ? WHERE backtest_run_id = ?",
+                (1 if protected else 0, backtest_run_id),
+            )
+            return "updated" if cursor.rowcount else "not_found"
+        except sqlite3.Error as exc:
+            raise BacktestPersistenceError("could not update backtest protection") from exc
+        finally:
+            connection.close()
+
+    def permanently_delete(self, backtest_run_id: str) -> str | tuple[BacktestRunDependency, ...]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT lifecycle_status, is_protected FROM backtest_run_management "
+                "WHERE backtest_run_id = ?",
+                (backtest_run_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                return "not_found"
+            if row["lifecycle_status"] != self.TRASHED:
+                connection.execute("ROLLBACK")
+                return "must_be_trashed"
+            if int(row["is_protected"]):
+                connection.execute("ROLLBACK")
+                return "protected"
+            deps = self._dependencies_in_connection(connection, backtest_run_id)
+            if deps:
+                connection.execute("ROLLBACK")
+                return deps
+            connection.execute(
+                "DELETE FROM backtest_runs WHERE backtest_run_id = ?", (backtest_run_id,)
+            )
+            connection.execute("COMMIT")
+            return "deleted"
+        except sqlite3.Error as exc:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise BacktestPersistenceError("could not permanently delete backtest run") from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _dependencies_in_connection(
+        connection: sqlite3.Connection, backtest_run_id: str
+    ) -> tuple[BacktestRunDependency, ...]:
+        dependencies: list[BacktestRunDependency] = []
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "research_experiment_results" in tables:
+            for row in connection.execute(
+                "SELECT experiment_result_id, experiment_id, candidate_id "
+                "FROM research_experiment_results WHERE backtest_run_id = ?",
+                (backtest_run_id,),
+            ):
+                dependencies.append(
+                    BacktestRunDependency(
+                        "EXPERIMENT_CANDIDATE",
+                        str(row["experiment_result_id"]),
+                        f"Experiment {row['experiment_id']} / Candidate {row['candidate_id']}",
+                    )
+                )
+        if "research_oos_results" in tables:
+            for row in connection.execute(
+                "SELECT oos_result_id, protocol_id FROM research_oos_results "
+                "WHERE backtest_run_id = ?",
+                (backtest_run_id,),
+            ):
+                dependencies.append(
+                    BacktestRunDependency(
+                        "OFFICIAL_OOS",
+                        str(row["oos_result_id"]),
+                        f"Official OOS / Protocol {row['protocol_id']}",
+                    )
+                )
+        return tuple(dependencies)
+
+    def _set_status(self, backtest_run_id: str, status: str) -> str:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT lifecycle_status FROM backtest_run_management WHERE backtest_run_id = ?",
+                (backtest_run_id,),
+            ).fetchone()
+            if row is None:
+                return "not_found"
+            if row["lifecycle_status"] == status:
+                return "already_active" if status == self.ACTIVE else "already_trashed"
+            connection.execute(
+                "UPDATE backtest_run_management SET lifecycle_status = ?, deleted_at = ? "
+                "WHERE backtest_run_id = ?",
+                (
+                    status,
+                    None if status == self.ACTIVE else datetime.now(UTC).isoformat(),
+                    backtest_run_id,
+                ),
+            )
+            return "restored" if status == self.ACTIVE else "trashed"
+        except sqlite3.Error as exc:
+            raise BacktestPersistenceError("could not update backtest lifecycle") from exc
+        finally:
+            connection.close()
+
     @staticmethod
     def _metadata_columns() -> str:
         return (
@@ -509,12 +760,23 @@ class BacktestRepository:
             "m.final_equity AS metadata_final_equity, m.experiment_id, m.candidate_id, "
             "m.candidate_index, m.metadata_projection_version, m.metadata_json, "
             + ", ".join(f"m.{name}_value AS {name}_value" for name in METADATA_METRIC_NAMES)
+            + ", rm.lifecycle_status, rm.deleted_at, rm.is_protected, rm.run_type "
             + " FROM backtest_runs r"
         )
 
     @staticmethod
     def _metadata_filters(
-        strategy_id: str | None, strategy_version_id: str | None, experiment_id: str | None
+        strategy_id: str | None,
+        strategy_version_id: str | None,
+        experiment_id: str | None,
+        *,
+        lifecycle_status: str,
+        run_type: str | None,
+        search: str | None,
+        created_from: str | None,
+        created_to: str | None,
+        date_from: str | None,
+        date_to: str | None,
     ) -> tuple[str, tuple[str, ...]]:
         clauses: list[str] = []
         params: list[str] = []
@@ -525,6 +787,31 @@ class BacktestRepository:
         ):
             if value is not None:
                 clauses.append(f"{column} = ?")
+                params.append(value)
+        if lifecycle_status not in {"ACTIVE", "TRASHED", "ALL"}:
+            raise BacktestPersistenceError("unsupported backtest lifecycle status")
+        if lifecycle_status != "ALL":
+            clauses.append("COALESCE(rm.lifecycle_status, 'ACTIVE') = ?")
+            params.append(lifecycle_status)
+        if run_type is not None:
+            if run_type not in BacktestRepository.RUN_TYPES:
+                raise BacktestPersistenceError("unsupported backtest run type")
+            clauses.append("COALESCE(rm.run_type, 'MANUAL') = ?")
+            params.append(run_type)
+        if search:
+            term = f"%{search.strip()}%"
+            clauses.append(
+                "(r.backtest_run_id LIKE ? OR r.strategy_id LIKE ? OR r.strategy_version_id LIKE ?)"
+            )
+            params.extend((term, term, term))
+        for column, value, comparator in (
+            ("r.created_at", created_from, ">="),
+            ("r.created_at", created_to, "<="),
+            ("r.start_date", date_from, ">="),
+            ("r.end_date", date_to, "<="),
+        ):
+            if value:
+                clauses.append(f"{column} {comparator} ?")
                 params.append(value)
         return ("WHERE " + " AND ".join(clauses)) if clauses else "", tuple(params)
 
@@ -570,6 +857,10 @@ class BacktestRepository:
                 metric_values={name: None for name in METADATA_METRIC_NAMES},
                 projection_status="missing",
                 projection_version="missing",
+                lifecycle_status=str(row["lifecycle_status"] or "ACTIVE"),
+                deleted_at=row["deleted_at"],
+                is_protected=bool(row["is_protected"]),
+                run_type=str(row["run_type"] or "MANUAL"),
             )
         try:
             payload = json.loads(raw, parse_constant=_reject_nonfinite)
@@ -627,6 +918,10 @@ class BacktestRepository:
                 projection_version=str(
                     payload.get("projection_version", row["metadata_projection_version"])
                 ),
+                lifecycle_status=str(row["lifecycle_status"] or "ACTIVE"),
+                deleted_at=row["deleted_at"],
+                is_protected=bool(row["is_protected"]),
+                run_type=str(row["run_type"] or "MANUAL"),
             )
             if metadata.projection_version != row["metadata_projection_version"]:
                 raise ValueError("metadata projection version does not match payload")
