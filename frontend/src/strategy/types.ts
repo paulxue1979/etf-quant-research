@@ -166,6 +166,12 @@ export interface StrategyRecord {
   updated_at: string;
   status: string;
   metadata: Record<string, unknown>;
+  draft_revision?: number | null;
+  draft_status?: "not_saved" | "saved" | "dirty" | string;
+  draft_active_mode?: StrategyMode | null;
+  latest_version_id?: string | null;
+  latest_version_number?: number | null;
+  latest_version_created_at?: string | null;
 }
 
 export interface StrategyOperandPayload {
@@ -242,8 +248,29 @@ export interface StrategyVersionSummary {
   created_at: string;
   content_hash: string;
   status: string;
+  active_mode?: StrategyMode;
+  source_draft_revision?: number | null;
+  source_draft_hash?: string | null;
+  source_provenance?: Record<string, unknown>;
+  description?: string;
 }
 
 export interface StrategyVersion extends StrategyVersionSummary {
   configuration: StrategyPayload;
+}
+
+export interface VersionDiffItem {
+  path: string;
+  before?: unknown;
+  after?: unknown;
+  change: "added" | "removed" | "changed";
+}
+
+export interface VersionDiff {
+  strategy_id: string;
+  from_version_id: string;
+  to_version_id: string;
+  from_version_number: number;
+  to_version_number: number;
+  items: VersionDiffItem[];
 }

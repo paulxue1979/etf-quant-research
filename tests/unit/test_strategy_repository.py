@@ -217,3 +217,43 @@ def test_version_from_draft_is_immutable_and_records_draft_provenance(tmp_path) 
     assert provenance[0] == 1
     assert provenance[1] == draft.draft_hash
     assert json.loads(provenance[2])["source"] == "strategy_draft"
+
+
+def test_version_library_workflows_preserve_read_only_lineage_and_clone_identity(tmp_path) -> None:
+    repository = StrategyRepository(tmp_path / "strategy.db")
+    first = repository.create(_definition("library-source"))
+    second = repository.create(replace(_definition("library-source"), name="Changed"))
+
+    records = repository.list_version_records("library-source")
+    assert [record.version.version_number for record in records] == [1, 2]
+    assert records[0].source_draft_revision is None
+
+    draft = repository.create_draft_from_version(
+        strategy_id="library-source",
+        version_id=first.version_id,
+        expected_revision=0,
+        replace_current=False,
+    )
+    assert draft.draft_revision == 1
+    assert draft.source_metadata["source_version_id"] == first.version_id
+    assert draft.active_strategy_payload["name"] == "Momentum allocation"
+
+    with pytest.raises(StrategyPersistenceError) as error:
+        repository.create_draft_from_version(
+            strategy_id="library-source",
+            version_id=second.version_id,
+            expected_revision=1,
+            replace_current=False,
+        )
+    assert error.value.code == "DRAFT_REPLACE_CONFIRMATION_REQUIRED"
+
+    cloned, cloned_draft = repository.clone_strategy_from_version(
+        source_strategy_id="library-source",
+        source_version_id=second.version_id,
+        new_strategy_id="library-clone",
+        name="Library clone",
+        description="Copied for editing",
+    )
+    assert cloned.strategy_id == "library-clone"
+    assert cloned_draft.draft_revision == 1
+    assert repository.list("library-clone") == ()

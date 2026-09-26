@@ -5,13 +5,15 @@ import { ExperimentResearch } from "./research/ExperimentResearch";
 import { OosResearchView } from "./research/OosResearchView";
 import { strategyApi, StrategyApiError } from "./strategy/api";
 import { RegimeStateMachineEditor } from "./strategy/RegimeStateMachineEditor";
+import { StrategyLibrary } from "./strategy/StrategyLibrary";
+import { StrategyVersionView } from "./strategy/StrategyVersionView";
 import {
   allocationTotalPercent,
   comparisonOptions,
   createDefaultEditorState,
+  createNewStrategyEditorState,
   editorReducer,
   fromDraftResponse,
-  fromStrategyPayload,
   isAssetReferenced,
   rebalanceOptions,
   toStrategyPayload,
@@ -28,7 +30,10 @@ import type {
   EditorState,
   LogicalOperator,
   OperandType,
+  StrategyRecord,
+  StrategyVersion,
   StrategyVersionSummary,
+  VersionDiff,
   ValidationIssue,
   ValidationResult,
 } from "./strategy/types";
@@ -517,7 +522,7 @@ function Preview({ state }: { state: EditorState }) {
 }
 
 export function App() {
-  const [view, setView] = useState<"strategy" | "backtest" | "research" | "oos">("strategy");
+  const [view, setView] = useState<"strategy" | "library" | "version" | "backtest" | "research" | "oos">("strategy");
   const [state, dispatch] = useReducer(editorReducer, undefined, () => {
     return createDefaultEditorState();
   });
@@ -526,12 +531,37 @@ export function App() {
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [versions, setVersions] = useState<StrategyVersionSummary[]>([]);
   const [newAsset, setNewAsset] = useState("");
+  const [strategies, setStrategies] = useState<StrategyRecord[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState<StrategyVersion | null>(null);
+  const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
+  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
 
   useEffect(() => {
     void loadVersions(state.strategyId);
     void loadDraft(state.strategyId);
     // Load persisted state when the strategy identity changes, not on every keystroke.
   }, [state.strategyId]);
+
+  useEffect(() => {
+    void loadLibrary();
+  }, []);
+
+  async function loadLibrary() {
+    setLibraryLoading(true);
+    try {
+      setStrategies(await strategyApi.listStrategies());
+    } catch {
+      setStrategies([]);
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  function navigateWithDraftGuard(action: () => void) {
+    if (state.isDirty) setPendingNavigation(() => action);
+    else action();
+  }
 
   async function loadDraft(strategyId: string) {
     if (!strategyId.trim()) return;
@@ -613,7 +643,7 @@ export function App() {
     }
   }
 
-  async function saveDraft() {
+  async function saveDraft(): Promise<boolean> {
     setBusy("draft");
     setNotice(null);
     try {
@@ -631,24 +661,109 @@ export function App() {
       dispatch({ type: "replace", state: fromDraftResponse(saved) });
       setValidation(emptyValidation);
       setNotice({ tone: "success", text: `Draft saved (revision ${saved.draft_revision}).` });
+      return true;
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft save failed." });
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
-  async function loadVersion(versionId: string) {
+  async function loadVersion(versionId: string, strategyId = state.strategyId) {
     setBusy("load");
     try {
-      const version = await strategyApi.getVersion(state.strategyId, versionId);
-      dispatch({ type: "replace", state: { ...fromStrategyPayload(version.configuration), draftRevision: state.draftRevision, isDirty: true } });
-      setValidation({ is_valid: true, errors: [], warnings: [] });
-      setNotice({ tone: "success", text: `Loaded v${version.version_number} as an editable draft.` });
+      const version = await strategyApi.getVersion(strategyId, versionId);
+      setSelectedVersion(version);
+      setVersionDiff(null);
+      setView("version");
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Version load failed." });
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function openVersionHistory(strategyId: string, versionId: string) {
+    try {
+      setVersions(await strategyApi.listVersions(strategyId));
+      await loadVersion(versionId, strategyId);
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Version history load failed." });
+    }
+  }
+
+  async function openDraft(strategyId: string) {
+    setBusy("load");
+    try {
+      const strategy = await strategyApi.getStrategy(strategyId);
+      const draft = await strategyApi.getDraft(strategyId);
+      dispatch({
+        type: "replace",
+        state: draft
+          ? fromDraftResponse(draft)
+          : createNewStrategyEditorState(strategy.strategy_id, strategy.name, strategy.description, strategy.draft_active_mode ?? "rule_based"),
+      });
+      setSelectedVersion(null);
+      setView("strategy");
+      setValidation(emptyValidation);
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft load failed." });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createNewStrategy(request: { strategy_id: string; name: string; description: string }) {
+    const next = createNewStrategyEditorState(request.strategy_id, request.name, request.description);
+    try {
+      await strategyApi.createStrategy({ strategy_id: next.strategyId, name: next.name, description: next.description, metadata: {} });
+      const saved = await strategyApi.saveDraft(next.strategyId, toDraftPayload(next));
+      dispatch({ type: "replace", state: fromDraftResponse(saved) });
+      setView("strategy");
+      await loadLibrary();
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "New strategy creation failed." });
+    }
+  }
+
+  async function createDraftFromVersion() {
+    if (!selectedVersion) return;
+    try {
+      let draft;
+      try {
+        draft = await strategyApi.createDraftFromVersion(selectedVersion.strategy_id, selectedVersion.version_id, state.draftRevision, false);
+      } catch (error) {
+        if (!(error instanceof StrategyApiError) || error.code !== "DRAFT_REPLACE_CONFIRMATION_REQUIRED") throw error;
+        if (!window.confirm("This will replace the current draft. Continue?")) return;
+        draft = await strategyApi.createDraftFromVersion(selectedVersion.strategy_id, selectedVersion.version_id, state.draftRevision, true);
+      }
+      dispatch({ type: "replace", state: fromDraftResponse(draft) });
+      setSelectedVersion(null);
+      setView("strategy");
+      await loadLibrary();
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft creation from version failed." });
+    }
+  }
+
+  async function cloneFromVersion(request: { new_strategy_id: string; name: string; description: string }) {
+    if (!selectedVersion) return;
+    try {
+      await strategyApi.cloneFromVersion(selectedVersion.strategy_id, selectedVersion.version_id, request);
+      await loadLibrary();
+      await openDraft(request.new_strategy_id);
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Strategy clone failed." });
+    }
+  }
+
+  async function compareVersion(versionId: string) {
+    if (!selectedVersion) return;
+    try {
+      setVersionDiff(await strategyApi.diffVersions(selectedVersion.strategy_id, versionId, selectedVersion.version_id));
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Version comparison failed." });
     }
   }
 
@@ -671,7 +786,9 @@ export function App() {
   };
 
   return (
-    view === "backtest" ? <BacktestLab onBack={() => setView("strategy")} /> :
+    view === "library" ? <StrategyLibrary strategies={strategies} loading={libraryLoading} onNew={(request) => void createNewStrategy(request)} onOpenDraft={(id) => navigateWithDraftGuard(() => void openDraft(id))} onOpenLatest={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onOpenHistory={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onClone={(id, versionId) => navigateWithDraftGuard(() => void loadVersion(versionId, id))} onBack={() => navigateWithDraftGuard(() => setView("strategy"))} /> :
+    view === "version" && selectedVersion ? <StrategyVersionView version={selectedVersion} versions={versions} diff={versionDiff} onBack={() => navigateWithDraftGuard(() => setView("library"))} onCreateDraft={() => void createDraftFromVersion()} onClone={(request) => void cloneFromVersion(request)} onCompare={(id) => void compareVersion(id)} onRunBacktest={() => setView("backtest")} /> :
+    view === "backtest" ? <BacktestLab initialStrategyId={selectedVersion?.strategy_id} initialVersionId={selectedVersion?.version_id} onOpenStrategyVersion={(strategyId, versionId) => void loadVersion(versionId, strategyId)} onBack={() => setView("strategy")} /> :
     view === "research" ? <ExperimentResearch onBack={() => setView("strategy")} /> :
     view === "oos" ? <OosResearchView onBack={() => setView("strategy")} /> :
     <main className="app-shell">
@@ -682,7 +799,8 @@ export function App() {
           <p>Configure, validate and version research strategies.</p>
         </div>
         <div className="topbar-status">
-          <button className="button button-secondary" type="button" onClick={() => setView("backtest")}>Open Backtest Lab</button>
+          <button className="button button-secondary" type="button" onClick={() => navigateWithDraftGuard(() => setView("library"))}>Strategy Library</button>
+          <button className="button button-secondary" type="button" onClick={() => navigateWithDraftGuard(() => setView("backtest"))}>Open Backtest Lab</button>
           <button className="button button-secondary" type="button" onClick={() => setView("research")}>Open Experiment Research</button>
           <button className="button button-secondary" type="button" onClick={() => setView("oos")}>Open OOS Research View</button>
           <span className={`status-pill ${validation.is_valid ? "is-valid" : "is-draft"}`}>
@@ -913,6 +1031,7 @@ export function App() {
         </div>
         <VersionHistory versions={versions} loading={busy === "history" || busy === "load"} onLoad={(id) => void loadVersion(id)} />
       </div>
+      {pendingNavigation && <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="panel unsaved-dialog"><span className="eyebrow">UNSAVED CHANGES</span><h2>Leave this draft?</h2><p>Save the draft before leaving, discard the edits, or stay here.</p><div className="action-buttons"><button className="button button-primary" type="button" onClick={() => { const action = pendingNavigation; setPendingNavigation(null); void saveDraft().then((saved) => { if (saved) action?.(); }); }}>Save Draft</button><button className="button button-quiet" type="button" onClick={() => { const action = pendingNavigation; setPendingNavigation(null); action?.(); }}>Discard</button><button className="button button-secondary" type="button" onClick={() => setPendingNavigation(null)}>Cancel</button></div></section></div>}
     </main>
   );
 }

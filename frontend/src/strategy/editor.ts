@@ -145,6 +145,34 @@ export function createDefaultEditorState(): EditorState {
   };
 }
 
+export function createNewStrategyEditorState(
+  strategyId: string,
+  name: string,
+  description: string,
+  strategyMode: StrategyMode = "rule_based",
+): EditorState {
+  const assets = ["QQQ"];
+  return {
+    strategyId,
+    name,
+    description,
+    priceField: "adjusted_close",
+    assets,
+    rules: [],
+    noMatchBehavior: "use_fallback",
+    fallbackAllocations: [],
+    initialAllocations: [],
+    rebalanceFrequency: "daily",
+    rebalanceThresholdPercent: "",
+    strategyMode,
+    regime: { initialRegime: "", regimes: [], transitions: [], valueZones: [], template: "blank" },
+    ruleBasedAssets: assets,
+    regimeAssets: assets,
+    draftRevision: 0,
+    isDirty: false,
+  };
+}
+
 function regimeAllocation(symbol: string, targetWeightPercent: string): EditorAllocation {
   return { id: nextId("regime-allocation"), symbol, targetWeightPercent };
 }
@@ -898,6 +926,20 @@ export function toDraftPayload(state: EditorState): StrategyDraftPayload {
 }
 
 export function fromDraftResponse(response: StrategyDraftResponse): EditorState {
+  const sourcePayload = response.active_strategy_payload;
+  const hasEditorShape = Object.keys(response.rule_based_draft.editor_state).some((key) =>
+    ["rules", "regime", "fallbackAllocations", "initialAllocations"].includes(key),
+  );
+  if (sourcePayload && !hasEditorShape) {
+    const restored = fromStrategyPayload(sourcePayload);
+    return {
+      ...restored,
+      name: response.name,
+      description: response.description,
+      draftRevision: response.draft_revision,
+      isDirty: false,
+    };
+  }
   const ruleEditor = response.rule_based_draft.editor_state as {
     rules?: EditorAllocationRule[];
     noMatchBehavior?: NoMatchBehavior;

@@ -27,6 +27,9 @@ import type { PriceField, StrategyVersionSummary } from "../strategy/types";
 
 interface BacktestLabProps {
   onBack: () => void;
+  initialStrategyId?: string;
+  initialVersionId?: string;
+  onOpenStrategyVersion?: (strategyId: string, versionId: string) => void;
 }
 
 const EMPTY_FORM = {
@@ -138,6 +141,7 @@ function ResearchHistory({
   onNext,
   onToggle,
   onCompare,
+  onOpenStrategyVersion,
 }: {
   runs: ResearchBacktestSummary[];
   selectedRunIds: string[];
@@ -153,6 +157,7 @@ function ResearchHistory({
   onNext: () => void;
   onToggle: (runId: string) => void;
   onCompare: () => void;
+  onOpenStrategyVersion?: (strategyId: string, versionId: string) => void;
 }) {
   return (
     <section className="panel research-history">
@@ -163,9 +168,10 @@ function ResearchHistory({
         <button className="button button-primary" type="button" onClick={onCompare} disabled={loading || selectedRunIds.length < 2}>Compare selected</button>
       </div>
       {selectedRunIds.length === 10 && <p className="selection-limit" role="status">Maximum 10 runs selected. Remove one run before selecting another.</p>}
-      {runs.length === 0 ? <p className="muted">No saved backtest runs yet.</p> : <div className="table-scroll"><table className="research-table"><thead><tr><th>Select</th><th>Strategy</th><th>Version</th><th>Hash</th><th>Run</th><th>Date</th><th>Initial capital</th><th>Price field</th><th>Engine</th><th>Analysis</th></tr></thead><tbody>{runs.map((item) => {
+      {runs.length === 0 ? <p className="muted">No saved backtest runs yet.</p> : <div className="table-scroll"><table className="research-table"><thead><tr><th>Select</th><th>Strategy</th><th>Version</th><th>Hash</th><th>Run</th><th>Date</th><th>Initial capital</th><th>Price field</th><th>Engine</th><th>Analysis</th><th>Strategy view</th></tr></thead><tbody>{runs.map((item) => {
         const selected = selectedRunIds.includes(item.backtest_run_id);
-        return <tr key={item.backtest_run_id}><td><input aria-label={`Select research run ${item.backtest_run_id}`} type="checkbox" checked={selected} disabled={!selected && selectedRunIds.length >= 10} onChange={() => onToggle(item.backtest_run_id)} /></td><td>{item.strategy_id}</td><td>{item.strategy_version_id}</td><td className="research-hash" title={item.strategy_version_content_hash}>{item.strategy_version_content_hash}</td><td>{item.backtest_run_id}</td><td>{item.start_date} to {item.end_date}</td><td>{item.initial_capital.toLocaleString(undefined, { style: "currency", currency: "USD" })}</td><td>{item.price_field_used.toUpperCase()}</td><td>{item.engine_version}</td><td>{item.analysis_version}</td></tr>;
+        const canOpen = Boolean(item.strategy_id && item.strategy_version_id);
+        return <tr key={item.backtest_run_id}><td><input aria-label={`Select research run ${item.backtest_run_id}`} type="checkbox" checked={selected} disabled={!selected && selectedRunIds.length >= 10} onChange={() => onToggle(item.backtest_run_id)} /></td><td>{item.strategy_id || "Unavailable"}</td><td>{item.strategy_version_id || "Unavailable"}</td><td className="research-hash" title={item.strategy_version_content_hash}>{item.strategy_version_content_hash}</td><td>{item.backtest_run_id}</td><td>{item.start_date} to {item.end_date}</td><td>{item.initial_capital.toLocaleString(undefined, { style: "currency", currency: "USD" })}</td><td>{item.price_field_used.toUpperCase()}</td><td>{item.engine_version}</td><td>{item.analysis_version}</td><td>{canOpen && onOpenStrategyVersion ? <button className="button button-quiet" type="button" onClick={() => onOpenStrategyVersion(item.strategy_id, item.strategy_version_id)}>Open Strategy Version</button> : <span className="muted">Strategy version reference unavailable</span>}</td></tr>;
       })}</tbody></table></div>}
       <div className="research-controls" aria-label="Research history pagination">
         <button className="button button-secondary" type="button" onClick={onPrevious} disabled={loading || offset === 0}>Previous</button>
@@ -176,7 +182,7 @@ function ResearchHistory({
   );
 }
 
-function Results({ run, report, reportSeries, markerReport, markerLoading, reportLoading, reportError, reportSeriesError, markerError, onMarkerTypesChange }: {
+function Results({ run, report, reportSeries, markerReport, markerLoading, reportLoading, reportError, reportSeriesError, markerError, onMarkerTypesChange, onOpenStrategyVersion }: {
   run: BacktestRun;
   report: BacktestReport | null;
   reportSeries: BacktestReportSeries | null;
@@ -187,6 +193,7 @@ function Results({ run, report, reportSeries, markerReport, markerLoading, repor
   reportSeriesError: string | null;
   markerError: string | null;
   onMarkerTypesChange: (types: BacktestMarkerReport["filters"]["types"]) => void;
+  onOpenStrategyVersion?: (strategyId: string, versionId: string) => void;
 }) {
   const analysis = run.performance_analysis;
   const result = run.backtest_result;
@@ -209,7 +216,8 @@ function Results({ run, report, reportSeries, markerReport, markerLoading, repor
         <div>
           <span className="eyebrow">COMPLETED BACKTEST RUN</span>
           <h2>{run.backtest_run_id}</h2>
-          <p className="muted">Version {run.strategy_version_id} · {analysis.start_date} to {analysis.end_date} · {analysis.price_field_used.toUpperCase()}</p>
+          <p className="muted">Version {run.strategy_version_id || "Strategy version reference unavailable"} · {analysis.start_date} to {analysis.end_date} · {analysis.price_field_used.toUpperCase()}</p>
+          {run.strategy_id && run.strategy_version_id && onOpenStrategyVersion ? <button className="button button-secondary" type="button" onClick={() => onOpenStrategyVersion(run.strategy_id, run.strategy_version_id)}>Open Strategy Version</button> : <small className="muted">Strategy version reference unavailable</small>}
         </div>
         <div className="result-equity">
           <span>Final equity</span>
@@ -251,7 +259,7 @@ function Results({ run, report, reportSeries, markerReport, markerLoading, repor
   );
 }
 
-export function BacktestLab({ onBack }: BacktestLabProps) {
+export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpenStrategyVersion }: BacktestLabProps) {
   const [catalog, setCatalog] = useState<StrategyCatalogItem[]>([]);
   const [versions, setVersions] = useState<StrategyVersionSummary[]>([]);
   const [strategyId, setStrategyId] = useState("");
@@ -315,13 +323,13 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
   useEffect(() => {
     void backtestApi.listStrategies().then((items) => {
       setCatalog(items);
-      setStrategyId(items[0]?.strategy_id ?? "");
+      setStrategyId(items.some((item) => item.strategy_id === initialStrategyId) ? initialStrategyId ?? "" : items[0]?.strategy_id ?? "");
       setBusy(null);
     }).catch((reason: unknown) => {
       setBusy(null);
       setError(reason instanceof BacktestApiError ? reason.message : "Unable to load strategies.");
     });
-  }, []);
+  }, [initialStrategyId]);
 
   useEffect(() => {
     void loadResearchRuns();
@@ -337,7 +345,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
     setError(null);
     void backtestApi.listVersions(strategyId).then((items) => {
       setVersions(items);
-      setVersionId(items.at(-1)?.version_id ?? "");
+      setVersionId(items.some((item) => item.version_id === initialVersionId) ? initialVersionId ?? "" : items.at(-1)?.version_id ?? "");
       setBusy(null);
     }).catch((reason: unknown) => {
       setVersions([]);
@@ -503,7 +511,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>
-      {run && <Results run={run} report={report} reportSeries={reportSeries} markerReport={markerReport} markerLoading={markerLoading} reportLoading={reportLoading} reportError={reportError} reportSeriesError={reportSeriesError} markerError={markerError} onMarkerTypesChange={(types) => void loadReportMarkers(run.backtest_run_id, types)} />}
+      {run && <Results run={run} report={report} reportSeries={reportSeries} markerReport={markerReport} markerLoading={markerLoading} reportLoading={reportLoading} reportError={reportError} reportSeriesError={reportSeriesError} markerError={markerError} onMarkerTypesChange={(types) => void loadReportMarkers(run.backtest_run_id, types)} onOpenStrategyVersion={onOpenStrategyVersion} />}
       <section className="research-workspace">
         {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
         <ResearchProtocolPanel
@@ -532,6 +540,7 @@ export function BacktestLab({ onBack }: BacktestLabProps) {
           onNext={() => setResearchOffset((current) => current + RESEARCH_PAGE_SIZE)}
           onToggle={toggleResearchRun}
           onCompare={() => void compareSelectedRuns()}
+          onOpenStrategyVersion={onOpenStrategyVersion}
         />
         {comparison && <MultiStrategyComparison comparison={comparison} />}
       </section>

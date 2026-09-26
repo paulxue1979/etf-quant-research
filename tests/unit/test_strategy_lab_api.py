@@ -159,6 +159,46 @@ def test_unknown_version_and_malformed_requests_are_not_silently_accepted() -> N
     assert malformed.status_code == 422
 
 
+def test_library_can_create_draft_clone_and_semantic_diff_from_versions() -> None:
+    client = TestClient(app)
+    first_payload = _strategy_payload()
+    first = client.post("/strategy-lab/versions", json={"strategy": first_payload}).json()
+    changed_payload = {**first_payload, "name": "Changed strategy"}
+    second = client.post("/strategy-lab/versions", json={"strategy": changed_payload}).json()
+
+    listed = client.get("/strategy-lab/strategies").json()
+    source = next(item for item in listed if item["strategy_id"] == first["strategy_id"])
+    assert source["latest_version_id"] == second["version_id"]
+
+    draft = client.post(
+        f"/strategy-lab/strategies/{first['strategy_id']}/drafts/from-version/{first['version_id']}",
+        json={"expected_revision": 0},
+    )
+    assert draft.status_code == 200
+    assert draft.json()["draft_revision"] == 1
+    assert draft.json()["source_metadata"]["source_version_id"] == first["version_id"]
+
+    conflict = client.post(
+        f"/strategy-lab/strategies/{first['strategy_id']}/drafts/from-version/{second['version_id']}",
+        json={"expected_revision": 1},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "DRAFT_REPLACE_CONFIRMATION_REQUIRED"
+
+    cloned = client.post(
+        f"/strategy-lab/strategies/{first['strategy_id']}/clone-from-version/{second['version_id']}",
+        json={"new_strategy_id": "library-clone", "name": "Library clone", "description": "Copy"},
+    )
+    assert cloned.status_code == 201
+    assert cloned.json()["draft_revision"] == 1
+
+    diff = client.get(
+        f"/strategy-lab/strategies/{first['strategy_id']}/versions/{first['version_id']}/diff/{second['version_id']}"
+    )
+    assert diff.status_code == 200
+    assert any(item["path"] == "$.name" for item in diff.json()["items"])
+
+
 def test_stateful_strategy_validates_and_round_trips_as_immutable_versions() -> None:
     client = TestClient(app)
     first_payload = _strategy_payload()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,7 @@ from backend.app.strategy_repository import (
     StrategyDraft,
     StrategyPersistenceError,
     StrategyRecord,
+    StrategyVersionRecord,
     StrategyVersionStore,
 )
 from strategies import StrategyDefinition, StrategyValidator, StrategyVersion
@@ -72,6 +74,12 @@ class StrategyRecordResponse(BaseModel):
     updated_at: datetime
     status: str
     metadata: dict[str, Any]
+    draft_revision: int | None = None
+    draft_status: str = "not_saved"
+    draft_active_mode: str | None = None
+    latest_version_id: str | None = None
+    latest_version_number: int | None = None
+    latest_version_created_at: datetime | None = None
 
 
 class StrategyDraftResponse(BaseModel):
@@ -112,6 +120,11 @@ class StrategyVersionSummaryResponse(BaseModel):
     created_at: datetime
     content_hash: str
     status: str
+    active_mode: str = "rule_based"
+    source_draft_revision: int | None = None
+    source_draft_hash: str | None = None
+    source_provenance: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
 
 
 class StrategyVersionResponse(StrategyVersionSummaryResponse):
@@ -120,12 +133,43 @@ class StrategyVersionResponse(StrategyVersionSummaryResponse):
     configuration: dict[str, Any]
 
 
+class CreateDraftFromVersionRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    replace_current: bool = False
+
+
+class CloneStrategyRequest(BaseModel):
+    new_strategy_id: str
+    name: str
+    description: str = ""
+
+
+class VersionDiffItem(BaseModel):
+    path: str
+    before: Any = None
+    after: Any = None
+    change: str
+
+
+class VersionDiffResponse(BaseModel):
+    strategy_id: str
+    from_version_id: str
+    to_version_id: str
+    from_version_number: int
+    to_version_number: int
+    items: list[VersionDiffItem]
+
+
 def _validation_response(payload: Mapping[str, Any]) -> StrategyValidationResponse:
     return StrategyValidationResponse.model_validate(payload)
 
 
-def _version_response(version: StrategyVersion) -> StrategyVersionResponse:
+def _version_response(
+    version: StrategyVersion, record: StrategyVersionRecord | None = None
+) -> StrategyVersionResponse:
     payload = version.to_dict()
+    configuration = payload["configuration"]
+    source = record.source_provenance if record else {}
     return StrategyVersionResponse(
         strategy_id=version.strategy_id,
         version_id=version.version_id,
@@ -133,11 +177,18 @@ def _version_response(version: StrategyVersion) -> StrategyVersionResponse:
         created_at=version.created_at,
         content_hash=version.content_hash or "",
         status=version.status.value,
-        configuration=payload["configuration"],
+        configuration=configuration,
+        active_mode=str(configuration.get("strategy_mode") or "rule_based"),
+        source_draft_revision=record.source_draft_revision if record else None,
+        source_draft_hash=record.source_draft_hash if record else None,
+        source_provenance=dict(source),
+        description=str(configuration.get("description") or ""),
     )
 
 
-def _version_summary_response(version: StrategyVersion) -> StrategyVersionSummaryResponse:
+def _version_summary_response(record: StrategyVersionRecord) -> StrategyVersionSummaryResponse:
+    version = record.version
+    configuration = json.loads(version.configuration.to_json())
     return StrategyVersionSummaryResponse(
         strategy_id=version.strategy_id,
         version_id=version.version_id,
@@ -145,10 +196,20 @@ def _version_summary_response(version: StrategyVersion) -> StrategyVersionSummar
         created_at=version.created_at,
         content_hash=version.content_hash or "",
         status=version.status.value,
+        active_mode=str(configuration.get("strategy_mode") or "rule_based"),
+        source_draft_revision=record.source_draft_revision,
+        source_draft_hash=record.source_draft_hash,
+        source_provenance=dict(record.source_provenance),
+        description=str(configuration.get("description") or ""),
     )
 
 
-def _strategy_response(strategy: StrategyRecord) -> StrategyRecordResponse:
+def _strategy_response(
+    strategy: StrategyRecord,
+    *,
+    draft: StrategyDraft | None = None,
+    latest: StrategyVersionRecord | None = None,
+) -> StrategyRecordResponse:
     return StrategyRecordResponse(
         strategy_id=strategy.strategy_id,
         name=strategy.name,
@@ -157,6 +218,46 @@ def _strategy_response(strategy: StrategyRecord) -> StrategyRecordResponse:
         updated_at=strategy.updated_at,
         status=strategy.status,
         metadata=dict(strategy.metadata),
+        draft_revision=None if draft is None else draft.draft_revision,
+        draft_status="not_saved"
+        if draft is None
+        else ("dirty" if draft.active_strategy_payload is None else "saved"),
+        draft_active_mode=None if draft is None else draft.active_mode,
+        latest_version_id=None if latest is None else latest.version.version_id,
+        latest_version_number=None if latest is None else latest.version.version_number,
+        latest_version_created_at=None if latest is None else latest.version.created_at,
+    )
+
+
+def _diff_values(before: Any, after: Any, path: str = "$") -> list[VersionDiffItem]:
+    if type(before) is not type(after):
+        return [VersionDiffItem(path=path, before=before, after=after, change="changed")]
+    if isinstance(before, Mapping):
+        items: list[VersionDiffItem] = []
+        for key in sorted(set(before) | set(after)):
+            child = f"{path}.{key}"
+            if key not in before:
+                items.append(VersionDiffItem(path=child, after=after[key], change="added"))
+            elif key not in after:
+                items.append(VersionDiffItem(path=child, before=before[key], change="removed"))
+            else:
+                items.extend(_diff_values(before[key], after[key], child))
+        return items
+    if isinstance(before, list):
+        items = []
+        for index in range(max(len(before), len(after))):
+            child = f"{path}[{index}]"
+            if index >= len(before):
+                items.append(VersionDiffItem(path=child, after=after[index], change="added"))
+            elif index >= len(after):
+                items.append(VersionDiffItem(path=child, before=before[index], change="removed"))
+            else:
+                items.extend(_diff_values(before[index], after[index], child))
+        return items
+    return (
+        []
+        if before == after
+        else [VersionDiffItem(path=path, before=before, after=after, change="changed")]
     )
 
 
@@ -213,7 +314,17 @@ def create_strategy_identity(request: CreateStrategyRequest) -> StrategyRecordRe
 @router.get("/strategies", response_model=list[StrategyRecordResponse])
 def list_strategy_identities() -> list[StrategyRecordResponse]:
     try:
-        return [_strategy_response(item) for item in strategy_version_store.list_strategies()]
+        responses: list[StrategyRecordResponse] = []
+        for item in strategy_version_store.list_strategies():
+            records = strategy_version_store.list_version_records(item.strategy_id)
+            responses.append(
+                _strategy_response(
+                    item,
+                    draft=strategy_version_store.get_draft(item.strategy_id),
+                    latest=records[-1] if records else None,
+                )
+            )
+        return responses
     except StrategyPersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
@@ -337,6 +448,65 @@ def create_strategy_version_from_draft(
         ) from exc
 
 
+@router.post(
+    "/strategies/{strategy_id}/drafts/from-version/{version_id}",
+    response_model=StrategyDraftResponse,
+)
+def create_strategy_draft_from_version(
+    strategy_id: str, version_id: str, request: CreateDraftFromVersionRequest
+) -> StrategyDraftResponse:
+    try:
+        draft = strategy_version_store.create_draft_from_version(
+            strategy_id=strategy_id,
+            version_id=version_id,
+            expected_revision=request.expected_revision,
+            replace_current=request.replace_current,
+        )
+        strategy = strategy_version_store.get_strategy(strategy_id)
+        assert strategy is not None
+        return _draft_response(draft, strategy)
+    except StrategyPersistenceError as exc:
+        code_to_status = {
+            "STRATEGY_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+            "VERSION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+            "DRAFT_REVISION_CONFLICT": status.HTTP_409_CONFLICT,
+            "DRAFT_REPLACE_CONFIRMATION_REQUIRED": status.HTTP_409_CONFLICT,
+        }
+        raise HTTPException(
+            status_code=code_to_status.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR),
+            detail=exc.code,
+        ) from exc
+
+
+@router.post(
+    "/strategies/{strategy_id}/clone-from-version/{version_id}",
+    response_model=StrategyRecordResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def clone_strategy_from_version(
+    strategy_id: str, version_id: str, request: CloneStrategyRequest
+) -> StrategyRecordResponse:
+    try:
+        record, _draft = strategy_version_store.clone_strategy_from_version(
+            source_strategy_id=strategy_id,
+            source_version_id=version_id,
+            new_strategy_id=request.new_strategy_id,
+            name=request.name,
+            description=request.description,
+        )
+        return _strategy_response(record, draft=_draft)
+    except StrategyPersistenceError as exc:
+        code_to_status = {
+            "VERSION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+            "STRATEGY_ALREADY_EXISTS": status.HTTP_409_CONFLICT,
+            "DRAFT_INVALID": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        }
+        raise HTTPException(
+            status_code=code_to_status.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR),
+            detail=exc.code,
+        ) from exc
+
+
 @router.post("/validate", response_model=StrategyValidationResponse)
 def validate_strategy_payload(request: StrategyPayloadRequest) -> StrategyValidationResponse:
     """Delegate Strategy Lab validation to the existing domain validator."""
@@ -375,13 +545,13 @@ def create_strategy_version(
 def list_strategy_versions(strategy_id: str) -> list[StrategyVersionSummaryResponse]:
     """List durable immutable version metadata for one strategy."""
     try:
-        versions = strategy_version_store.list(strategy_id)
+        versions = strategy_version_store.list_version_records(strategy_id)
     except StrategyPersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="strategy persistence failed",
         ) from exc
-    return [_version_summary_response(version) for version in versions]
+    return [_version_summary_response(record) for record in versions]
 
 
 @router.get(
@@ -402,4 +572,34 @@ def get_strategy_version(strategy_id: str, version_id: str) -> StrategyVersionRe
             status_code=status.HTTP_404_NOT_FOUND,
             detail="strategy version was not found",
         )
-    return _version_response(version)
+    return _version_response(
+        version, strategy_version_store.get_version_record(strategy_id, version_id)
+    )
+
+
+@router.get(
+    "/strategies/{strategy_id}/versions/{from_version_id}/diff/{to_version_id}",
+    response_model=VersionDiffResponse,
+)
+def diff_strategy_versions(
+    strategy_id: str, from_version_id: str, to_version_id: str
+) -> VersionDiffResponse:
+    try:
+        before = strategy_version_store.get(strategy_id, from_version_id)
+        after = strategy_version_store.get(strategy_id, to_version_id)
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+    if before is None or after is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="VERSION_NOT_FOUND")
+    before_payload = json.loads(before.configuration.to_json())
+    after_payload = json.loads(after.configuration.to_json())
+    return VersionDiffResponse(
+        strategy_id=strategy_id,
+        from_version_id=from_version_id,
+        to_version_id=to_version_id,
+        from_version_number=before.version_number,
+        to_version_number=after.version_number,
+        items=_diff_values(before_payload, after_payload),
+    )

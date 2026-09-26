@@ -229,6 +229,25 @@ describe("Strategy Lab", () => {
           updated_at: "2026-09-07T00:00:00Z", draft_hash: `draft-${draftRevision}`,
         }), { status: 200 });
       }
+      if (url.includes("/drafts/from-version/")) {
+        return new Response(JSON.stringify({
+          strategy_id: savedConfiguration.strategy_id,
+          draft_revision: draftRevision + 1,
+          active_mode: "rule_based",
+          name: savedConfiguration.name,
+          description: savedConfiguration.description,
+          price_field: "adjusted_close",
+          rebalance_frequency: "weekly",
+          rebalance_threshold_percent: "5",
+          rule_based_draft: { assets: ["QQQ", "TQQQ", "SGOV"], editor_state: { rules: [], fallbackAllocations: [] } },
+          regime_draft: { assets: [], editor_state: {} },
+          active_strategy_payload: savedConfiguration,
+          source_metadata: {},
+          created_at: "2026-09-07T00:00:00Z",
+          updated_at: "2026-09-07T00:00:00Z",
+          draft_hash: "draft-from-version",
+        }), { status: 200 });
+      }
       if (url.includes("/versions/from-draft")) {
         saveCount += 1;
         const version = {
@@ -293,11 +312,13 @@ describe("Strategy Lab", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByRole("button", { name: /v1/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /v1/ }));
-    await waitFor(() => expect(screen.getByText("Loaded v1 as an editable draft.")).toBeInTheDocument());
-    expect(screen.getByDisplayValue("Persisted strategy")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("READ ONLY")).toBeInTheDocument());
+    expect(screen.getByText("This snapshot cannot be edited. Create a draft to continue editing.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create Draft From Version" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Persisted strategy")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
-    await waitFor(() => expect(screen.getByText("Draft saved (revision 1).")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Draft saved (revision 3).")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
     await waitFor(() => expect(screen.getByText("Saved immutable version v2.")).toBeInTheDocument());
     expect(saveCount).toBe(2);

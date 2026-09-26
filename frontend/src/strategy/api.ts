@@ -5,6 +5,7 @@ import type {
   StrategyRecord,
   StrategyVersion,
   StrategyVersionSummary,
+  VersionDiff,
   ValidationResult,
 } from "./types";
 
@@ -142,6 +143,38 @@ export const strategyApi = {
   getVersion(strategyId: string, versionId: string): Promise<StrategyVersion> {
     return requestJson<StrategyVersion>(
       `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/versions/${encodeURIComponent(versionId)}`,
+    );
+  },
+
+  createDraftFromVersion(
+    strategyId: string,
+    versionId: string,
+    expectedRevision: number,
+    replaceCurrent = false,
+  ): Promise<StrategyDraftResponse> {
+    return requestJson<StrategyDraftResponse>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/drafts/from-version/${encodeURIComponent(versionId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision, replace_current: replaceCurrent }),
+      },
+    );
+  },
+
+  cloneFromVersion(
+    strategyId: string,
+    versionId: string,
+    request: { new_strategy_id: string; name: string; description: string },
+  ): Promise<StrategyRecord> {
+    return requestJson<StrategyRecord>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/clone-from-version/${encodeURIComponent(versionId)}`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+  },
+
+  diffVersions(strategyId: string, fromVersionId: string, toVersionId: string): Promise<VersionDiff> {
+    return requestJson<VersionDiff>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/versions/${encodeURIComponent(fromVersionId)}/diff/${encodeURIComponent(toVersionId)}`,
     );
   },
 };

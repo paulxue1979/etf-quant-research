@@ -532,6 +532,26 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .optimization-table td:first-child small, .optimization-table td:last-child small { display: block; margin-top: 4px; color: var(--muted); }
 .optimization-table code { color: #c7d9df; white-space: normal; }
 .metric-unavailable { color: var(--muted); }
+.library-toolbar { display: flex; align-items: end; gap: 14px; flex-wrap: wrap; }
+.library-toolbar label { display: grid; gap: 5px; min-width: 220px; color: var(--muted); font-size: 10px; }
+.library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
+.library-card { display: grid; gap: 10px; min-width: 0; }
+.library-card h2 { overflow-wrap: anywhere; }
+.strategy-id-text { overflow-wrap: anywhere; }
+.library-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 0; background: var(--line); border: 1px solid var(--line); }
+.library-meta div { padding: 9px; background: #10191e; }
+.library-meta dt { color: var(--muted); font-size: 9px; }
+.library-meta dd { margin: 5px 0 0; color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.library-actions { margin-top: auto; }
+.version-readonly-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-left: 4px solid var(--cyan); }
+.version-readonly-banner span { color: var(--muted); }
+.version-details { margin-top: 16px; }
+.version-details summary { cursor: pointer; color: var(--cyan); font-size: 11px; }
+.version-details pre { max-height: 420px; overflow: auto; padding: 12px; background: #0d151a; border: 1px solid var(--line); color: #c7d9df; font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.clone-panel { display: grid; gap: 12px; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(3, 8, 11, .78); }
+.unsaved-dialog { width: min(480px, 100%); }
+@media (max-width: 600px) { .library-toolbar { display: grid; align-items: stretch; } .library-toolbar label { width: 100%; } .version-readonly-banner { align-items: flex-start; flex-direction: column; } .library-actions { display: grid; } }
 .optimization-heatmap { display: grid; min-width: 600px; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
 .heatmap-corner, .heatmap-axis, .heatmap-cell { min-height: 62px; padding: 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .heatmap-corner, .heatmap-axis { display: grid; place-items: center; color: var(--muted); background: #10191e; font-size: 10px; text-align: center; }
