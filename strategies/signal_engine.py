@@ -225,7 +225,12 @@ def _resolve_provenance(
             )
         return target_allocation.matched_rule_id, AllocationSource.RULE_MATCH
     if target_allocation.used_fallback:
-        expected_fallback_id = strategy_version.configuration.fallback.name
+        fallback = strategy_version.configuration.fallback
+        if fallback is None:
+            raise SignalInputConsistencyError(
+                "fallback target allocation requires a configured fallback"
+            )
+        expected_fallback_id = fallback.name
         if target_allocation.matched_rule_id != expected_fallback_id:
             raise SignalInputConsistencyError(
                 "fallback target allocation must identify the configured fallback"

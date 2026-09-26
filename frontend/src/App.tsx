@@ -14,7 +14,7 @@ import {
   createNewStrategyEditorState,
   editorReducer,
   fromDraftResponse,
-  isAssetReferenced,
+  getAssetReferences,
   rebalanceOptions,
   toStrategyPayload,
   toDraftPayload,
@@ -33,6 +33,7 @@ import type {
   StrategyRecord,
   StrategyVersion,
   StrategyVersionSummary,
+  AssetReferenceDescriptor,
   VersionDiff,
   ValidationIssue,
   ValidationResult,
@@ -363,7 +364,7 @@ function AllocationRuleEditor({
 }) {
   const total = allocationTotalPercent(rule.allocations);
   return (
-    <section className="panel rule-panel">
+    <section className="panel rule-panel" data-reference-id={rule.ruleId}>
       <div className="section-header">
         <div>
           <span className="eyebrow">ALLOCATION RULE</span>
@@ -536,6 +537,8 @@ export function App() {
   const [selectedVersion, setSelectedVersion] = useState<StrategyVersion | null>(null);
   const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
+  const [assetRemovalConflict, setAssetRemovalConflict] = useState<{ asset: string; references: AssetReferenceDescriptor[] } | null>(null);
+  const [locateReference, setLocateReference] = useState<AssetReferenceDescriptor | null>(null);
 
   useEffect(() => {
     void loadVersions(state.strategyId);
@@ -778,11 +781,28 @@ export function App() {
   };
 
   const removeAsset = (asset: string) => {
-    if (state.assets.length === 1 || isAssetReferenced(state, asset)) {
-      setNotice({ tone: "error", text: "Remove references to this asset before deleting it." });
+    const references = getAssetReferences(state, asset);
+    if (state.assets.length === 1) {
+      setNotice({ tone: "error", text: "At least one active-mode asset must remain." });
+      return;
+    }
+    if (references.length > 0) {
+      setAssetRemovalConflict({ asset, references });
       return;
     }
     dispatch({ type: "assets", assets: state.assets.filter((item) => item !== asset) });
+  };
+
+  const locateAssetReference = (reference: AssetReferenceDescriptor) => {
+    setAssetRemovalConflict(null);
+    setLocateReference(reference);
+    if (state.strategyMode !== reference.mode) {
+      dispatch({ type: "strategyMode", value: reference.mode });
+    }
+    window.requestAnimationFrame(() => {
+      const target = document.querySelector(`[data-reference-id="${reference.entity_id}"]`);
+      target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    });
   };
 
   return (
@@ -859,7 +879,7 @@ export function App() {
             <div className="section-header">
               <div>
                 <span className="eyebrow">ASSET UNIVERSE</span>
-                <h2>Research assets</h2>
+                <h2>{state.strategyMode === "regime_state_machine" ? "Regime Assets" : "Rule-Based Assets"}</h2>
               </div>
               <span className="muted">{state.assets.length} configured</span>
             </div>
@@ -883,6 +903,7 @@ export function App() {
               state={state}
               model={state.regime}
               issues={validation.errors}
+              locateReference={locateReference}
               onChange={(regime) => dispatch({ type: "regime", value: regime })}
             />
           ) : (
@@ -933,7 +954,7 @@ export function App() {
             </fieldset>
 
             {state.noMatchBehavior === "use_fallback" ? (
-              <div className="allocation-block no-match-allocation">
+              <div className="allocation-block no-match-allocation" data-reference-id="fallback">
                 <div className="subsection-heading">
                   <div><span className="eyebrow">FIXED TARGET</span><h3>Fallback allocation</h3></div>
                   <strong className={allocationTotalPercent(state.fallbackAllocations) > 100 ? "invalid-number" : "valid-number"}>
@@ -952,10 +973,14 @@ export function App() {
                 <button className="button button-quiet" type="button" onClick={() => dispatch({ type: "addFallbackAllocation" })}>+ Add fallback allocation</button>
               </div>
             ) : (
-              <div className="allocation-block no-match-allocation">
+              <div className="allocation-block no-match-allocation" data-reference-id="initial_allocation">
                 <div className="strategy-semantics-note">
                   <strong>Hold Previous</strong>
                   <span>If no rule matches, the strategy keeps its most recently resolved target. You do not re-enter that allocation.</span>
+                </div>
+                <div className="inactive-reference-note" aria-label="Fallback allocation inactive">
+                  <strong>Fallback allocation is inactive</strong>
+                  <span>Fallback allocation is not used while Hold Previous Allocation is selected. Its draft content is preserved.</span>
                 </div>
                 <div className="subsection-heading">
                   <div><span className="eyebrow">SEED TARGET</span><h3>Starting Allocation</h3></div>
@@ -1031,6 +1056,7 @@ export function App() {
         </div>
         <VersionHistory versions={versions} loading={busy === "history" || busy === "load"} onLoad={(id) => void loadVersion(id)} />
       </div>
+      {assetRemovalConflict && <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="panel unsaved-dialog asset-reference-dialog"><span className="eyebrow">ACTIVE REFERENCE BLOCK</span><h2>Cannot remove {assetRemovalConflict.asset}</h2><p>This asset is used by the active {state.strategyMode === "regime_state_machine" ? "Regime" : "Rule-Based"} execution semantics.</p><ul className="validation-errors">{assetRemovalConflict.references.map((reference) => <li key={`${reference.reference_type}-${reference.entity_id}-${reference.field}`}><strong>{reference.display_path}</strong><button className="button button-quiet" type="button" onClick={() => locateAssetReference(reference)}>Locate Reference</button></li>)}</ul><button className="button button-secondary" type="button" onClick={() => setAssetRemovalConflict(null)}>Cancel</button></section></div>}
       {pendingNavigation && <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="panel unsaved-dialog"><span className="eyebrow">UNSAVED CHANGES</span><h2>Leave this draft?</h2><p>Save the draft before leaving, discard the edits, or stay here.</p><div className="action-buttons"><button className="button button-primary" type="button" onClick={() => { const action = pendingNavigation; setPendingNavigation(null); void saveDraft().then((saved) => { if (saved) action?.(); }); }}>Save Draft</button><button className="button button-quiet" type="button" onClick={() => { const action = pendingNavigation; setPendingNavigation(null); action?.(); }}>Discard</button><button className="button button-secondary" type="button" onClick={() => setPendingNavigation(null)}>Cancel</button></div></section></div>}
     </main>
   );

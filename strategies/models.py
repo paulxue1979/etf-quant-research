@@ -885,7 +885,7 @@ class StrategyDefinition:
     assets: tuple[AssetReference | StrategyAssetReference, ...]
     price_field: PriceField
     rules: tuple[AllocationRule, ...]
-    fallback: FallbackAllocation
+    fallback: FallbackAllocation | None
     rebalance_policy: RebalancePolicy
     no_match_behavior: NoMatchBehavior = NoMatchBehavior.USE_FALLBACK
     initial_allocation: AllocationSpecification | None = None
@@ -930,7 +930,7 @@ class StrategyDefinition:
         rules = _normalize_sequence(self.rules, "rules")
         if not all(isinstance(item, AllocationRule) for item in rules):
             raise InvalidStrategyError("rules must contain AllocationRule values")
-        if not isinstance(self.fallback, FallbackAllocation):
+        if self.fallback is not None and not isinstance(self.fallback, FallbackAllocation):
             raise InvalidStrategyError("fallback must be a FallbackAllocation value")
         if not isinstance(self.rebalance_policy, RebalancePolicy):
             raise InvalidStrategyError("rebalance_policy must be a RebalancePolicy value")
@@ -989,9 +989,10 @@ class StrategyDefinition:
             ],
             "price_field": self.price_field.value,
             "rules": [rule.to_dict(include_timeframe=current_schema) for rule in self.rules],
-            "fallback": self.fallback.to_dict(),
             "rebalance_policy": self.rebalance_policy.to_dict(),
         }
+        if self.fallback is not None:
+            payload["fallback"] = self.fallback.to_dict()
         if current_schema:
             payload["strategy_schema_version"] = CURRENT_STRATEGY_SCHEMA_VERSION
         if self.no_match_behavior is not NoMatchBehavior.USE_FALLBACK:
@@ -1062,7 +1063,11 @@ class StrategyDefinition:
                 AllocationRule.from_dict(item)
                 for item in _normalize_sequence(data.get("rules", []), "rules")
             ),
-            fallback=FallbackAllocation.from_dict(data.get("fallback")),
+            fallback=(
+                FallbackAllocation.from_dict(data["fallback"])
+                if data.get("fallback") is not None
+                else None
+            ),
             rebalance_policy=RebalancePolicy.from_dict(data.get("rebalance_policy")),
             no_match_behavior=data.get("no_match_behavior", NoMatchBehavior.USE_FALLBACK.value),
             initial_allocation=(

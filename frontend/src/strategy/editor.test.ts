@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   allocationTotalPercent,
   createDefaultEditorState,
+  createBlankRegimeEditor,
+  createDefaultRegimeEditor,
   editorReducer,
   fromDraftResponse,
   fromStrategyPayload,
+  getAssetReferences,
   toStrategyPayload,
   toDraftPayload,
   validateEditorState,
@@ -406,6 +409,62 @@ describe("strategy editor serialization", () => {
     state.fallbackAllocations[0].targetWeightPercent = "NaN";
 
     expect(validateEditorState(state)).toEqual([]);
+  });
+
+  it("omits inactive fallback from the active payload while preserving the draft", () => {
+    const state = createDefaultEditorState();
+    state.noMatchBehavior = "hold_previous_allocation";
+    state.fallbackAllocations[0].symbol = "NOT_DECLARED";
+
+    const payload = toStrategyPayload(state);
+    const draft = toDraftPayload(state);
+
+    expect(payload.fallback).toBeUndefined();
+    expect(draft.active_strategy_payload?.fallback).toBeUndefined();
+    expect(draft.rule_based_draft.editor_state).toMatchObject({
+      fallbackAllocations: [{ symbol: "NOT_DECLARED" }],
+    });
+  });
+
+  it("returns only active-mode typed asset references", () => {
+    let state = createDefaultEditorState();
+    const ruleReferences = getAssetReferences(state, "SGOV");
+    expect(ruleReferences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference_type: "RULE_ALLOCATION" }),
+      expect.objectContaining({ reference_type: "FALLBACK_ALLOCATION" }),
+    ]));
+
+    state = editorReducer(state, { type: "regime", value: createBlankRegimeEditor(["QQQ"]) });
+    state = editorReducer(state, { type: "strategyMode", value: "regime_state_machine" });
+    expect(getAssetReferences(state, "SGOV")).toEqual([]);
+  });
+
+  it("does not treat preserved fallback as active while hold-previous is selected", () => {
+    const state = createDefaultEditorState();
+    state.assets.push("SPY");
+    state.ruleBasedAssets.push("SPY");
+    state.fallbackAllocations[0].symbol = "SPY";
+    expect(getAssetReferences(state, "SPY")).toEqual([
+      expect.objectContaining({ reference_type: "FALLBACK_ALLOCATION" }),
+    ]);
+
+    state.noMatchBehavior = "hold_previous_allocation";
+    expect(getAssetReferences(state, "SPY")).toEqual([]);
+  });
+
+  it("describes regime state, transition, and value-zone references deterministically", () => {
+    let state = createDefaultEditorState();
+    state = editorReducer(state, { type: "regime", value: createDefaultRegimeEditor(state.assets) });
+
+    const references = getAssetReferences(state, "QQQ");
+
+    expect(references.map((reference) => reference.reference_type)).toEqual(expect.arrayContaining([
+      "STATE_ALLOCATION",
+      "TRANSITION_CONDITION",
+      "VALUE_ZONE",
+    ]));
+    expect(references.every((reference) => reference.mode === "regime_state_machine")).toBe(true);
+    expect(references.every((reference) => reference.symbol === "QQQ")).toBe(true);
   });
 
   it("retains independent mode assets and restores both mode drafts", () => {

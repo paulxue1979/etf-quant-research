@@ -159,13 +159,19 @@ class StrategyValidator:
                     ),
                 )
             )
-        if strategy.get("fallback") is None:
+        mode = strategy.get("strategy_mode", StrategyEvaluationMode.RULE_BASED.value)
+        behavior = strategy.get("no_match_behavior", NoMatchBehavior.USE_FALLBACK.value)
+        if (
+            mode == StrategyEvaluationMode.RULE_BASED.value
+            and behavior != NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION.value
+            and strategy.get("fallback") is None
+        ):
             return ValidationResult(
                 errors=(
                     self._issue(
                         ValidationCode.MISSING_FALLBACK,
                         "fallback",
-                        "strategy must define an explicit fallback allocation",
+                        "USE_FALLBACK strategies must define an explicit fallback allocation",
                     ),
                 )
             )
@@ -198,13 +204,15 @@ class StrategyValidator:
         errors: list[ValidationIssue] = []
         assets = self._validate_assets(strategy, errors)
         self._validate_price_field(strategy, errors)
-        self._validate_rules(strategy, assets, errors)
-        self._validate_fallback(strategy, assets, errors)
-        self._validate_initial_allocation(strategy, assets, errors)
         self._validate_rebalance_policy(strategy, errors)
-        self._validate_no_match_behavior(strategy, errors)
-        self._validate_value_zones(strategy, assets, errors)
-        self._validate_regime_graph(strategy, assets, errors)
+        if strategy.strategy_mode is StrategyEvaluationMode.RULE_BASED:
+            self._validate_rules(strategy, assets, errors)
+            self._validate_fallback(strategy, assets, errors)
+            self._validate_initial_allocation(strategy, assets, errors)
+            self._validate_no_match_behavior(strategy, errors)
+        else:
+            self._validate_value_zones(strategy, assets, errors)
+            self._validate_regime_graph(strategy, assets, errors)
         return ValidationResult(errors=tuple(errors))
 
     def _validate_regime_graph(
@@ -226,19 +234,6 @@ class StrategyValidator:
         regimes = getattr(strategy, "regimes", ())
         transitions = getattr(strategy, "transitions", ())
         if mode is StrategyEvaluationMode.RULE_BASED:
-            if (
-                regimes
-                or transitions
-                or strategy.initial_regime is not None
-                or strategy.value_zones
-            ):
-                errors.append(
-                    self._issue(
-                        ValidationCode.INVALID_REGIME_GRAPH,
-                        "regimes",
-                        "rule-based strategies must not define regime state-machine fields",
-                    )
-                )
             return
         if strategy.strategy_schema_version != CURRENT_STRATEGY_SCHEMA_VERSION:
             errors.append(
@@ -553,6 +548,9 @@ class StrategyValidator:
         errors: list[ValidationIssue],
     ) -> None:
         fallback = getattr(strategy, "fallback", None)
+        behavior = getattr(strategy, "no_match_behavior", None)
+        if behavior is NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION:
+            return
         if fallback is None:
             errors.append(
                 self._issue(

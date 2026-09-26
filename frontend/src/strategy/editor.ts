@@ -5,6 +5,7 @@ import type {
   EditorCondition,
   EditorOperand,
   EditorRuleGroup,
+  AssetReferenceDescriptor,
   EditorRuleNode,
   EditorState,
   EditorRegime,
@@ -668,13 +669,6 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
       allocations: rule.allocations.map(toWeightPayload),
       remaining: rule.remainingSymbol ? { symbol: rule.remainingSymbol } : null,
     })),
-    fallback: {
-      name: "fallback",
-      allocations: (state.strategyMode === "regime_state_machine"
-        ? [{ id: "active-regime-fallback", symbol: state.assets[0] ?? "QQQ", targetWeightPercent: "100" }]
-        : state.fallbackAllocations
-      ).map(toWeightPayload),
-    },
     rebalance_policy: {
       frequency: state.rebalanceFrequency,
       threshold:
@@ -683,6 +677,12 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
           : toNumber(state.rebalanceThresholdPercent, "rebalance threshold") / 100,
     },
   };
+  if (state.strategyMode !== "regime_state_machine" && state.noMatchBehavior === "use_fallback") {
+    payload.fallback = {
+      name: "fallback",
+      allocations: state.fallbackAllocations.map(toWeightPayload),
+    };
+  }
   if (state.strategyMode !== "regime_state_machine" && state.noMatchBehavior === "hold_previous_allocation") {
     payload.no_match_behavior = state.noMatchBehavior;
     payload.initial_allocation = {
@@ -858,7 +858,7 @@ export function fromStrategyPayload(payload: StrategyPayload): EditorState {
       };
     }),
     noMatchBehavior: payload.no_match_behavior ?? "use_fallback",
-    fallbackAllocations: payload.fallback.allocations.map(fromAllocationPayload),
+    fallbackAllocations: (payload.fallback?.allocations ?? []).map(fromAllocationPayload),
     initialAllocations: (payload.initial_allocation?.allocations ?? []).map(
       fromAllocationPayload,
     ),
@@ -989,32 +989,104 @@ export function allocationTotalPercent(allocations: EditorAllocation[]): number 
 }
 
 export function isAssetReferenced(state: EditorState, asset: string): boolean {
+  return getAssetReferences(state, asset).length > 0;
+}
+
+export function getAssetReferences(state: EditorState, asset: string): AssetReferenceDescriptor[] {
+  const references: AssetReferenceDescriptor[] = [];
   const hasOperand = (group: EditorRuleGroup): boolean =>
-    group.children.some((child) => {
-      if (child.type === "group") {
-        return hasOperand(child);
-      }
-      return child.left.asset === asset || child.right.asset === asset;
+    group.children.some((child) => child.type === "group"
+      ? hasOperand(child)
+      : child.left.asset === asset || child.right.asset === asset);
+
+  if (state.strategyMode === "rule_based") {
+    state.rules.forEach((rule) => {
+      if (hasOperand(rule.condition)) references.push({
+        mode: "rule_based",
+        reference_type: "RULE_CONDITION",
+        entity_id: rule.ruleId,
+        display_path: `Rule ${rule.ruleId} → Condition`,
+        field: "condition",
+        symbol: asset,
+      });
+      if (rule.allocations.some((allocation) => allocation.symbol === asset)) references.push({
+        mode: "rule_based",
+        reference_type: "RULE_ALLOCATION",
+        entity_id: rule.ruleId,
+        display_path: `Rule ${rule.ruleId} → Target Allocation`,
+        field: "allocations",
+        symbol: asset,
+      });
+      if (rule.remainingSymbol === asset) references.push({
+        mode: "rule_based",
+        reference_type: "RULE_REMAINING_ALLOCATION",
+        entity_id: rule.ruleId,
+        display_path: `Rule ${rule.ruleId} → Remaining Allocation`,
+        field: "remaining",
+        symbol: asset,
+      });
     });
-  const ruleReferences = (
-    state.rules.some(
-      (rule) =>
-        hasOperand(rule.condition) ||
-        rule.remainingSymbol === asset ||
-        rule.allocations.some((allocation) => allocation.symbol === asset),
-    ) ||
-    state.fallbackAllocations.some((allocation) => allocation.symbol === asset) ||
-    state.initialAllocations.some((allocation) => allocation.symbol === asset)
-  );
-  const regimeReferences = (
-    state.regime?.regimes.some((regime) => regime.allocations.some((allocation) => allocation.symbol === asset)) === true ||
-    state.regime?.valueZones.some((zone) => zone.asset === asset) === true ||
-    state.regime?.transitions.some((transition) => {
-      const visit = (group: EditorRuleGroup): boolean => group.children.some((child) => child.type === "group" ? visit(child) : child.left.asset === asset || child.right.asset === asset);
-      return visit(transition.condition);
-    }) === true
-  );
-  return state.strategyMode === "regime_state_machine" ? regimeReferences : ruleReferences;
+    if (state.noMatchBehavior === "use_fallback" && state.fallbackAllocations.some((allocation) => allocation.symbol === asset)) references.push({
+      mode: "rule_based",
+      reference_type: "FALLBACK_ALLOCATION",
+      entity_id: "fallback",
+      display_path: "Rule Based → Fallback Allocation",
+      field: "fallback.allocations",
+      symbol: asset,
+    });
+    if (state.noMatchBehavior === "hold_previous_allocation" && state.initialAllocations.some((allocation) => allocation.symbol === asset)) references.push({
+      mode: "rule_based",
+      reference_type: "STARTING_ALLOCATION",
+      entity_id: "initial_allocation",
+      display_path: "Rule Based → Starting Allocation",
+      field: "initial_allocation.allocations",
+      symbol: asset,
+    });
+    return references;
+  }
+
+  state.regime?.regimes.forEach((regime) => {
+    if (regime.allocations.some((allocation) => allocation.symbol === asset)) references.push({
+      mode: "regime_state_machine",
+      reference_type: "STATE_ALLOCATION",
+      entity_id: regime.stateId,
+      display_path: `Regime → ${regime.stateId} → Target Allocation`,
+      field: "target_allocation.allocations",
+      symbol: asset,
+    });
+  });
+  state.regime?.transitions.forEach((transition) => {
+    const visit = (group: EditorRuleGroup): boolean => group.children.some((child) => child.type === "group"
+      ? visit(child)
+      : child.left.asset === asset || child.right.asset === asset);
+    if (visit(transition.condition)) references.push({
+      mode: "regime_state_machine",
+      reference_type: "TRANSITION_CONDITION",
+      entity_id: transition.transitionId,
+      display_path: `Regime → ${transition.transitionId} → Condition`,
+      field: "condition",
+      symbol: asset,
+    });
+    if (transition.valueZoneId && state.regime?.valueZones.some((zone) => zone.zoneId === transition.valueZoneId && zone.asset === asset)) references.push({
+      mode: "regime_state_machine",
+      reference_type: "TRANSITION_VALUE_ZONE",
+      entity_id: transition.transitionId,
+      display_path: `Regime → ${transition.transitionId} → Value Zone`,
+      field: "value_zone_id",
+      symbol: asset,
+    });
+  });
+  state.regime?.valueZones.forEach((zone) => {
+    if (zone.asset === asset) references.push({
+      mode: "regime_state_machine",
+      reference_type: "VALUE_ZONE",
+      entity_id: zone.zoneId,
+      display_path: `Regime → ${zone.zoneId} → Value Zone`,
+      field: "asset",
+      symbol: asset,
+    });
+  });
+  return references;
 }
 
 function numericIssue(value: string, path: string, label: string): ValidationIssue | null {

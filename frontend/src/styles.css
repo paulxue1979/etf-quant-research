@@ -115,6 +115,9 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
 .strategy-semantics-note { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: baseline; margin-bottom: 16px; padding: 11px 12px; border-left: 3px solid var(--cyan); background: #102124; }
 .strategy-semantics-note strong { color: var(--cyan); font-size: 11px; }
 .strategy-semantics-note span { color: #c7d1d6; font-size: 11px; line-height: 1.5; }
+.inactive-reference-note { display: grid; gap: 4px; margin-bottom: 16px; padding: 11px 12px; border: 1px dashed #526069; background: #11191d; color: #aeb9bf; }
+.inactive-reference-note strong { color: #e0e6e9; font-size: 11px; }
+.inactive-reference-note span { font-size: 11px; line-height: 1.5; }
 .strategy-mode-notice { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: baseline; margin-top: 18px; padding: 11px 12px; border-left: 3px solid var(--yellow); background: #211d12; color: #d9cba7; }
 .strategy-mode-notice strong { color: var(--yellow); font-size: 11px; }
 .strategy-mode-notice span { font-size: 11px; line-height: 1.5; }
@@ -551,6 +554,8 @@ th { color: var(--muted); font-size: 10px; font-weight: 600; }
 .clone-panel { display: grid; gap: 12px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(3, 8, 11, .78); }
 .unsaved-dialog { width: min(480px, 100%); }
+.asset-reference-dialog .validation-errors { padding-left: 0; list-style: none; }
+.asset-reference-dialog .validation-errors li { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #d6dee2; }
 @media (max-width: 600px) { .library-toolbar { display: grid; align-items: stretch; } .library-toolbar label { width: 100%; } .version-readonly-banner { align-items: flex-start; flex-direction: column; } .library-actions { display: grid; } }
 .optimization-heatmap { display: grid; min-width: 600px; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
 .heatmap-corner, .heatmap-axis, .heatmap-cell { min-height: 62px; padding: 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }

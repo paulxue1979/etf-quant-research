@@ -268,6 +268,57 @@ def test_hold_previous_strategy_requires_initial_allocation() -> None:
     ]
 
 
+def test_hold_previous_strategy_can_omit_fallback_and_preserve_invalid_fallback_draft() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    payload["no_match_behavior"] = "hold_previous_allocation"
+    payload["initial_allocation"] = {"allocations": []}
+    payload.pop("fallback")
+
+    response = client.post("/strategy-lab/validate", json={"strategy": payload})
+
+    assert response.status_code == 200
+    assert response.json()["is_valid"] is True
+
+    payload["fallback"] = {
+        "name": "fallback",
+        "allocations": [{"symbol": "SPY", "target_weight": 1.0}],
+    }
+    response = client.post("/strategy-lab/validate", json={"strategy": payload})
+    assert response.json()["is_valid"] is True
+
+
+def test_regime_validation_ignores_inactive_rule_and_fallback_semantics() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    payload.update(
+        {
+            "strategy_schema_version": "2.0",
+            "strategy_mode": "regime_state_machine",
+            "assets": [{"symbol": "QQQ", "role": "both"}],
+            "initial_regime": "RISK",
+            "regimes": [
+                {
+                    "state_id": "RISK",
+                    "display_name": "Risk",
+                    "target_allocation": {"allocations": [{"symbol": "QQQ", "target_weight": 1.0}]},
+                    "metadata": {},
+                }
+            ],
+            "transitions": [],
+            "value_zones": [],
+        }
+    )
+
+    response = client.post("/strategy-lab/validate", json={"strategy": payload})
+
+    assert response.status_code == 200
+    assert response.json()["is_valid"] is True
+    version = client.post("/strategy-lab/versions", json={"strategy": payload})
+    assert version.status_code == 200
+    assert version.json()["active_mode"] == "regime_state_machine"
+
+
 def test_saved_stateful_version_id_is_handed_to_the_existing_backtest_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

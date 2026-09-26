@@ -218,7 +218,7 @@ export interface StrategyPayload {
     allocations: StrategyAllocationPayload[];
     remaining: { symbol: string } | null;
   }>;
-  fallback: { name: string; allocations: StrategyAllocationPayload[] };
+  fallback?: { name: string; allocations: StrategyAllocationPayload[] };
   no_match_behavior?: NoMatchBehavior;
   initial_allocation?: { allocations: StrategyAllocationPayload[] };
   strategy_mode?: StrategyMode;
@@ -239,6 +239,26 @@ export interface ValidationResult {
   is_valid: boolean;
   errors: ValidationIssue[];
   warnings: ValidationIssue[];
+}
+
+export type AssetReferenceType =
+  | "RULE_CONDITION"
+  | "RULE_ALLOCATION"
+  | "RULE_REMAINING_ALLOCATION"
+  | "FALLBACK_ALLOCATION"
+  | "STARTING_ALLOCATION"
+  | "STATE_ALLOCATION"
+  | "TRANSITION_CONDITION"
+  | "TRANSITION_VALUE_ZONE"
+  | "VALUE_ZONE";
+
+export interface AssetReferenceDescriptor {
+  mode: StrategyMode;
+  reference_type: AssetReferenceType;
+  entity_id: string;
+  display_path: string;
+  field: string;
+  symbol: string;
 }
 
 export interface StrategyVersionSummary {

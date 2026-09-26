@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   conditionSummary,
@@ -16,6 +16,7 @@ import type {
   EditorRegimeTransition,
   EditorState,
   EditorValueZone,
+  AssetReferenceDescriptor,
   RegimeEditorState,
   ValidationIssue,
 } from "./types";
@@ -92,7 +93,7 @@ function StateEditor({
   };
   const referenced = model.transitions.some((transition) => transition.fromState === state.stateId || transition.toState === state.stateId) || model.initialRegime === state.stateId;
   return (
-    <section className="regime-editor-panel">
+    <section className="regime-editor-panel" data-reference-id={state.stateId}>
       <div className="section-header"><div><span className="eyebrow">SELECTED STATE</span><h3>{stateLabel(state)}</h3></div><span className="regime-selection-badge">{state.stateId}</span></div>
       <div className="inline-fields">
         <label>State ID<input aria-label="State ID" value={state.stateId} onChange={(event) => updateState({ stateId: event.target.value })} /><small>Machine-readable and unique.</small></label>
@@ -124,7 +125,7 @@ function TransitionEditor({
 }) {
   const update = (patch: Partial<EditorRegimeTransition>) => onChange({ ...model, transitions: model.transitions.map((item) => item.id === transition.id ? { ...item, ...patch } : item) });
   return (
-    <section className="regime-editor-panel">
+    <section className="regime-editor-panel" data-reference-id={transition.transitionId}>
       <div className="section-header"><div><span className="eyebrow">SELECTED TRANSITION</span><h3>{transition.fromState} → {transition.toState}</h3></div><span className="regime-selection-badge">Priority {transition.priority}</span></div>
       <div className="inline-fields">
         <label>Transition ID<input aria-label="Transition ID" value={transition.transitionId} onChange={(event) => update({ transitionId: event.target.value })} /></label>
@@ -149,7 +150,7 @@ function TransitionEditor({
 function ValueZoneEditor({ zone, model, state, onChange }: { zone: EditorValueZone; model: RegimeEditorState; state: EditorState; onChange: (next: RegimeEditorState) => void }) {
   const update = (patch: Partial<EditorValueZone>) => onChange({ ...model, valueZones: model.valueZones.map((item) => item.id === zone.id ? { ...item, ...patch } : item) });
   return (
-    <section className="regime-editor-panel">
+    <section className="regime-editor-panel" data-reference-id={zone.zoneId}>
       <div className="section-header"><div><span className="eyebrow">VALUE ZONE</span><h3>{zone.displayName || zone.zoneId}</h3></div><span className="regime-selection-badge">Priority {zone.priority}</span></div>
       <div className="inline-fields"><label>Zone ID<input aria-label="Value Zone ID" value={zone.zoneId} onChange={(event) => update({ zoneId: event.target.value })} /></label><label>Display Name<input aria-label="Value Zone display name" value={zone.displayName} onChange={(event) => update({ displayName: event.target.value })} /></label></div>
       <div className="inline-fields"><label>Asset<select aria-label="Value Zone asset" value={zone.asset} onChange={(event) => update({ asset: event.target.value })}>{state.assets.map((asset) => <option key={asset} value={asset}>{asset}</option>)}</select></label><label>Timeframe<select aria-label="Value Zone timeframe" value={zone.timeframe} onChange={(event) => update({ timeframe: event.target.value as EditorValueZone["timeframe"] })}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><label>Indicator<select aria-label="Value Zone indicator" value={zone.indicatorKind} onChange={(event) => update({ indicatorKind: event.target.value as EditorValueZone["indicatorKind"] })}><option value="ma">MA</option><option value="ema">EMA</option></select></label><label>Period<input aria-label="Value Zone period" type="number" min="1" step="1" value={zone.period} onChange={(event) => update({ period: event.target.value })} /></label></div>
@@ -160,7 +161,7 @@ function ValueZoneEditor({ zone, model, state, onChange }: { zone: EditorValueZo
   );
 }
 
-export function RegimeStateMachineEditor({ state, model, issues, onChange }: { state: EditorState; model: RegimeEditorState; issues: ValidationIssue[]; onChange: (model: RegimeEditorState) => void }) {
+export function RegimeStateMachineEditor({ state, model, issues, locateReference, onChange }: { state: EditorState; model: RegimeEditorState; issues: ValidationIssue[]; locateReference?: AssetReferenceDescriptor | null; onChange: (model: RegimeEditorState) => void }) {
   const [selection, setSelection] = useState<Selection>({ kind: "state", id: model.regimes[0]?.id ?? "" });
   const [view, setView] = useState<"flow" | "states" | "transitions" | "zones">("flow");
   const [template, setTemplate] = useState<RegimeEditorState["template"]>(model.template);
@@ -169,6 +170,20 @@ export function RegimeStateMachineEditor({ state, model, issues, onChange }: { s
   const selectedZone = model.valueZones.find((item) => item.id === selection.id);
   const localIssues = useMemo(() => validateRegimeEditor(model, state.assets), [model, state.assets]);
   const allIssues = issues.length > 0 ? issues : localIssues;
+  useEffect(() => {
+    if (!locateReference) return;
+    const kind = locateReference.reference_type;
+    if (kind === "STATE_ALLOCATION") {
+      const item = model.regimes.find((candidate) => candidate.stateId === locateReference.entity_id);
+      if (item) { setSelection({ kind: "state", id: item.id }); setView("flow"); }
+    } else if (kind === "VALUE_ZONE") {
+      const item = model.valueZones.find((candidate) => candidate.zoneId === locateReference.entity_id);
+      if (item) { setSelection({ kind: "zone", id: item.id }); setView("flow"); }
+    } else {
+      const item = model.transitions.find((candidate) => candidate.transitionId === locateReference.entity_id);
+      if (item) { setSelection({ kind: "transition", id: item.id }); setView("flow"); }
+    }
+  }, [locateReference, model.regimes, model.transitions, model.valueZones]);
   const chooseTemplate = () => {
     const next = template === "long_term_value_trend" ? createDefaultRegimeEditor(state.assets) : createBlankRegimeEditor(state.assets);
     onChange(next);

@@ -221,6 +221,31 @@ def test_fallback_must_use_declared_assets() -> None:
     assert ValidationCode.UNKNOWN_ASSET_REFERENCE in _codes(result)
 
 
+def test_hold_previous_does_not_validate_absent_or_invalid_fallback() -> None:
+    payload = _definition().to_dict()
+    payload["no_match_behavior"] = "hold_previous_allocation"
+    payload["initial_allocation"] = {"allocations": []}
+    payload.pop("fallback")
+
+    assert validate_strategy(payload).is_valid
+
+    payload["fallback"] = {
+        "name": "fallback",
+        "allocations": [{"symbol": "SPY", "target_weight": 1.0}],
+    }
+    assert validate_strategy(payload).is_valid
+
+
+def test_use_fallback_still_requires_a_valid_fallback() -> None:
+    payload = _definition().to_dict()
+    payload.pop("fallback")
+
+    result = validate_strategy(payload)
+
+    assert not result.is_valid
+    assert ValidationCode.MISSING_FALLBACK in _codes(result)
+
+
 def test_nested_rule_groups_and_condition_operands_are_validated_recursively() -> None:
     nested = RuleGroup(
         LogicalOperator.OR,

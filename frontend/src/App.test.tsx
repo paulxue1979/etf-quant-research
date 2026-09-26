@@ -184,6 +184,18 @@ describe("Strategy Lab", () => {
     await waitFor(() => expect(screen.queryByText("No saved versions yet.")).toBeInTheDocument());
   });
 
+  it("shows active-mode asset reference diagnostics before removal", async () => {
+    mockApi();
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove SGOV" }));
+
+    expect(screen.getByRole("heading", { name: "Cannot remove SGOV" })).toBeInTheDocument();
+    expect(screen.getByText("Rule Based → Fallback Allocation")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Locate Reference" })[0]);
+    expect(screen.getByRole("heading", { name: "Fallback allocation" })).toBeInTheDocument();
+  });
+
   it("disables relative thresholds for exact equality and sends validation through the API", async () => {
     const fetchMock = mockApi();
     render(<App />);
