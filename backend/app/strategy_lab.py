@@ -18,6 +18,7 @@ from backend.app.strategy_repository import (
     StrategyVersionRecord,
     StrategyVersionStore,
 )
+from research.semantic_bindings import discover_semantic_bindings
 from strategies import StrategyDefinition, StrategyValidator, StrategyVersion
 
 
@@ -158,6 +159,22 @@ class VersionDiffResponse(BaseModel):
     from_version_number: int
     to_version_number: int
     items: list[VersionDiffItem]
+
+
+class SemanticTargetResponse(BaseModel):
+    parameter_name: str
+    value_type: str
+    target_kind: str
+    label: str
+    descriptor: dict[str, Any]
+    supported: bool = True
+
+
+class SemanticTargetCatalogResponse(BaseModel):
+    strategy_version_id: str
+    strategy_version_hash: str
+    targets: list[SemanticTargetResponse]
+    unsupported: list[dict[str, str]]
 
 
 def _validation_response(payload: Mapping[str, Any]) -> StrategyValidationResponse:
@@ -575,6 +592,59 @@ def get_strategy_version(strategy_id: str, version_id: str) -> StrategyVersionRe
     return _version_response(
         version, strategy_version_store.get_version_record(strategy_id, version_id)
     )
+
+
+@router.get(
+    "/strategies/{strategy_id}/versions/{version_id}/semantic-targets",
+    response_model=SemanticTargetCatalogResponse,
+)
+def list_semantic_targets(strategy_id: str, version_id: str) -> SemanticTargetCatalogResponse:
+    try:
+        version = strategy_version_store.get(strategy_id, version_id)
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="strategy version was not found"
+        )
+    catalog = discover_semantic_bindings(version)
+    targets = []
+    for binding in catalog.supported:
+        descriptor = binding.descriptor
+        label = _semantic_target_label(binding.parameter_name, descriptor.to_dict())
+        targets.append(
+            SemanticTargetResponse(
+                parameter_name=binding.parameter_name,
+                value_type=binding.value_type.value,
+                target_kind=descriptor.target_kind.value,
+                label=label,
+                descriptor=descriptor.to_dict(),
+            )
+        )
+    return SemanticTargetCatalogResponse(
+        strategy_version_id=version.version_id,
+        strategy_version_hash=version.content_hash or "",
+        targets=targets,
+        unsupported=[dict(item) for item in catalog.unsupported],
+    )
+
+
+def _semantic_target_label(parameter_name: str, descriptor: Mapping[str, Any]) -> str:
+    kind = str(descriptor.get("target_kind", ""))
+    if kind == "state_allocation_weight":
+        return f"State {descriptor.get('state_id')} · {descriptor.get('symbol')} target weight"
+    if kind.startswith("value_zone_"):
+        field = kind.removeprefix("value_zone_").replace("_", " ")
+        return f"Value Zone {descriptor.get('zone_id')} · {field}"
+    location = descriptor.get("transition_id", "transition")
+    path = descriptor.get("condition_path") or []
+    nested = f" nested condition {'.'.join(str(item) for item in path)}" if path else ""
+    side = descriptor.get("operand_side")
+    suffix = f" ({side} operand)" if side else ""
+    field = kind.removeprefix("nested_condition_").removeprefix("transition_").replace("_", " ")
+    return f"Transition {location}{nested} · {field}{suffix}"
 
 
 @router.get(

@@ -33,6 +33,10 @@ from research.materialization import (
     ParameterBindingSet,
     materialize_strategy_version,
 )
+from research.semantic_bindings import (
+    SemanticParameterBinding,
+    resolve_semantic_bindings,
+)
 from strategies import StrategyVersion
 
 GRID_SEARCH_SCHEMA_VERSION = "phase-11h.1"
@@ -382,6 +386,7 @@ class GridSearchDefinition:
     experiment_id: str
     experiment_hash: str
     strategy_bindings: tuple[ParameterBinding, ...] = ()
+    semantic_bindings: tuple[SemanticParameterBinding, ...] = ()
     backtest_bindings: tuple[BacktestParameterBinding, ...] = ()
     fixed_parameters: Mapping[str, Any] = None  # type: ignore[assignment]
     constraints: tuple[GridConstraint, ...] = ()
@@ -395,10 +400,14 @@ class GridSearchDefinition:
         if not isinstance(self.experiment_hash, str) or not _HASH.fullmatch(self.experiment_hash):
             raise InvalidParameterSpaceError("experiment_hash must be a SHA-256 digest")
         strategy = ParameterBindingSet(self.strategy_bindings).bindings
+        semantic = tuple(self.semantic_bindings)
+        if not all(isinstance(item, SemanticParameterBinding) for item in semantic):
+            raise InvalidParameterSpaceError("semantic_bindings must contain semantic bindings")
         backtest = BacktestParameterBindingSet(self.backtest_bindings).bindings
         names = [item.parameter_name for item in strategy] + [
             item.parameter_name for item in backtest
         ]
+        names.extend(item.parameter_name for item in semantic)
         if len(names) != len(set(names)):
             raise InvalidParameterSpaceError("a tunable parameter may have only one owner")
         fixed = {} if self.fixed_parameters is None else dict(self.fixed_parameters)
@@ -437,6 +446,9 @@ class GridSearchDefinition:
         if self.schema_version != GRID_SEARCH_SCHEMA_VERSION:
             raise InvalidParameterSpaceError("grid search schema version is unsupported")
         object.__setattr__(self, "strategy_bindings", strategy)
+        object.__setattr__(
+            self, "semantic_bindings", tuple(sorted(semantic, key=lambda item: item.parameter_name))
+        )
         object.__setattr__(self, "backtest_bindings", backtest)
         object.__setattr__(self, "fixed_parameters", MappingProxyType(dict(sorted(fixed.items()))))
         object.__setattr__(
@@ -451,6 +463,7 @@ class GridSearchDefinition:
             sorted(
                 [item.parameter_name for item in self.strategy_bindings]
                 + [item.parameter_name for item in self.backtest_bindings]
+                + [item.parameter_name for item in self.semantic_bindings]
             )
         )
 
@@ -464,6 +477,7 @@ class GridSearchDefinition:
             "experiment_id": self.experiment_id,
             "experiment_hash": self.experiment_hash,
             "strategy_bindings": [item.to_dict() for item in self.strategy_bindings],
+            "semantic_bindings": [item.to_dict() for item in self.semantic_bindings],
             "backtest_bindings": [item.to_dict() for item in self.backtest_bindings],
             "fixed_parameters": dict(self.fixed_parameters),
             "constraints": [item.to_dict() for item in self.constraints],
@@ -480,6 +494,10 @@ class GridSearchDefinition:
             experiment_hash=str(payload.get("experiment_hash", "")),
             strategy_bindings=tuple(
                 ParameterBinding.from_dict(item) for item in payload.get("strategy_bindings", ())
+            ),
+            semantic_bindings=tuple(
+                SemanticParameterBinding.from_dict(item)
+                for item in payload.get("semantic_bindings", ())
             ),
             backtest_bindings=tuple(
                 BacktestParameterBinding.from_dict(item)
@@ -529,6 +547,7 @@ class GridSearchPreflight:
     plans: tuple[GridCandidatePlan, ...]
     status: GridPreflightStatus
     issues: tuple[str, ...] = ()
+    semantic_binding_audit: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def can_execute(self) -> bool:
@@ -565,6 +584,7 @@ class GridSearchPreflight:
             "status": self.status.value,
             "can_execute": self.can_execute,
             "issues": list(self.issues),
+            "semantic_binding_audit": [dict(item) for item in self.semantic_binding_audit],
         }
         if include_candidates:
             payload["candidates"] = [item.to_dict() for item in self.plans]
@@ -636,8 +656,14 @@ def preflight_grid_search(
     plans: list[GridCandidatePlan] = []
     semantic_owner: dict[str, GridCandidatePlan] = {}
     duplicates: list[Mapping[str, Any]] = []
-    strategy_names = {item.parameter_name for item in definition.strategy_bindings}
-    strategy_bindings = ParameterBindingSet(definition.strategy_bindings)
+    resolved_semantic = resolve_semantic_bindings(
+        base_strategy_version, definition.semantic_bindings
+    )
+    effective_strategy_bindings = tuple(definition.strategy_bindings) + tuple(
+        item.parameter_binding for item in resolved_semantic
+    )
+    strategy_names = {item.parameter_name for item in effective_strategy_bindings}
+    strategy_bindings = ParameterBindingSet(effective_strategy_bindings)
     backtest_bindings = BacktestParameterBindingSet(definition.backtest_bindings)
     for source_index, parameter_set in valid:
         try:
@@ -718,6 +744,7 @@ def preflight_grid_search(
         plans=tuple(plans),
         status=status,
         issues=tuple(issues),
+        semantic_binding_audit=tuple(item.audit for item in resolved_semantic),
     )
 
 

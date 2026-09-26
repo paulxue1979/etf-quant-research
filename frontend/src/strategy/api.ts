@@ -5,6 +5,7 @@ import type {
   StrategyRecord,
   StrategyVersion,
   StrategyVersionSummary,
+  SemanticTargetCatalog,
   VersionDiff,
   ValidationResult,
 } from "./types";
@@ -143,6 +144,12 @@ export const strategyApi = {
   getVersion(strategyId: string, versionId: string): Promise<StrategyVersion> {
     return requestJson<StrategyVersion>(
       `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/versions/${encodeURIComponent(versionId)}`,
+    );
+  },
+
+  getSemanticTargets(strategyId: string, versionId: string): Promise<SemanticTargetCatalog> {
+    return requestJson<SemanticTargetCatalog>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/versions/${encodeURIComponent(versionId)}/semantic-targets`,
     );
   },
 

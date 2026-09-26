@@ -17,6 +17,7 @@ from research.execution_outcome import ExperimentExecutionOutcomeStatus
 from research.execution_service import ExperimentExecutionService
 from research.grid_search import GridSearchDefinition, GridSearchPreflight, preflight_grid_search
 from research.result_finalization_service import ExperimentResultFinalizationService
+from research.semantic_bindings import resolve_semantic_bindings
 
 
 class GridSearchServiceError(RuntimeError):
@@ -154,6 +155,17 @@ class GridSearchService:
             )
         self._grid.set_status(experiment_id, "running")
         candidates = self._experiments.list_candidates(experiment_id)
+        base = self._strategies.get(
+            experiment.strategy_definition_id, experiment.base_strategy_version_id
+        )
+        if base is None:
+            raise GridSearchServiceError(
+                "STRATEGY_VERSION_NOT_FOUND", "base strategy version was not found"
+            )
+        semantic_bindings = resolve_semantic_bindings(base, definition.semantic_bindings)
+        effective_strategy_bindings = tuple(definition.strategy_bindings) + tuple(
+            item.parameter_binding for item in semantic_bindings
+        )
         for candidate in candidates:
             if self._grid.cancel_requested(experiment_id):
                 self._request_experiment_cancel(experiment_id)
@@ -189,7 +201,7 @@ class GridSearchService:
             outcome = self._executor.execute(
                 experiment_id=experiment_id,
                 candidate_index=candidate.candidate_index,
-                parameter_bindings=definition.strategy_bindings,
+                parameter_bindings=effective_strategy_bindings,
                 backtest_parameter_bindings=definition.backtest_bindings,
                 claimed_by=self.ACTOR,
             )

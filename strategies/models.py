@@ -99,7 +99,7 @@ class AssetReference:
             raise InvalidAssetError("asset symbol must be a valid market ticker")
         object.__setattr__(self, "symbol", normalized)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {"symbol": self.symbol}
 
     @classmethod
@@ -1107,6 +1107,7 @@ class StrategyMaterializationProvenance:
     binding_hash: str
     materialization_spec_hash: str
     derived_strategy_version_hash: str
+    binding_audit: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         value = self.base_strategy_version_id
@@ -1124,9 +1125,13 @@ class StrategyMaterializationProvenance:
             if not isinstance(value, str) or not _HASH_PATTERN.fullmatch(value):
                 raise InvalidStrategyVersionError(f"{label} must be a SHA-256 hex digest")
             object.__setattr__(self, label, value)
+        audit = tuple(dict(item) for item in self.binding_audit)
+        if any(not isinstance(item, Mapping) for item in audit):
+            raise InvalidStrategyVersionError("binding_audit must contain objects")
+        object.__setattr__(self, "binding_audit", audit)
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        payload = {
             "base_strategy_version_id": self.base_strategy_version_id,
             "base_strategy_version_hash": self.base_strategy_version_hash,
             "parameter_set_hash": self.parameter_set_hash,
@@ -1134,6 +1139,9 @@ class StrategyMaterializationProvenance:
             "materialization_spec_hash": self.materialization_spec_hash,
             "derived_strategy_version_hash": self.derived_strategy_version_hash,
         }
+        if self.binding_audit:
+            payload["binding_audit"] = [dict(item) for item in self.binding_audit]
+        return payload
 
     @classmethod
     def from_dict(cls, payload: object) -> StrategyMaterializationProvenance:
@@ -1145,6 +1153,7 @@ class StrategyMaterializationProvenance:
             binding_hash=data.get("binding_hash", ""),
             materialization_spec_hash=data.get("materialization_spec_hash", ""),
             derived_strategy_version_hash=data.get("derived_strategy_version_hash", ""),
+            binding_audit=tuple(data.get("binding_audit", ())),
         )
 
 

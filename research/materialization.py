@@ -81,18 +81,20 @@ def derived_strategy_version_hash(
     parameter_set_hash: str,
     binding_hash: str,
     materialization_spec_hash: str,
+    binding_audit: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     """Return the deterministic semantic identity for a materialized version."""
-    return sha256_hash(
-        {
-            "configuration": configuration.to_dict(),
-            "base_strategy_version_id": base_strategy_version_id,
-            "base_strategy_version_hash": base_strategy_version_hash,
-            "parameter_set_hash": parameter_set_hash,
-            "binding_hash": binding_hash,
-            "materialization_spec_hash": materialization_spec_hash,
-        }
-    )
+    payload: dict[str, Any] = {
+        "configuration": configuration.to_dict(),
+        "base_strategy_version_id": base_strategy_version_id,
+        "base_strategy_version_hash": base_strategy_version_hash,
+        "parameter_set_hash": parameter_set_hash,
+        "binding_hash": binding_hash,
+        "materialization_spec_hash": materialization_spec_hash,
+    }
+    if binding_audit:
+        payload["binding_audit"] = [dict(item) for item in binding_audit]
+    return sha256_hash(payload)
 
 
 def derived_strategy_version_id(base_version_id: str, derived_hash: str) -> str:
@@ -211,6 +213,8 @@ def materialize_strategy_version(
     base_strategy_version: StrategyVersion,
     parameter_set: ParameterSet,
     parameter_bindings: ParameterBindingSet | Sequence[ParameterBinding],
+    *,
+    binding_audit: Sequence[Mapping[str, Any]] = (),
 ) -> StrategyVersion:
     """Apply one candidate to a strategy using only whitelisted immutable paths."""
     if not isinstance(base_strategy_version, StrategyVersion):
@@ -258,6 +262,7 @@ def materialize_strategy_version(
         parameter_set_hash=parameter_set.content_hash,
         binding_hash=binding_set.binding_hash,
         materialization_spec_hash=materialization_spec_hash_value,
+        binding_audit=binding_audit,
     )
     provenance = StrategyMaterializationProvenance(
         base_strategy_version_id=base_strategy_version.version_id,
@@ -266,6 +271,7 @@ def materialize_strategy_version(
         binding_hash=binding_set.binding_hash,
         materialization_spec_hash=materialization_spec_hash_value,
         derived_strategy_version_hash=derived_hash,
+        binding_audit=tuple(dict(item) for item in binding_audit),
     )
     return StrategyVersion(
         strategy_id=base_strategy_version.strategy_id,

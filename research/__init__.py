@@ -135,6 +135,17 @@ from research.materialization import (
     materialization_spec_hash,
     materialize_strategy_version,
 )
+from research.semantic_bindings import (
+    OperandSide,
+    ResolvedSemanticBinding,
+    SemanticTargetCatalog,
+    SemanticParameterBinding,
+    SemanticTargetDescriptor,
+    SemanticTargetKind,
+    discover_semantic_bindings,
+    materialize_semantic_strategy_version,
+    resolve_semantic_bindings,
+)
 from research.objective_evaluation import (
     CandidateObjectiveEvaluation,
     ConstraintEvaluation,
@@ -234,6 +245,15 @@ __all__ = [
     "materialization_spec_hash",
     "derived_strategy_version_hash",
     "derived_strategy_version_id",
+    "OperandSide",
+    "ResolvedSemanticBinding",
+    "SemanticTargetCatalog",
+    "SemanticParameterBinding",
+    "SemanticTargetDescriptor",
+    "SemanticTargetKind",
+    "discover_semantic_bindings",
+    "materialize_semantic_strategy_version",
+    "resolve_semantic_bindings",
     "sha256_hash",
     "generate_candidates",
     "candidate_id_for",

@@ -279,6 +279,22 @@ export interface StrategyVersion extends StrategyVersionSummary {
   configuration: StrategyPayload;
 }
 
+export interface SemanticTargetPreview {
+  parameter_name: string;
+  value_type: string;
+  target_kind: string;
+  label: string;
+  descriptor: Record<string, unknown>;
+  supported: boolean;
+}
+
+export interface SemanticTargetCatalog {
+  strategy_version_id: string;
+  strategy_version_hash: string;
+  targets: SemanticTargetPreview[];
+  unsupported: Array<{ target: string; reason: string }>;
+}
+
 export interface VersionDiffItem {
   path: string;
   before?: unknown;
