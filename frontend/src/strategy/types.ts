@@ -121,9 +121,51 @@ export interface EditorState {
   rebalanceThresholdPercent: string;
   strategyMode?: StrategyMode;
   regime?: RegimeEditorState;
+  ruleBasedAssets: string[];
+  regimeAssets: string[];
+  draftRevision: number;
   isDirty?: boolean;
   sourceSchemaVersion?: string;
   sourcePayload?: StrategyPayload;
+}
+
+export interface StrategyDraftModePayload {
+  assets: string[];
+  editor_state: Record<string, unknown>;
+  source_payload?: Record<string, unknown> | null;
+}
+
+export interface StrategyDraftPayload {
+  expected_revision: number;
+  active_mode: StrategyMode;
+  strategy_id: string;
+  name: string;
+  description: string;
+  price_field: PriceField;
+  rebalance_frequency: RebalanceFrequency;
+  rebalance_threshold_percent: string;
+  rule_based_draft: StrategyDraftModePayload;
+  regime_draft: StrategyDraftModePayload;
+  active_strategy_payload: StrategyPayload | null;
+  source_metadata: Record<string, unknown>;
+}
+
+export interface StrategyDraftResponse extends Omit<StrategyDraftPayload, "expected_revision" | "active_strategy_payload"> {
+  draft_revision: number;
+  active_strategy_payload: StrategyPayload | null;
+  created_at: string;
+  updated_at: string;
+  draft_hash: string;
+}
+
+export interface StrategyRecord {
+  strategy_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  metadata: Record<string, unknown>;
 }
 
 export interface StrategyOperandPayload {

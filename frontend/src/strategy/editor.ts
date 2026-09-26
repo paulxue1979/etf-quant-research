@@ -21,6 +21,8 @@ import type {
   StrategyOperandPayload,
   StrategyPayload,
   StrategyRuleGroupPayload,
+  StrategyDraftPayload,
+  StrategyDraftResponse,
   StrategyMode,
   ValueZoneTrigger,
   ValidationIssue,
@@ -136,6 +138,9 @@ export function createDefaultEditorState(): EditorState {
     rebalanceFrequency: "weekly",
     rebalanceThresholdPercent: "5",
     strategyMode: "rule_based",
+    ruleBasedAssets: assets,
+    regimeAssets: assets,
+    draftRevision: 0,
     isDirty: false,
   };
 }
@@ -344,22 +349,38 @@ export type EditorAction =
 function reduceEditorState(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "basic":
-      return { ...state, [action.field]: action.value };
+      return action.field === "strategyId"
+        ? { ...state, strategyId: action.value, draftRevision: 0 }
+        : { ...state, [action.field]: action.value };
     case "priceField":
       return { ...state, priceField: action.value };
     case "strategyMode":
+      {
+        const currentAssets = state.assets;
+        const ruleBasedAssets = state.strategyMode === "rule_based" ? currentAssets : state.ruleBasedAssets;
+        const regimeAssets = state.strategyMode === "regime_state_machine" ? currentAssets : state.regimeAssets;
+        const nextAssets = action.value === "rule_based" ? ruleBasedAssets : regimeAssets;
       return {
         ...state,
         strategyMode: action.value,
+        assets: nextAssets,
+        ruleBasedAssets,
+        regimeAssets,
         regime:
           action.value === "regime_state_machine"
             ? state.regime ?? createBlankRegimeEditor(state.assets)
             : state.regime,
       };
+      }
     case "regime":
       return { ...state, regime: action.value, strategyMode: "regime_state_machine" };
     case "assets":
-      return { ...state, assets: action.assets };
+      return {
+        ...state,
+        assets: action.assets,
+        ruleBasedAssets: state.strategyMode === "rule_based" ? action.assets : state.ruleBasedAssets,
+        regimeAssets: state.strategyMode === "regime_state_machine" ? action.assets : state.regimeAssets,
+      };
     case "addRule":
       return { ...state, rules: [...state.rules, createAllocationRule(state.assets, state.rules.length + 1)] };
     case "removeRule":
@@ -611,7 +632,7 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
     description: state.description,
     assets: state.assets.map((symbol) => ({ symbol, role: "both" })),
     price_field: state.priceField,
-    rules: state.rules.map((rule) => ({
+    rules: state.strategyMode === "regime_state_machine" ? [] : state.rules.map((rule) => ({
       rule_id: rule.ruleId,
       name: rule.name,
       priority: toNumber(rule.priority, "rule priority"),
@@ -619,7 +640,13 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
       allocations: rule.allocations.map(toWeightPayload),
       remaining: rule.remainingSymbol ? { symbol: rule.remainingSymbol } : null,
     })),
-    fallback: { name: "fallback", allocations: state.fallbackAllocations.map(toWeightPayload) },
+    fallback: {
+      name: "fallback",
+      allocations: (state.strategyMode === "regime_state_machine"
+        ? [{ id: "active-regime-fallback", symbol: state.assets[0] ?? "QQQ", targetWeightPercent: "100" }]
+        : state.fallbackAllocations
+      ).map(toWeightPayload),
+    },
     rebalance_policy: {
       frequency: state.rebalanceFrequency,
       threshold:
@@ -628,7 +655,7 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
           : toNumber(state.rebalanceThresholdPercent, "rebalance threshold") / 100,
     },
   };
-  if (state.noMatchBehavior === "hold_previous_allocation") {
+  if (state.strategyMode !== "regime_state_machine" && state.noMatchBehavior === "hold_previous_allocation") {
     payload.no_match_behavior = state.noMatchBehavior;
     payload.initial_allocation = {
       allocations: state.initialAllocations.map(toWeightPayload),
@@ -780,12 +807,13 @@ function fromRegimePayload(payload: StrategyPayload): RegimeEditorState | undefi
 }
 
 export function fromStrategyPayload(payload: StrategyPayload): EditorState {
+  const assets = payload.assets.map((asset) => asset.symbol);
   return {
     strategyId: payload.strategy_id,
     name: payload.name,
     description: payload.description,
     priceField: payload.price_field,
-    assets: payload.assets.map((asset) => asset.symbol),
+    assets,
     rules: payload.rules.map((rule) => {
       const condition = fromRuleNode(rule.condition);
       if (condition.type !== "group") {
@@ -813,14 +841,105 @@ export function fromStrategyPayload(payload: StrategyPayload): EditorState {
         : formatPercentValue(payload.rebalance_policy.threshold),
     strategyMode: payload.strategy_mode ?? "rule_based",
     regime: fromRegimePayload(payload),
+    ruleBasedAssets: assets,
+    regimeAssets: assets,
+    draftRevision: 0,
     isDirty: false,
     sourceSchemaVersion: payload.strategy_schema_version ?? "1.0",
     sourcePayload: clonePayload(payload),
   };
 }
 
+export function toDraftPayload(state: EditorState): StrategyDraftPayload {
+  let activeStrategyPayload: StrategyPayload | null = null;
+  try {
+    activeStrategyPayload = toStrategyPayload(state);
+  } catch {
+    activeStrategyPayload = null;
+  }
+  const ruleBasedEditor = {
+    rules: cloneValue(state.rules),
+    noMatchBehavior: state.noMatchBehavior,
+    fallbackAllocations: cloneValue(state.fallbackAllocations),
+    initialAllocations: cloneValue(state.initialAllocations),
+    sourcePayload: state.strategyMode === "rule_based" ? cloneValue(state.sourcePayload) : null,
+  };
+  const regimeEditor = {
+    regime: cloneValue(state.regime ?? createBlankRegimeEditor(state.regimeAssets)),
+    sourcePayload: state.strategyMode === "regime_state_machine" ? cloneValue(state.sourcePayload) : null,
+  };
+  return {
+    expected_revision: state.draftRevision,
+    active_mode: state.strategyMode ?? "rule_based",
+    strategy_id: state.strategyId.trim(),
+    name: state.name,
+    description: state.description,
+    price_field: state.priceField,
+    rebalance_frequency: state.rebalanceFrequency,
+    rebalance_threshold_percent: state.rebalanceThresholdPercent,
+    rule_based_draft: {
+      assets: [...state.ruleBasedAssets],
+      editor_state: ruleBasedEditor,
+      source_payload: state.strategyMode === "rule_based" ? cloneValue(state.sourcePayload) : null,
+    },
+    regime_draft: {
+      assets: [...state.regimeAssets],
+      editor_state: regimeEditor,
+      source_payload: state.strategyMode === "regime_state_machine" ? cloneValue(state.sourcePayload) : null,
+    },
+    active_strategy_payload: activeStrategyPayload,
+    source_metadata: {
+      source_schema_version: state.sourceSchemaVersion ?? "2.0",
+      price_field: state.priceField,
+      rebalance_frequency: state.rebalanceFrequency,
+      rebalance_threshold_percent: state.rebalanceThresholdPercent,
+    },
+  };
+}
+
+export function fromDraftResponse(response: StrategyDraftResponse): EditorState {
+  const ruleEditor = response.rule_based_draft.editor_state as {
+    rules?: EditorAllocationRule[];
+    noMatchBehavior?: NoMatchBehavior;
+    fallbackAllocations?: EditorAllocation[];
+    initialAllocations?: EditorAllocation[];
+    sourcePayload?: StrategyPayload | null;
+  };
+  const regimeEditor = response.regime_draft.editor_state as { regime?: RegimeEditorState };
+  const ruleBasedAssets = [...response.rule_based_draft.assets];
+  const regimeAssets = [...response.regime_draft.assets];
+  const activeAssets = response.active_mode === "regime_state_machine" ? regimeAssets : ruleBasedAssets;
+  return {
+    strategyId: response.strategy_id,
+    name: response.name,
+    description: response.description,
+    priceField: response.price_field,
+    assets: activeAssets,
+    ruleBasedAssets,
+    regimeAssets,
+    rules: cloneValue(ruleEditor.rules ?? []),
+    noMatchBehavior: ruleEditor.noMatchBehavior ?? "use_fallback",
+    fallbackAllocations: cloneValue(ruleEditor.fallbackAllocations ?? []),
+    initialAllocations: cloneValue(ruleEditor.initialAllocations ?? []),
+    rebalanceFrequency: response.rebalance_frequency,
+    rebalanceThresholdPercent: response.rebalance_threshold_percent,
+    strategyMode: response.active_mode,
+    regime: cloneValue(regimeEditor.regime ?? createBlankRegimeEditor(regimeAssets)),
+    draftRevision: response.draft_revision,
+    isDirty: false,
+    sourceSchemaVersion: String(response.source_metadata.source_schema_version ?? "2.0"),
+    sourcePayload: response.active_strategy_payload
+      ? cloneValue(response.active_strategy_payload)
+      : undefined,
+  };
+}
+
 function clonePayload(payload: StrategyPayload): StrategyPayload {
   return JSON.parse(JSON.stringify(payload)) as StrategyPayload;
+}
+
+function cloneValue<T>(value: T): T {
+  return value === undefined ? value : JSON.parse(JSON.stringify(value)) as T;
 }
 
 export function allocationTotalPercent(allocations: EditorAllocation[]): number {
@@ -835,7 +954,7 @@ export function isAssetReferenced(state: EditorState, asset: string): boolean {
       }
       return child.left.asset === asset || child.right.asset === asset;
     });
-  return (
+  const ruleReferences = (
     state.rules.some(
       (rule) =>
         hasOperand(rule.condition) ||
@@ -843,7 +962,9 @@ export function isAssetReferenced(state: EditorState, asset: string): boolean {
         rule.allocations.some((allocation) => allocation.symbol === asset),
     ) ||
     state.fallbackAllocations.some((allocation) => allocation.symbol === asset) ||
-    state.initialAllocations.some((allocation) => allocation.symbol === asset) ||
+    state.initialAllocations.some((allocation) => allocation.symbol === asset)
+  );
+  const regimeReferences = (
     state.regime?.regimes.some((regime) => regime.allocations.some((allocation) => allocation.symbol === asset)) === true ||
     state.regime?.valueZones.some((zone) => zone.asset === asset) === true ||
     state.regime?.transitions.some((transition) => {
@@ -851,6 +972,7 @@ export function isAssetReferenced(state: EditorState, asset: string): boolean {
       return visit(transition.condition);
     }) === true
   );
+  return state.strategyMode === "regime_state_machine" ? regimeReferences : ruleReferences;
 }
 
 function numericIssue(value: string, path: string, label: string): ValidationIssue | null {
@@ -955,14 +1077,18 @@ function ruleNumericIssues(rule: EditorAllocationRule, index: number): Validatio
 }
 
 export function validateEditorState(state: EditorState): ValidationIssue[] {
-  const issues = state.rules.flatMap((rule, index) => [
-    ...ruleNumericIssues(rule, index),
-    ...allocationIssues(rule.allocations, state.assets, `rules[${index}]`),
-  ]);
-  if (state.noMatchBehavior === "use_fallback") {
-    issues.push(...allocationIssues(state.fallbackAllocations, state.assets, "fallback"));
-  } else {
-    issues.push(...allocationIssues(state.initialAllocations, state.assets, "initial_allocation"));
+  const issues = state.strategyMode === "regime_state_machine"
+    ? []
+    : state.rules.flatMap((rule, index) => [
+      ...ruleNumericIssues(rule, index),
+      ...allocationIssues(rule.allocations, state.assets, `rules[${index}]`),
+    ]);
+  if (state.strategyMode !== "regime_state_machine") {
+    if (state.noMatchBehavior === "use_fallback") {
+      issues.push(...allocationIssues(state.fallbackAllocations, state.assets, "fallback"));
+    } else {
+      issues.push(...allocationIssues(state.initialAllocations, state.assets, "initial_allocation"));
+    }
   }
   if (state.rebalanceThresholdPercent.trim() !== "") {
     const threshold = numericIssue(

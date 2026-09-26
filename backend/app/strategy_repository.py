@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,35 @@ class StrategyPersistenceError(RuntimeError):
             self.code = code
 
 
+@dataclass(frozen=True)
+class StrategyRecord:
+    """Mutable strategy identity metadata, separate from immutable versions."""
+
+    strategy_id: str
+    name: str
+    description: str
+    created_at: datetime
+    updated_at: datetime
+    status: str
+    metadata: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class StrategyDraft:
+    """Persisted editable work state; it may contain invalid editor data."""
+
+    strategy_id: str
+    draft_revision: int
+    active_mode: str
+    rule_based_draft: Mapping[str, Any]
+    regime_draft: Mapping[str, Any]
+    active_strategy_payload: Mapping[str, Any] | None
+    source_metadata: Mapping[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    draft_hash: str
+
+
 class StrategyRepository:
     """SQLite repository for immutable strategy version snapshots.
 
@@ -40,7 +70,7 @@ class StrategyRepository:
     so separate application threads cannot allocate the same version number.
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = (
@@ -83,7 +113,10 @@ class StrategyRepository:
                     name TEXT NOT NULL,
                     description TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    latest_version_number INTEGER NOT NULL DEFAULT 0
+                    latest_version_number INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT,
+                    status TEXT,
+                    metadata_json TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -94,6 +127,9 @@ class StrategyRepository:
                     configuration_json TEXT NOT NULL,
                     content_hash TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    source_draft_revision INTEGER,
+                    source_draft_hash TEXT,
+                    source_provenance_json TEXT,
                     PRIMARY KEY (strategy_id, version_id),
                     UNIQUE (strategy_id, version_number),
                     FOREIGN KEY (strategy_id) REFERENCES strategies(strategy_id)
@@ -111,7 +147,31 @@ class StrategyRepository:
                     version_json TEXT NOT NULL,
                     PRIMARY KEY (strategy_id, version_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS strategy_drafts (
+                    strategy_id TEXT PRIMARY KEY,
+                    draft_revision INTEGER NOT NULL CHECK (draft_revision >= 1),
+                    active_mode TEXT NOT NULL,
+                    rule_based_draft_json TEXT NOT NULL,
+                    regime_draft_json TEXT NOT NULL,
+                    active_strategy_payload_json TEXT,
+                    source_metadata_json TEXT NOT NULL,
+                    draft_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (strategy_id) REFERENCES strategies(strategy_id)
+                );
                 """
+            )
+            self._ensure_column(connection, "strategies", "updated_at", "TEXT")
+            self._ensure_column(connection, "strategies", "status", "TEXT")
+            self._ensure_column(connection, "strategies", "metadata_json", "TEXT")
+            self._ensure_column(connection, "strategy_versions", "source_draft_revision", "INTEGER")
+            self._ensure_column(connection, "strategy_versions", "source_draft_hash", "TEXT")
+            self._ensure_column(connection, "strategy_versions", "source_provenance_json", "TEXT")
+            connection.execute(
+                "UPDATE strategies SET updated_at = COALESCE(updated_at, created_at), "
+                "status = COALESCE(status, 'active'), metadata_json = COALESCE(metadata_json, '{}')"
             )
             row = connection.execute(
                 "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
@@ -122,7 +182,7 @@ class StrategyRepository:
                     "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
                     ("strategy_repository", self.SCHEMA_VERSION),
                 )
-            elif int(row["schema_version"]) == 1:
+            elif int(row["schema_version"]) in {1, 2}:
                 connection.execute(
                     "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
                     (self.SCHEMA_VERSION, "strategy_repository"),
@@ -153,6 +213,16 @@ class StrategyRepository:
             raise StrategyPersistenceError("could not initialize strategy database") from exc
         finally:
             connection.close()
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection, table: str, column: str, definition: str
+    ) -> None:
+        columns = {
+            str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def create(self, definition: StrategyDefinition) -> StrategyVersion:
         """Persist a new immutable version and return its domain snapshot."""
@@ -188,12 +258,14 @@ class StrategyRepository:
             connection.execute(
                 """
                 INSERT INTO strategies(
-                    strategy_id, name, description, created_at, latest_version_number
-                ) VALUES (?, ?, ?, ?, ?)
+                    strategy_id, name, description, created_at, latest_version_number,
+                    updated_at, status, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(strategy_id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
-                    latest_version_number = excluded.latest_version_number
+                    latest_version_number = excluded.latest_version_number,
+                    updated_at = excluded.updated_at
                 """,
                 (
                     definition.strategy_id,
@@ -201,6 +273,9 @@ class StrategyRepository:
                     definition.description,
                     created_at,
                     version_number,
+                    created_at,
+                    "active",
+                    "{}",
                 ),
             )
             connection.execute(
@@ -228,6 +303,332 @@ class StrategyRepository:
         except ValueError as exc:
             self._rollback(connection)
             raise StrategyPersistenceError("could not create strategy version") from exc
+        finally:
+            connection.close()
+
+    def create_strategy(
+        self,
+        strategy_id: str,
+        name: str,
+        description: str,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> StrategyRecord:
+        """Create a mutable strategy identity without requiring an executable version."""
+        strategy_id = self._required_text(strategy_id, "strategy_id")
+        name = self._required_text(name, "name")
+        description = str(description)
+        metadata_json = self._safe_json(dict(metadata or {}))
+        now = datetime.now(UTC)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "INSERT INTO strategies(strategy_id, name, description, created_at, "
+                    "latest_version_number, updated_at, status, metadata_json) "
+                    "VALUES (?, ?, ?, ?, 0, ?, 'active', ?)",
+                    (
+                        strategy_id,
+                        name,
+                        description,
+                        now.isoformat(),
+                        now.isoformat(),
+                        metadata_json,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "strategy identity already exists", code="STRATEGY_ALREADY_EXISTS"
+                ) from exc
+            connection.execute("COMMIT")
+            return StrategyRecord(
+                strategy_id=strategy_id,
+                name=name,
+                description=description,
+                created_at=now,
+                updated_at=now,
+                status="active",
+                metadata=dict(metadata or {}),
+            )
+        except StrategyPersistenceError:
+            raise
+        except sqlite3.Error as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError("could not create strategy identity") from exc
+        finally:
+            connection.close()
+
+    def get_strategy(self, strategy_id: str) -> StrategyRecord | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT strategy_id, name, description, created_at, updated_at, status, "
+                "metadata_json "
+                "FROM strategies WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            return None if row is None else self._row_to_strategy(row)
+        except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StrategyPersistenceError("could not load strategy identity") from exc
+        finally:
+            connection.close()
+
+    def list_strategies(self) -> tuple[StrategyRecord, ...]:
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                "SELECT strategy_id, name, description, created_at, updated_at, status, "
+                "metadata_json "
+                "FROM strategies ORDER BY strategy_id"
+            ).fetchall()
+            return tuple(self._row_to_strategy(row) for row in rows)
+        except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StrategyPersistenceError("could not list strategy identities") from exc
+        finally:
+            connection.close()
+
+    def get_draft(self, strategy_id: str) -> StrategyDraft | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT strategy_id, draft_revision, active_mode, rule_based_draft_json, "
+                "regime_draft_json, active_strategy_payload_json, source_metadata_json, "
+                "draft_hash, created_at, updated_at FROM strategy_drafts WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            return None if row is None else self._row_to_draft(row)
+        except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StrategyPersistenceError("could not load strategy draft") from exc
+        finally:
+            connection.close()
+
+    def save_draft(
+        self,
+        *,
+        strategy_id: str,
+        expected_revision: int,
+        active_mode: str,
+        rule_based_draft: Mapping[str, Any],
+        regime_draft: Mapping[str, Any],
+        active_strategy_payload: Mapping[str, Any] | None,
+        source_metadata: Mapping[str, Any] | None,
+        name: str,
+        description: str,
+    ) -> StrategyDraft:
+        """Atomically save both mode drafts with optimistic concurrency."""
+        if active_mode not in {"rule_based", "regime_state_machine"}:
+            raise StrategyPersistenceError("active_mode is invalid", code="DRAFT_INVALID")
+        if expected_revision < 0:
+            raise StrategyPersistenceError("expected_revision is invalid", code="DRAFT_INVALID")
+        strategy_id = self._required_text(strategy_id, "strategy_id")
+        rule_json = self._safe_json(dict(rule_based_draft))
+        regime_json = self._safe_json(dict(regime_draft))
+        payload_json = (
+            None
+            if active_strategy_payload is None
+            else self._safe_json(dict(active_strategy_payload))
+        )
+        source_json = self._safe_json(dict(source_metadata or {}))
+        now = datetime.now(UTC)
+        draft_hash = self._hash_json(
+            {
+                "strategy_id": strategy_id,
+                "active_mode": active_mode,
+                "rule_based_draft": json.loads(rule_json),
+                "regime_draft": json.loads(regime_json),
+                "active_strategy_payload": None
+                if payload_json is None
+                else json.loads(payload_json),
+                "source_metadata": json.loads(source_json),
+            }
+        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            strategy = connection.execute(
+                "SELECT strategy_id FROM strategies WHERE strategy_id = ?", (strategy_id,)
+            ).fetchone()
+            if strategy is None:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "strategy identity was not found", code="STRATEGY_NOT_FOUND"
+                )
+            current = connection.execute(
+                "SELECT draft_revision FROM strategy_drafts WHERE strategy_id = ?", (strategy_id,)
+            ).fetchone()
+            current_revision = 0 if current is None else int(current["draft_revision"])
+            if current_revision != expected_revision:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "draft revision is stale",
+                    code="DRAFT_REVISION_CONFLICT",
+                )
+            revision = current_revision + 1
+            if current is None:
+                connection.execute(
+                    "INSERT INTO strategy_drafts(strategy_id, draft_revision, active_mode, "
+                    "rule_based_draft_json, regime_draft_json, active_strategy_payload_json, "
+                    "source_metadata_json, draft_hash, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        strategy_id,
+                        revision,
+                        active_mode,
+                        rule_json,
+                        regime_json,
+                        payload_json,
+                        source_json,
+                        draft_hash,
+                        now.isoformat(),
+                        now.isoformat(),
+                    ),
+                )
+                created_at = now
+            else:
+                connection.execute(
+                    "UPDATE strategy_drafts SET draft_revision = ?, active_mode = ?, "
+                    "rule_based_draft_json = ?, regime_draft_json = ?, "
+                    "active_strategy_payload_json = ?, source_metadata_json = ?, "
+                    "draft_hash = ?, updated_at = ? WHERE strategy_id = ?",
+                    (
+                        revision,
+                        active_mode,
+                        rule_json,
+                        regime_json,
+                        payload_json,
+                        source_json,
+                        draft_hash,
+                        now.isoformat(),
+                        strategy_id,
+                    ),
+                )
+                existing = connection.execute(
+                    "SELECT created_at FROM strategy_drafts WHERE strategy_id = ?", (strategy_id,)
+                ).fetchone()
+                created_at = self._parse_datetime(existing["created_at"])
+            connection.execute(
+                "UPDATE strategies SET name = ?, description = ?, updated_at = ? "
+                "WHERE strategy_id = ?",
+                (str(name), str(description), now.isoformat(), strategy_id),
+            )
+            connection.execute("COMMIT")
+            return StrategyDraft(
+                strategy_id=strategy_id,
+                draft_revision=revision,
+                active_mode=active_mode,
+                rule_based_draft=json.loads(rule_json),
+                regime_draft=json.loads(regime_json),
+                active_strategy_payload=None if payload_json is None else json.loads(payload_json),
+                source_metadata=json.loads(source_json),
+                created_at=created_at,
+                updated_at=now,
+                draft_hash=draft_hash,
+            )
+        except StrategyPersistenceError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError("could not save strategy draft") from exc
+        finally:
+            connection.close()
+
+    def create_version_from_draft(
+        self,
+        *,
+        strategy_id: str,
+        expected_revision: int,
+        definition: StrategyDefinition,
+    ) -> StrategyVersion:
+        """Atomically snapshot the saved active draft into a new immutable version."""
+        if definition.strategy_id != strategy_id:
+            raise StrategyPersistenceError(
+                "strategy identity does not match draft", code="DRAFT_INVALID"
+            )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT draft_revision, active_strategy_payload_json, active_mode, draft_hash "
+                "FROM strategy_drafts WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            if row is None:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "strategy draft was not found", code="DRAFT_NOT_FOUND"
+                )
+            if int(row["draft_revision"]) != expected_revision:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "draft revision is stale", code="DRAFT_REVISION_CONFLICT"
+                )
+            if row["active_strategy_payload_json"] is None:
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "active draft has not passed serialization and validation",
+                    code="DRAFT_INVALID",
+                )
+            stored = json.loads(row["active_strategy_payload_json"])
+            if StrategyDefinition.from_dict(stored).to_json() != definition.to_json():
+                self._rollback(connection)
+                raise StrategyPersistenceError(
+                    "draft payload changed before version creation", code="DRAFT_REVISION_CONFLICT"
+                )
+            latest = connection.execute(
+                "SELECT COALESCE(MAX(version_number), 0) AS latest_version_number "
+                "FROM strategy_versions WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            version_number = int(latest["latest_version_number"]) + 1
+            now = datetime.now(UTC)
+            version = StrategyVersion(
+                strategy_id=strategy_id,
+                version_id=f"{strategy_id}-v{version_number}-{uuid4().hex[:12]}",
+                version_number=version_number,
+                created_at=now,
+                configuration=definition,
+                status=StrategyStatus.DRAFT,
+            )
+            provenance = self._safe_json(
+                {
+                    "source": "strategy_draft",
+                    "draft_revision": expected_revision,
+                    "draft_hash": row["draft_hash"],
+                    "active_mode": row["active_mode"],
+                }
+            )
+            connection.execute(
+                "INSERT INTO strategy_versions(strategy_id, version_id, version_number, "
+                "created_at, "
+                "configuration_json, content_hash, status, source_draft_revision, "
+                "source_draft_hash, "
+                "source_provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    strategy_id,
+                    version.version_id,
+                    version_number,
+                    now.isoformat(),
+                    definition.to_json(),
+                    version.content_hash,
+                    version.status.value,
+                    expected_revision,
+                    row["draft_hash"],
+                    provenance,
+                ),
+            )
+            connection.execute(
+                "UPDATE strategies SET latest_version_number = ?, updated_at = ? "
+                "WHERE strategy_id = ?",
+                (version_number, now.isoformat(), strategy_id),
+            )
+            connection.execute("COMMIT")
+            return version
+        except StrategyPersistenceError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError("could not create version from draft") from exc
         finally:
             connection.close()
 
@@ -432,6 +833,7 @@ class StrategyRepository:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM strategy_versions")
             connection.execute("DELETE FROM materialized_strategy_versions")
+            connection.execute("DELETE FROM strategy_drafts")
             connection.execute("DELETE FROM strategies")
             connection.execute("COMMIT")
         except sqlite3.Error as exc:
@@ -506,9 +908,7 @@ class StrategyRepository:
         if any(row[field] is None for field in required_fields):
             raise StrategyPersistenceError("stored materialized strategy version is incomplete")
         try:
-            version_payload = json.loads(
-                row["version_json"], parse_constant=_reject_nonfinite
-            )
+            version_payload = json.loads(row["version_json"], parse_constant=_reject_nonfinite)
             version = StrategyVersion.from_dict(version_payload)
             if version.materialization_provenance is None:
                 raise ValueError("materialization provenance is missing")
@@ -594,6 +994,59 @@ class StrategyRepository:
     @classmethod
     def _safe_version_json(cls, version: StrategyVersion) -> str:
         return cls._safe_json(version.to_dict())
+
+    @classmethod
+    def _row_to_strategy(cls, row: sqlite3.Row) -> StrategyRecord:
+        return StrategyRecord(
+            strategy_id=str(row["strategy_id"]),
+            name=str(row["name"]),
+            description=str(row["description"]),
+            created_at=cls._parse_datetime(row["created_at"]),
+            updated_at=cls._parse_datetime(row["updated_at"] or row["created_at"]),
+            status=str(row["status"] or "active"),
+            metadata=json.loads(row["metadata_json"] or "{}"),
+        )
+
+    @classmethod
+    def _row_to_draft(cls, row: sqlite3.Row) -> StrategyDraft:
+        rule_based = json.loads(row["rule_based_draft_json"])
+        regime = json.loads(row["regime_draft_json"])
+        active_payload = (
+            None
+            if row["active_strategy_payload_json"] is None
+            else json.loads(row["active_strategy_payload_json"])
+        )
+        source_metadata = json.loads(row["source_metadata_json"])
+        return StrategyDraft(
+            strategy_id=str(row["strategy_id"]),
+            draft_revision=int(row["draft_revision"]),
+            active_mode=str(row["active_mode"]),
+            rule_based_draft=rule_based,
+            regime_draft=regime,
+            active_strategy_payload=active_payload,
+            source_metadata=source_metadata,
+            created_at=cls._parse_datetime(row["created_at"]),
+            updated_at=cls._parse_datetime(row["updated_at"]),
+            draft_hash=str(row["draft_hash"]),
+        )
+
+    @staticmethod
+    def _required_text(value: object, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise StrategyPersistenceError(f"{label} must be non-empty", code="DRAFT_INVALID")
+        return value.strip()
+
+    @classmethod
+    def _hash_json(cls, payload: object) -> str:
+        import hashlib
+
+        return hashlib.sha256(cls._safe_json(payload).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _parse_datetime(value: object) -> datetime:
+        if not isinstance(value, str):
+            raise ValueError("stored datetime is invalid")
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
     @staticmethod
     def _version_id_rows(

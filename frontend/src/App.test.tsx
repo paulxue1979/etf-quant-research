@@ -13,6 +13,42 @@ afterEach(() => {
 function mockApi() {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url.endsWith("/strategies") && init?.method === "POST") {
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        strategy_id: body.strategy_id,
+        name: body.name,
+        description: body.description,
+        created_at: "2026-09-07T00:00:00Z",
+        updated_at: "2026-09-07T00:00:00Z",
+        status: "active",
+        metadata: {},
+      }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.endsWith("/draft") && init?.method === "GET") {
+      return new Response(JSON.stringify({ detail: "DRAFT_NOT_FOUND" }), { status: 404 });
+    }
+    if (url.endsWith("/draft") && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        ...body,
+        draft_revision: body.expected_revision + 1,
+        created_at: "2026-09-07T00:00:00Z",
+        updated_at: "2026-09-07T00:00:00Z",
+        draft_hash: "draft-hash",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/versions/from-draft")) {
+      return new Response(JSON.stringify({
+        strategy_id: "qqq-tqqq-sgov-dynamic-allocation",
+        version_id: "strategy-v1",
+        version_number: 1,
+        created_at: "2026-09-07T00:00:00Z",
+        content_hash: "abcdef1234567890",
+        status: "draft",
+        configuration: {},
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
     if (url.endsWith("/versions") && init?.method !== "POST") {
       return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
     }
@@ -85,15 +121,17 @@ describe("Strategy Lab", () => {
     await waitFor(() => expect(screen.getByText("No saved versions yet.")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("radio", { name: "Hold Previous Allocation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
+    await waitFor(() => expect(screen.getByText("Draft saved (revision 1).")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
 
     await waitFor(() => expect(screen.getByText("Saved immutable version v1.")).toBeInTheDocument());
     const saveCall = fetchMock.mock.calls.find(
-      ([input, init]) => String(input).endsWith("/versions") && init?.method === "POST",
+      ([input, init]) => String(input).endsWith("/draft") && init?.method === "PUT",
     );
     const body = JSON.parse(String(saveCall?.[1]?.body));
-    expect(body.strategy.no_match_behavior).toBe("hold_previous_allocation");
-    expect(body.strategy.initial_allocation).toEqual({ allocations: [] });
+    expect(body.active_strategy_payload.no_match_behavior).toBe("hold_previous_allocation");
+    expect(body.active_strategy_payload.initial_allocation).toEqual({ allocations: [] });
   });
 
   it("shows structured backend validation errors in the workflow", async () => {
@@ -169,8 +207,42 @@ describe("Strategy Lab", () => {
     const savedConfiguration: StrategyPayload = { ...configuration, name: "Persisted strategy" };
     const versions: StrategyVersionSummary[] = [];
     let saveCount = 0;
+    let draftRevision = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
+      if (url.endsWith("/strategies") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({
+          strategy_id: body.strategy_id, name: body.name, description: body.description,
+          created_at: "2026-09-07T00:00:00Z", updated_at: "2026-09-07T00:00:00Z",
+          status: "active", metadata: {},
+        }), { status: 201 });
+      }
+      if (url.endsWith("/draft") && init?.method === "GET") {
+        return new Response(JSON.stringify({ detail: "DRAFT_NOT_FOUND" }), { status: 404 });
+      }
+      if (url.endsWith("/draft") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        draftRevision = body.expected_revision + 1;
+        return new Response(JSON.stringify({
+          ...body, draft_revision: draftRevision, created_at: "2026-09-07T00:00:00Z",
+          updated_at: "2026-09-07T00:00:00Z", draft_hash: `draft-${draftRevision}`,
+        }), { status: 200 });
+      }
+      if (url.includes("/versions/from-draft")) {
+        saveCount += 1;
+        const version = {
+          strategy_id: savedConfiguration.strategy_id,
+          version_id: `strategy-v${saveCount}`,
+          version_number: saveCount,
+          created_at: `2026-09-07T00:0${saveCount}:00Z`,
+          content_hash: `hash-${saveCount}`,
+          status: "draft",
+          configuration: saveCount === 1 ? savedConfiguration : configuration,
+        };
+        versions.push({ ...version });
+        return new Response(JSON.stringify(version), { status: 200 });
+      }
       if (url.endsWith("/versions") && init?.method !== "POST") {
         return new Response(JSON.stringify(versions), { status: 200 });
       }
@@ -210,6 +282,8 @@ describe("Strategy Lab", () => {
 
     const firstRender = render(<App />);
     await waitFor(() => expect(screen.getByText("No saved versions yet.")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
+    await waitFor(() => expect(screen.getByText("Draft saved (revision 1).")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
     await waitFor(() => expect(screen.getByText("Saved immutable version v1.")).toBeInTheDocument());
     expect(saveCount).toBe(1);
@@ -222,12 +296,14 @@ describe("Strategy Lab", () => {
     await waitFor(() => expect(screen.getByText("Loaded v1 as an editable draft.")).toBeInTheDocument());
     expect(screen.getByDisplayValue("Persisted strategy")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
+    await waitFor(() => expect(screen.getByText("Draft saved (revision 1).")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
     await waitFor(() => expect(screen.getByText("Saved immutable version v2.")).toBeInTheDocument());
     expect(saveCount).toBe(2);
     expect(versions.map((version) => version.version_number)).toEqual([1, 2]);
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/strategy-lab/versions"),
+      expect.stringContaining("/strategy-lab/strategies/"),
       expect.objectContaining({ method: "POST" }),
     );
   });

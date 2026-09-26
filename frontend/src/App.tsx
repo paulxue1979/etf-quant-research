@@ -10,10 +10,12 @@ import {
   comparisonOptions,
   createDefaultEditorState,
   editorReducer,
+  fromDraftResponse,
   fromStrategyPayload,
   isAssetReferenced,
   rebalanceOptions,
   toStrategyPayload,
+  toDraftPayload,
   validateEditorState,
   validateRegimeEditor,
 } from "./strategy/editor";
@@ -520,15 +522,30 @@ export function App() {
     return createDefaultEditorState();
   });
   const [validation, setValidation] = useState<ValidationResult>(emptyValidation);
-  const [busy, setBusy] = useState<"validate" | "save" | "history" | "load" | null>(null);
+  const [busy, setBusy] = useState<"validate" | "draft" | "save" | "history" | "load" | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [versions, setVersions] = useState<StrategyVersionSummary[]>([]);
   const [newAsset, setNewAsset] = useState("");
 
   useEffect(() => {
     void loadVersions(state.strategyId);
-    // Load history when the strategy identity changes, not on every editor keystroke.
+    void loadDraft(state.strategyId);
+    // Load persisted state when the strategy identity changes, not on every keystroke.
   }, [state.strategyId]);
+
+  async function loadDraft(strategyId: string) {
+    if (!strategyId.trim()) return;
+    try {
+      const draft = await strategyApi.getDraft(strategyId);
+      if (draft) {
+        dispatch({ type: "replace", state: fromDraftResponse(draft) });
+        setValidation(emptyValidation);
+        setNotice({ tone: "success", text: `Draft loaded (revision ${draft.draft_revision}).` });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft load failed." });
+    }
+  }
 
   async function loadVersions(strategyId: string) {
     if (!strategyId.trim()) return;
@@ -573,11 +590,15 @@ export function App() {
   }
 
   async function saveCurrent() {
+    if (state.draftRevision < 1 || state.isDirty) {
+      setNotice({ tone: "error", text: "Save the draft before creating an immutable version." });
+      return;
+    }
     const result = await validateCurrent();
     if (!result.is_valid) return;
     setBusy("save");
     try {
-      const saved = await strategyApi.saveVersion(toStrategyPayload(state));
+      const saved = await strategyApi.createVersionFromDraft(state.strategyId, state.draftRevision);
       if ("is_valid" in saved) {
         setValidation(saved);
         setNotice({ tone: "error", text: "The backend rejected this version." });
@@ -592,11 +613,36 @@ export function App() {
     }
   }
 
+  async function saveDraft() {
+    setBusy("draft");
+    setNotice(null);
+    try {
+      try {
+        await strategyApi.createStrategy({
+          strategy_id: state.strategyId.trim(),
+          name: state.name,
+          description: state.description,
+          metadata: {},
+        });
+      } catch (error) {
+        if (!(error instanceof StrategyApiError) || error.status !== 409) throw error;
+      }
+      const saved = await strategyApi.saveDraft(state.strategyId, toDraftPayload(state));
+      dispatch({ type: "replace", state: fromDraftResponse(saved) });
+      setValidation(emptyValidation);
+      setNotice({ tone: "success", text: `Draft saved (revision ${saved.draft_revision}).` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft save failed." });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function loadVersion(versionId: string) {
     setBusy("load");
     try {
       const version = await strategyApi.getVersion(state.strategyId, versionId);
-      dispatch({ type: "replace", state: fromStrategyPayload(version.configuration) });
+      dispatch({ type: "replace", state: { ...fromStrategyPayload(version.configuration), draftRevision: state.draftRevision, isDirty: true } });
       setValidation({ is_valid: true, errors: [], warnings: [] });
       setNotice({ tone: "success", text: `Loaded v${version.version_number} as an editable draft.` });
     } catch (error) {
@@ -659,7 +705,7 @@ export function App() {
                 <span className="eyebrow">STRATEGY DEFINITION</span>
                 <h2>Configuration</h2>
               </div>
-              <span className="draft-label">New version on save</span>
+          <span className="draft-label">{state.isDirty ? "Unsaved Changes" : state.draftRevision > 0 ? `Saved Draft r${state.draftRevision}` : "Draft not saved"}</span>
             </div>
             <div className="basic-grid">
               <label>
@@ -853,10 +899,13 @@ export function App() {
               )}
             </div>
             <div className="action-buttons">
+              <button className="button button-secondary" type="button" disabled={busy !== null} onClick={() => void saveDraft()}>
+                {busy === "draft" ? "Saving draft..." : "Save Draft"}
+              </button>
               <button className="button button-secondary" type="button" disabled={busy !== null} onClick={() => void validateCurrent()}>
                 {busy === "validate" ? "Validating..." : "Validate strategy"}
               </button>
-              <button className="button button-primary" type="button" disabled={busy !== null} onClick={() => void saveCurrent()}>
+              <button className="button button-primary" type="button" disabled={busy !== null || state.isDirty || state.draftRevision < 1} onClick={() => void saveCurrent()}>
                 {busy === "save" ? "Saving..." : "Save new version"}
               </button>
             </div>

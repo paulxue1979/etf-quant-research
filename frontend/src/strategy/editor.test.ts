@@ -4,11 +4,13 @@ import {
   allocationTotalPercent,
   createDefaultEditorState,
   editorReducer,
+  fromDraftResponse,
   fromStrategyPayload,
   toStrategyPayload,
+  toDraftPayload,
   validateEditorState,
 } from "./editor";
-import type { EditorState, StrategyPayload } from "./types";
+import type { EditorState, StrategyDraftResponse, StrategyPayload } from "./types";
 
 function firstCondition(state: EditorState) {
   const condition = state.rules[0].condition.children[0];
@@ -404,5 +406,46 @@ describe("strategy editor serialization", () => {
     state.fallbackAllocations[0].targetWeightPercent = "NaN";
 
     expect(validateEditorState(state)).toEqual([]);
+  });
+
+  it("retains independent mode assets and restores both mode drafts", () => {
+    let state = createDefaultEditorState();
+    state = editorReducer(state, { type: "strategyMode", value: "regime_state_machine" });
+    state = editorReducer(state, { type: "assets", assets: ["QQQ", "TQQQ"] });
+    state = editorReducer(state, { type: "strategyMode", value: "rule_based" });
+
+    expect(state.assets).toEqual(["QQQ", "TQQQ", "SGOV"]);
+    expect(state.ruleBasedAssets).toEqual(["QQQ", "TQQQ", "SGOV"]);
+    expect(state.regimeAssets).toEqual(["QQQ", "TQQQ"]);
+  });
+
+  it("allows an invalid draft to serialize without creating an active version payload", () => {
+    const state = createDefaultEditorState();
+    state.rules[0].allocations[0].targetWeightPercent = "not-a-number";
+
+    const draft = toDraftPayload(state);
+
+    expect(draft.active_strategy_payload).toBeNull();
+    expect(draft.rule_based_draft.editor_state).toMatchObject({ rules: state.rules });
+  });
+
+  it("round-trips a saved draft as clean state with its optimistic revision", () => {
+    const initial = createDefaultEditorState();
+    const draft = toDraftPayload(initial);
+    const response = {
+      ...draft,
+      draft_revision: 3,
+      created_at: "2026-09-26T00:00:00Z",
+      updated_at: "2026-09-26T00:00:00Z",
+      draft_hash: "hash",
+    } as StrategyDraftResponse;
+
+    const restored = fromDraftResponse(response);
+
+    expect(restored.draftRevision).toBe(3);
+    expect(restored.isDirty).toBe(false);
+    expect(restored.strategyId).toBe(initial.strategyId);
+    expect(restored.ruleBasedAssets).toEqual(initial.ruleBasedAssets);
+    expect(restored.regimeAssets).toEqual(initial.regimeAssets);
   });
 });

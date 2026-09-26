@@ -150,3 +150,70 @@ def test_invalid_definition_is_not_persisted(tmp_path) -> None:
         repository.create(object())  # type: ignore[arg-type]
 
     assert repository.list("not-persisted") == ()
+
+
+def test_draft_round_trip_allows_invalid_content_and_uses_revision_conflict(tmp_path) -> None:
+    repository = StrategyRepository(tmp_path / "strategy.db")
+    repository.create_strategy("draft-strategy", "Draft strategy", "Editable")
+    first = repository.save_draft(
+        strategy_id="draft-strategy",
+        expected_revision=0,
+        active_mode="rule_based",
+        rule_based_draft={"assets": ["QQQ"], "editor_state": {"fallback": "incomplete"}},
+        regime_draft={"assets": ["QQQ"], "editor_state": {"transitions": []}},
+        active_strategy_payload=None,
+        source_metadata={"price_field": "adjusted_close"},
+        name="Draft strategy",
+        description="Still incomplete",
+    )
+
+    assert first.draft_revision == 1
+    assert first.active_strategy_payload is None
+    assert repository.get_draft("draft-strategy") == first
+    with pytest.raises(StrategyPersistenceError) as error:
+        repository.save_draft(
+            strategy_id="draft-strategy",
+            expected_revision=0,
+            active_mode="rule_based",
+            rule_based_draft={},
+            regime_draft={},
+            active_strategy_payload=None,
+            source_metadata={},
+            name="Draft strategy",
+            description="stale",
+        )
+    assert error.value.code == "DRAFT_REVISION_CONFLICT"
+
+
+def test_version_from_draft_is_immutable_and_records_draft_provenance(tmp_path) -> None:
+    repository = StrategyRepository(tmp_path / "strategy.db")
+    definition = _definition("draft-version")
+    repository.create_strategy(definition.strategy_id, definition.name, definition.description)
+    draft = repository.save_draft(
+        strategy_id=definition.strategy_id,
+        expected_revision=0,
+        active_mode="rule_based",
+        rule_based_draft={"assets": ["QQQ", "TQQQ"]},
+        regime_draft={"assets": ["QQQ"]},
+        active_strategy_payload=definition.to_dict(),
+        source_metadata={"price_field": "adjusted_close"},
+        name=definition.name,
+        description=definition.description,
+    )
+
+    version = repository.create_version_from_draft(
+        strategy_id=definition.strategy_id,
+        expected_revision=draft.draft_revision,
+        definition=definition,
+    )
+    restored = repository.get(definition.strategy_id, version.version_id)
+    assert restored == version
+    with sqlite3.connect(tmp_path / "strategy.db") as connection:
+        provenance = connection.execute(
+            "SELECT source_draft_revision, source_draft_hash, source_provenance_json "
+            "FROM strategy_versions WHERE version_id = ?",
+            (version.version_id,),
+        ).fetchone()
+    assert provenance[0] == 1
+    assert provenance[1] == draft.draft_hash
+    assert json.loads(provenance[2])["source"] == "strategy_draft"

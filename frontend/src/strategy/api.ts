@@ -1,5 +1,8 @@
 import type {
   StrategyPayload,
+  StrategyDraftPayload,
+  StrategyDraftResponse,
+  StrategyRecord,
   StrategyVersion,
   StrategyVersionSummary,
   ValidationResult,
@@ -11,13 +14,15 @@ export class StrategyApiError extends Error {
   constructor(
     public readonly kind: "network" | "server" | "malformed",
     message: string,
+    public readonly status?: number,
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "StrategyApiError";
   }
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit, acceptedStatuses: number[] = []): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl}${path}`, {
@@ -35,13 +40,66 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new StrategyApiError("malformed", "Strategy Lab returned an invalid response.");
   }
 
-  if (!response.ok) {
-    throw new StrategyApiError("server", `Strategy Lab request failed (${response.status}).`);
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
+    const detail = typeof payload === "object" && payload !== null && "detail" in payload
+      ? (payload as { detail?: unknown }).detail
+      : undefined;
+    throw new StrategyApiError(
+      "server",
+      `Strategy Lab request failed (${response.status}).`,
+      response.status,
+      typeof detail === "string" ? detail : undefined,
+    );
   }
   return payload as T;
 }
 
 export const strategyApi = {
+  createStrategy(request: Pick<StrategyRecord, "strategy_id" | "name" | "description"> & { metadata?: Record<string, unknown> }): Promise<StrategyRecord> {
+    return requestJson<StrategyRecord>("/strategy-lab/strategies", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+
+  getStrategy(strategyId: string): Promise<StrategyRecord> {
+    return requestJson<StrategyRecord>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}`,
+    );
+  },
+
+  listStrategies(): Promise<StrategyRecord[]> {
+    return requestJson<StrategyRecord[]>("/strategy-lab/strategies");
+  },
+
+  async getDraft(strategyId: string): Promise<StrategyDraftResponse | null> {
+    try {
+      return await requestJson<StrategyDraftResponse>(
+        `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/draft`,
+      );
+    } catch (error) {
+      if (error instanceof StrategyApiError && error.status === 404 && error.code === "DRAFT_NOT_FOUND") {
+        return null;
+      }
+      throw error;
+    }
+  },
+
+  saveDraft(strategyId: string, draft: StrategyDraftPayload): Promise<StrategyDraftResponse> {
+    return requestJson<StrategyDraftResponse>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/draft`,
+      { method: "PUT", body: JSON.stringify(draft) },
+    );
+  },
+
+  createVersionFromDraft(strategyId: string, expectedRevision: number): Promise<StrategyVersion | ValidationResult> {
+    return requestJson<StrategyVersion | ValidationResult>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/versions/from-draft`,
+      { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) },
+      [422],
+    );
+  },
+
   validate(strategy: StrategyPayload): Promise<ValidationResult> {
     return requestJson<ValidationResult>("/strategy-lab/validate", {
       method: "POST",

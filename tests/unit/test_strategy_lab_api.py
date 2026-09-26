@@ -62,6 +62,23 @@ def setup_function() -> None:
     strategy_version_store.clear()
 
 
+def _draft_request(payload: dict[str, object], *, expected_revision: int = 0) -> dict[str, object]:
+    return {
+        "expected_revision": expected_revision,
+        "active_mode": "rule_based",
+        "strategy_id": payload["strategy_id"],
+        "name": payload["name"],
+        "description": payload["description"],
+        "price_field": "adjusted_close",
+        "rebalance_frequency": "weekly",
+        "rebalance_threshold_percent": "5",
+        "rule_based_draft": {"assets": ["QQQ", "TQQQ", "SGOV"], "editor_state": {"rules": []}},
+        "regime_draft": {"assets": ["QQQ"], "editor_state": {"regime": {"transitions": []}}},
+        "active_strategy_payload": payload,
+        "source_metadata": {"source_schema_version": "2.0"},
+    }
+
+
 def test_strategy_lab_validation_delegates_to_the_domain_validator() -> None:
     client = TestClient(app)
 
@@ -257,3 +274,95 @@ def test_saved_stateful_version_id_is_handed_to_the_existing_backtest_api(
     restored = strategy_version_store.get(saved["strategy_id"], saved["version_id"])
     assert restored is not None
     assert restored.configuration.no_match_behavior.value == "hold_previous_allocation"
+
+
+def test_strategy_draft_can_save_invalid_state_and_reject_stale_revision() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    identity = client.post(
+        "/strategy-lab/strategies",
+        json={
+            "strategy_id": payload["strategy_id"],
+            "name": payload["name"],
+            "description": payload["description"],
+        },
+    )
+    assert identity.status_code == 201
+
+    invalid = _draft_request(payload)
+    invalid["active_strategy_payload"] = None
+    saved = client.put(f"/strategy-lab/strategies/{payload['strategy_id']}/draft", json=invalid)
+    assert saved.status_code == 200
+    assert saved.json()["draft_revision"] == 1
+    assert saved.json()["active_strategy_payload"] is None
+    assert (
+        client.get(f"/strategy-lab/strategies/{payload['strategy_id']}/draft").json()
+        == saved.json()
+    )
+
+    stale = client.put(f"/strategy-lab/strategies/{payload['strategy_id']}/draft", json=invalid)
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "DRAFT_REVISION_CONFLICT"
+
+
+def test_valid_draft_creates_version_without_mutating_draft_or_identity() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    client.post(
+        "/strategy-lab/strategies",
+        json={
+            "strategy_id": payload["strategy_id"],
+            "name": payload["name"],
+            "description": payload["description"],
+        },
+    )
+    saved = client.put(
+        f"/strategy-lab/strategies/{payload['strategy_id']}/draft",
+        json=_draft_request(payload),
+    )
+    assert saved.status_code == 200
+    created = client.post(
+        f"/strategy-lab/strategies/{payload['strategy_id']}/versions/from-draft",
+        json={"expected_revision": 1},
+    )
+    assert created.status_code == 200
+    assert created.json()["version_number"] == 1
+    assert (
+        client.get(f"/strategy-lab/strategies/{payload['strategy_id']}/draft").json()[
+            "draft_revision"
+        ]
+        == 1
+    )
+
+
+def test_invalid_saved_draft_is_not_versionable() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    client.post(
+        "/strategy-lab/strategies",
+        json={
+            "strategy_id": payload["strategy_id"],
+            "name": payload["name"],
+            "description": payload["description"],
+        },
+    )
+    invalid = _draft_request(payload)
+    invalid_payload = dict(payload)
+    invalid_payload["rules"] = [
+        dict(
+            payload["rules"][0],
+            allocations=[
+                {"symbol": "QQQ", "target_weight": 0.8},
+                {"symbol": "TQQQ", "target_weight": 0.3},
+            ],
+        )
+    ]  # type: ignore[index]
+    invalid["active_strategy_payload"] = invalid_payload
+    saved = client.put(f"/strategy-lab/strategies/{payload['strategy_id']}/draft", json=invalid)
+    assert saved.status_code == 200
+    version = client.post(
+        f"/strategy-lab/strategies/{payload['strategy_id']}/versions/from-draft",
+        json={"expected_revision": 1},
+    )
+    assert version.status_code == 422
+    assert version.json()["errors"][0]["code"] == "AllocationExceeds100Percent"

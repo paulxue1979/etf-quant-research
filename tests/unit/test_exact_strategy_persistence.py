@@ -363,14 +363,20 @@ def test_v1_schema_is_upgraded_without_losing_ordinary_versions(tmp_path) -> Non
     repository = StrategyRepository(db_path)
     assert repository.get(ordinary.strategy_id, ordinary.version_id) == ordinary
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute(
-            "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
-            ("strategy_repository",),
-        ).fetchone()[0] == 2
-        assert connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-            ("materialized_strategy_versions",),
-        ).fetchone()[0] == "materialized_strategy_versions"
+        assert (
+            connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                ("strategy_repository",),
+            ).fetchone()[0]
+            == 3
+        )
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("materialized_strategy_versions",),
+            ).fetchone()[0]
+            == "materialized_strategy_versions"
+        )
 
 
 def test_clear_removes_ordinary_and_derived_versions(tmp_path) -> None:
