@@ -1374,6 +1374,7 @@ class ResearchProtocolRepository:
             parameter_set_hash=provenance.parameter_set_hash,
             binding_hash=provenance.binding_hash,
             materialization_spec_hash=provenance.materialization_spec_hash,
+            binding_audit=provenance.binding_audit,
         )
         if provenance.derived_strategy_version_hash != semantic_hash:
             raise ResearchProtocolError(

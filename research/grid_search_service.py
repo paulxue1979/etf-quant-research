@@ -162,10 +162,7 @@ class GridSearchService:
             raise GridSearchServiceError(
                 "STRATEGY_VERSION_NOT_FOUND", "base strategy version was not found"
             )
-        semantic_bindings = resolve_semantic_bindings(base, definition.semantic_bindings)
-        effective_strategy_bindings = tuple(definition.strategy_bindings) + tuple(
-            item.parameter_binding for item in semantic_bindings
-        )
+        resolve_semantic_bindings(base, definition.semantic_bindings)
         for candidate in candidates:
             if self._grid.cancel_requested(experiment_id):
                 self._request_experiment_cancel(experiment_id)
@@ -201,7 +198,8 @@ class GridSearchService:
             outcome = self._executor.execute(
                 experiment_id=experiment_id,
                 candidate_index=candidate.candidate_index,
-                parameter_bindings=effective_strategy_bindings,
+                parameter_bindings=definition.strategy_bindings,
+                semantic_bindings=definition.semantic_bindings,
                 backtest_parameter_bindings=definition.backtest_bindings,
                 claimed_by=self.ACTOR,
             )

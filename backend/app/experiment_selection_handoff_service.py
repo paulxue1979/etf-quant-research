@@ -350,6 +350,7 @@ class ExperimentSelectionHandoffService:
             parameter_set_hash=provenance.parameter_set_hash,
             binding_hash=provenance.binding_hash,
             materialization_spec_hash=provenance.materialization_spec_hash,
+            binding_audit=provenance.binding_audit,
         )
         if any(
             (

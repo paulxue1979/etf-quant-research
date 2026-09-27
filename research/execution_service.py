@@ -45,6 +45,7 @@ from research.materialization import (
     ParameterBindingSet,
     materialize_strategy_version,
 )
+from research.semantic_bindings import SemanticParameterBinding, resolve_semantic_bindings
 from strategies.enums import StrategyEvaluationStatus
 from strategies.evaluation import EvaluationContext
 from strategies.strategy_evaluation import evaluate_strategy, required_indicators
@@ -93,6 +94,7 @@ class ExperimentExecutionService:
         experiment_id: str,
         candidate_index: int,
         parameter_bindings: ParameterBindingSet | Sequence[ParameterBinding],
+        semantic_bindings: Sequence[SemanticParameterBinding] = (),
         backtest_parameter_bindings: (
             BacktestParameterBindingSet | Sequence[BacktestParameterBinding]
         ) = (),
@@ -106,6 +108,7 @@ class ExperimentExecutionService:
                 candidate_index,
                 parameter_bindings,
                 backtest_parameter_bindings,
+                semantic_bindings=semantic_bindings,
                 claimed_by=claimed_by,
                 started_at=started_at,
             )
@@ -239,6 +242,7 @@ class ExperimentExecutionService:
             BacktestParameterBindingSet | Sequence[BacktestParameterBinding]
         ) = (),
         *,
+        semantic_bindings: Sequence[SemanticParameterBinding] = (),
         claimed_by: str,
         started_at: datetime,
     ) -> _PreparedExecution:
@@ -289,10 +293,15 @@ class ExperimentExecutionService:
                 self._preflight_failure(experiment_id, candidate_index, "INVALID_EXPERIMENT")
             )
         try:
-            bindings = (
+            explicit_bindings = (
                 parameter_bindings
                 if isinstance(parameter_bindings, ParameterBindingSet)
                 else ParameterBindingSet(parameter_bindings)
+            )
+            resolved_semantic = resolve_semantic_bindings(base, semantic_bindings)
+            bindings = ParameterBindingSet(
+                tuple(explicit_bindings.bindings)
+                + tuple(item.parameter_binding for item in resolved_semantic)
             )
             backtest_bindings = (
                 backtest_parameter_bindings
@@ -312,7 +321,19 @@ class ExperimentExecutionService:
                     if name in strategy_names
                 }
             )
-            derived = materialize_strategy_version(base, strategy_parameter_set, bindings)
+            semantic_audit = tuple(
+                {
+                    **item.audit,
+                    "parameter_value": parameter_set.values[item.semantic_binding.parameter_name],
+                }
+                for item in resolved_semantic
+            )
+            derived = materialize_strategy_version(
+                base,
+                strategy_parameter_set,
+                bindings,
+                binding_audit=semantic_audit,
+            )
             # The result and any subsequent PHASE 7 freeze must reference this
             # exact immutable object, not a later equivalent re-materialization.
             derived = self._strategies.persist_exact_strategy_version(derived)
