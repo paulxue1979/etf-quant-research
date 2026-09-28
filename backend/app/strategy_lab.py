@@ -7,11 +7,12 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.app.strategy_repository import (
+    StrategyDependency,
     StrategyDraft,
     StrategyPersistenceError,
     StrategyRecord,
@@ -81,6 +82,34 @@ class StrategyRecordResponse(BaseModel):
     latest_version_id: str | None = None
     latest_version_number: int | None = None
     latest_version_created_at: datetime | None = None
+    lifecycle_status: str = "ACTIVE"
+    is_protected: bool = False
+    deleted_at: datetime | None = None
+    version_count: int = 0
+
+
+class StrategyDependencyResponse(BaseModel):
+    kind: str
+    identifier: str
+    detail: str
+
+
+class BulkStrategyTrashRequest(BaseModel):
+    strategy_ids: list[str] = Field(default_factory=list)
+
+
+class BulkStrategyTrashResponse(BaseModel):
+    requested: int
+    trashed: list[str]
+    skipped_protected: list[str]
+    blocked_dependencies: list[str]
+    not_found: list[str]
+
+
+class StrategyLifecycleResponse(BaseModel):
+    strategy_id: str
+    result: str
+    dependencies: list[StrategyDependencyResponse] = Field(default_factory=list)
 
 
 class StrategyDraftResponse(BaseModel):
@@ -226,6 +255,7 @@ def _strategy_response(
     *,
     draft: StrategyDraft | None = None,
     latest: StrategyVersionRecord | None = None,
+    version_count: int | None = None,
 ) -> StrategyRecordResponse:
     return StrategyRecordResponse(
         strategy_id=strategy.strategy_id,
@@ -243,6 +273,12 @@ def _strategy_response(
         latest_version_id=None if latest is None else latest.version.version_id,
         latest_version_number=None if latest is None else latest.version.version_number,
         latest_version_created_at=None if latest is None else latest.version.created_at,
+        lifecycle_status=strategy.lifecycle_status,
+        is_protected=strategy.is_protected,
+        deleted_at=strategy.deleted_at,
+        version_count=(0 if latest is None else latest.version.version_number)
+        if version_count is None
+        else version_count,
     )
 
 
@@ -329,19 +365,140 @@ def create_strategy_identity(request: CreateStrategyRequest) -> StrategyRecordRe
 
 
 @router.get("/strategies", response_model=list[StrategyRecordResponse])
-def list_strategy_identities() -> list[StrategyRecordResponse]:
+def list_strategy_identities(
+    lifecycle: str = Query("ACTIVE", pattern="^(ACTIVE|TRASHED|ALL)$"),
+) -> list[StrategyRecordResponse]:
     try:
         responses: list[StrategyRecordResponse] = []
-        for item in strategy_version_store.list_strategies():
+        for item in strategy_version_store.list_strategies(lifecycle):
             records = strategy_version_store.list_version_records(item.strategy_id)
             responses.append(
                 _strategy_response(
                     item,
                     draft=strategy_version_store.get_draft(item.strategy_id),
                     latest=records[-1] if records else None,
+                    version_count=len(records),
                 )
             )
         return responses
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.get(
+    "/strategies/{strategy_id}/dependencies",
+    response_model=list[StrategyDependencyResponse],
+)
+def list_strategy_dependencies(strategy_id: str) -> list[StrategyDependencyResponse]:
+    try:
+        return [
+            StrategyDependencyResponse(
+                kind=item.kind, identifier=item.identifier, detail=item.detail
+            )
+            for item in strategy_version_store.dependencies(strategy_id)
+        ]
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+def _lifecycle_response(
+    strategy_id: str, result: str | tuple[StrategyDependency, ...]
+) -> StrategyLifecycleResponse:
+    if isinstance(result, tuple):
+        return StrategyLifecycleResponse(
+            strategy_id=strategy_id,
+            result="blocked_dependencies",
+            dependencies=[
+                StrategyDependencyResponse(
+                    kind=item.kind, identifier=item.identifier, detail=item.detail
+                )
+                for item in result
+            ],
+        )
+    return StrategyLifecycleResponse(strategy_id=strategy_id, result=result)
+
+
+@router.post("/strategies/{strategy_id}/trash", response_model=StrategyLifecycleResponse)
+def trash_strategy(strategy_id: str) -> StrategyLifecycleResponse:
+    try:
+        return _lifecycle_response(strategy_id, strategy_version_store.trash(strategy_id))
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.post("/strategies/{strategy_id}/restore", response_model=StrategyLifecycleResponse)
+def restore_strategy(strategy_id: str) -> StrategyLifecycleResponse:
+    try:
+        return _lifecycle_response(strategy_id, strategy_version_store.restore(strategy_id))
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.post("/strategies/{strategy_id}/protect", response_model=StrategyLifecycleResponse)
+def protect_strategy(strategy_id: str) -> StrategyLifecycleResponse:
+    try:
+        return _lifecycle_response(
+            strategy_id, strategy_version_store.set_protected(strategy_id, True)
+        )
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.post("/strategies/{strategy_id}/unprotect", response_model=StrategyLifecycleResponse)
+def unprotect_strategy(strategy_id: str) -> StrategyLifecycleResponse:
+    try:
+        return _lifecycle_response(
+            strategy_id, strategy_version_store.set_protected(strategy_id, False)
+        )
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.delete("/strategies/{strategy_id}", response_model=StrategyLifecycleResponse)
+def permanently_delete_strategy(strategy_id: str) -> StrategyLifecycleResponse:
+    try:
+        return _lifecycle_response(
+            strategy_id, strategy_version_store.permanently_delete(strategy_id)
+        )
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.post("/strategies/bulk-trash", response_model=BulkStrategyTrashResponse)
+def bulk_trash_strategies(request: BulkStrategyTrashRequest) -> BulkStrategyTrashResponse:
+    try:
+        result = strategy_version_store.bulk_trash(tuple(request.strategy_ids))
+        return BulkStrategyTrashResponse(
+            requested=result.requested,
+            trashed=list(result.trashed),
+            skipped_protected=list(result.skipped_protected),
+            blocked_dependencies=list(result.blocked_dependencies),
+            not_found=list(result.not_found),
+        )
+    except StrategyPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code
+        ) from exc
+
+
+@router.get("/diagnostics")
+def strategy_diagnostics() -> dict[str, object]:
+    try:
+        return strategy_version_store.diagnostics()
     except StrategyPersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.code

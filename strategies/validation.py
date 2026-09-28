@@ -163,7 +163,7 @@ class StrategyValidator:
         behavior = strategy.get("no_match_behavior", NoMatchBehavior.USE_FALLBACK.value)
         if (
             mode == StrategyEvaluationMode.RULE_BASED.value
-            and behavior != NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION.value
+            and behavior == NoMatchBehavior.USE_FALLBACK.value
             and strategy.get("fallback") is None
         ):
             return ValidationResult(

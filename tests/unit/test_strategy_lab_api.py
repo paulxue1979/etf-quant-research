@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import backtest_lab
+from backend.app import backtest_lab, strategy_lab
 from backend.app.main import app
-from backend.app.strategy_lab import strategy_version_store
+from backend.app.strategy_repository import StrategyRepository
 from tests.unit.test_backtest_repository import _run
 
 
@@ -58,8 +58,11 @@ def _strategy_payload() -> dict[str, object]:
     }
 
 
-def setup_function() -> None:
-    strategy_version_store.clear()
+@pytest.fixture(autouse=True)
+def isolate_strategy_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        strategy_lab, "strategy_version_store", StrategyRepository(tmp_path / "strategy.db")
+    )
 
 
 def _draft_request(payload: dict[str, object], *, expected_revision: int = 0) -> dict[str, object]:
@@ -88,6 +91,36 @@ def test_strategy_lab_validation_delegates_to_the_domain_validator() -> None:
     assert response.json() == {"is_valid": True, "errors": [], "warnings": []}
 
 
+def test_strategy_lifecycle_api_supports_trash_restore_protect_and_diagnostics() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/strategy-lab/strategies",
+        json={"strategy_id": "lifecycle-api", "name": "Lifecycle API"},
+    )
+    assert created.status_code == 201
+    assert created.json()["lifecycle_status"] == "ACTIVE"
+
+    protected = client.post("/strategy-lab/strategies/lifecycle-api/protect")
+    assert protected.json()["result"] == "updated"
+    blocked = client.post("/strategy-lab/strategies/lifecycle-api/trash")
+    assert blocked.json()["result"] == "protected"
+
+    assert client.post("/strategy-lab/strategies/lifecycle-api/unprotect").json()["result"] == (
+        "updated"
+    )
+    assert client.post("/strategy-lab/strategies/lifecycle-api/trash").json()["result"] == (
+        "trashed"
+    )
+    trash = client.get("/strategy-lab/strategies?lifecycle=TRASHED")
+    assert [item["strategy_id"] for item in trash.json()] == ["lifecycle-api"]
+    assert client.post("/strategy-lab/strategies/lifecycle-api/restore").json()["result"] == (
+        "restored"
+    )
+    diagnostics = client.get("/strategy-lab/diagnostics")
+    assert diagnostics.status_code == 200
+    assert diagnostics.json()["database_path"].endswith("strategy.db")
+
+
 def test_strategy_lab_validation_returns_structured_domain_errors() -> None:
     client = TestClient(app)
     payload = _strategy_payload()
@@ -113,7 +146,7 @@ def test_invalid_strategy_cannot_create_a_version() -> None:
     assert response.status_code == 422
     assert response.json()["is_valid"] is False
     assert response.json()["errors"][0]["code"] == "AllocationExceeds100Percent"
-    assert strategy_version_store.list("qqq-tqqq-sgov") == ()
+    assert strategy_lab.strategy_version_store.list("qqq-tqqq-sgov") == ()
 
 
 def test_strategy_versions_are_immutable_snapshots_with_history_and_retrieval() -> None:
@@ -307,6 +340,7 @@ def test_regime_validation_ignores_inactive_rule_and_fallback_semantics() -> Non
             ],
             "transitions": [],
             "value_zones": [],
+            "fallback": {"name": "inactive", "allocations": "malformed"},
         }
     )
 
@@ -362,7 +396,7 @@ def test_saved_stateful_version_id_is_handed_to_the_existing_backtest_api(
         "strategy_id": saved["strategy_id"],
         "strategy_version_id": saved["version_id"],
     }
-    restored = strategy_version_store.get(saved["strategy_id"], saved["version_id"])
+    restored = strategy_lab.strategy_version_store.get(saved["strategy_id"], saved["version_id"])
     assert restored is not None
     assert restored.configuration.no_match_behavior.value == "hold_previous_allocation"
 
@@ -424,6 +458,39 @@ def test_valid_draft_creates_version_without_mutating_draft_or_identity() -> Non
         ]
         == 1
     )
+
+
+def test_hold_previous_draft_with_inactive_malformed_fallback_is_versionable() -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    payload.update(
+        {
+            "no_match_behavior": "hold_previous_allocation",
+            "initial_allocation": {"allocations": [{"symbol": "QQQ", "target_weight": 1.0}]},
+            "fallback": {"name": "inactive", "allocations": "malformed"},
+        }
+    )
+    client.post(
+        "/strategy-lab/strategies",
+        json={
+            "strategy_id": payload["strategy_id"],
+            "name": payload["name"],
+            "description": payload["description"],
+        },
+    )
+
+    draft = client.put(
+        f"/strategy-lab/strategies/{payload['strategy_id']}/draft",
+        json=_draft_request(payload),
+    )
+    assert draft.status_code == 200
+    assert client.post("/strategy-lab/validate", json={"strategy": payload}).json()["is_valid"]
+
+    version = client.post(
+        f"/strategy-lab/strategies/{payload['strategy_id']}/versions/from-draft",
+        json={"expected_revision": 1},
+    )
+    assert version.status_code == 200
 
 
 def test_invalid_saved_draft_is_not_versionable() -> None:

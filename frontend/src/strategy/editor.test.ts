@@ -411,6 +411,22 @@ describe("strategy editor serialization", () => {
     expect(validateEditorState(state)).toEqual([]);
   });
 
+  it("clears inherited fallback and no-match fields when switching active semantics", () => {
+    const source = toStrategyPayload(createDefaultEditorState());
+    source.fallback = { name: "invalid preserved draft", allocations: [] };
+    let state = fromStrategyPayload(source);
+    state = editorReducer(state, { type: "noMatchBehavior", value: "hold_previous_allocation" });
+    expect(toStrategyPayload(state).fallback).toBeUndefined();
+    expect(validateEditorState(state)).toEqual([]);
+    state = editorReducer(state, { type: "noMatchBehavior", value: "use_fallback" });
+    expect(toStrategyPayload(state).no_match_behavior).toBeUndefined();
+    expect(toStrategyPayload(state).fallback?.allocations).toEqual([]);
+    state = editorReducer(state, { type: "strategyMode", value: "regime_state_machine" });
+    expect(toStrategyPayload(state).fallback).toBeUndefined();
+    expect(toStrategyPayload(state).initial_allocation).toBeUndefined();
+    expect(validateEditorState(state)).toEqual([]);
+  });
+
   it("omits inactive fallback from the active payload while preserving the draft", () => {
     const state = createDefaultEditorState();
     state.noMatchBehavior = "hold_previous_allocation";

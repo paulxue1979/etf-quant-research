@@ -368,7 +368,7 @@ def test_v1_schema_is_upgraded_without_losing_ordinary_versions(tmp_path) -> Non
                 "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
                 ("strategy_repository",),
             ).fetchone()[0]
-            == 3
+            == 4
         )
         assert (
             connection.execute(

@@ -677,6 +677,9 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
           : toNumber(state.rebalanceThresholdPercent, "rebalance threshold") / 100,
     },
   };
+  delete payload.fallback;
+  delete payload.no_match_behavior;
+  delete payload.initial_allocation;
   if (state.strategyMode !== "regime_state_machine" && state.noMatchBehavior === "use_fallback") {
     payload.fallback = {
       name: "fallback",
@@ -690,6 +693,9 @@ export function toStrategyPayload(state: EditorState): StrategyPayload {
     };
   }
   if (state.strategyMode === "regime_state_machine" && state.regime) {
+    delete payload.fallback;
+    delete payload.no_match_behavior;
+    delete payload.initial_allocation;
     const regimePayload = toRegimePayload(state.regime, state.priceField);
     payload.strategy_mode = "regime_state_machine";
     payload.initial_regime = regimePayload.initial_regime;

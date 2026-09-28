@@ -17,12 +17,14 @@ from indicators.models import IndicatorSeries
 from strategies import (
     Allocation,
     AllocationRule,
+    AllocationSpecification,
     AssetReference,
     ComparisonOperator,
     Condition,
     EvaluationContext,
     FallbackAllocation,
     LogicalOperator,
+    NoMatchBehavior,
     Operand,
     OperandType,
     RebalanceFrequency,
@@ -217,6 +219,38 @@ def test_no_match_uses_valid_fallback_not_error() -> None:
     assert result.target_allocation is not None
     assert result.target_allocation.used_fallback
     assert result.target_allocation.weights == {"SGOV": 1.0}
+
+
+def test_hold_previous_uses_starting_target_then_latest_resolved_target() -> None:
+    datasets = (
+        _dataset("QQQ", (10.0, 20.0, 30.0)),
+        _dataset("TQQQ", (30.0, 5.0, 40.0)),
+        _dataset("SGOV", (100.0, 100.0, 100.0)),
+    )
+    rule = _rule(
+        "risk-on",
+        100,
+        "TQQQ",
+        Condition(_price("QQQ"), ComparisonOperator.GREATER_THAN, _price("TQQQ")),
+    )
+    base = _version(rules=(rule,))
+    stateful = replace(
+        base.configuration,
+        no_match_behavior=NoMatchBehavior.HOLD_PREVIOUS_ALLOCATION,
+        initial_allocation=AllocationSpecification((Allocation("QQQ", 1.0),)),
+    )
+    version = replace(base, configuration=stateful, content_hash=None)
+
+    timeline = evaluate_strategy(version, _context(*datasets), START, START + timedelta(days=2))
+
+    assert timeline.evaluations[0].target_allocation is not None
+    assert timeline.evaluations[0].target_allocation.weights == {"QQQ": 1.0}
+    assert timeline.evaluations[1].target_allocation is not None
+    assert timeline.evaluations[1].target_allocation.weights == {"TQQQ": 1.0}
+    assert timeline.evaluations[2].target_allocation is not None
+    assert timeline.evaluations[2].target_allocation.weights == {"TQQQ": 1.0}
+    assert not timeline.evaluations[0].target_allocation.used_fallback
+    assert not timeline.evaluations[2].target_allocation.used_fallback
 
 
 def test_multi_asset_dates_use_strict_intersection_without_filling() -> None:

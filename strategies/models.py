@@ -12,7 +12,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any
@@ -895,6 +895,7 @@ class StrategyDefinition:
     regimes: tuple[RegimeDefinition, ...] = ()
     transitions: tuple[RegimeTransitionDefinition, ...] = ()
     value_zones: tuple[ValueZoneDefinition, ...] = ()
+    _inactive_fallback_json: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
@@ -930,8 +931,6 @@ class StrategyDefinition:
         rules = _normalize_sequence(self.rules, "rules")
         if not all(isinstance(item, AllocationRule) for item in rules):
             raise InvalidStrategyError("rules must contain AllocationRule values")
-        if self.fallback is not None and not isinstance(self.fallback, FallbackAllocation):
-            raise InvalidStrategyError("fallback must be a FallbackAllocation value")
         if not isinstance(self.rebalance_policy, RebalancePolicy):
             raise InvalidStrategyError("rebalance_policy must be a RebalancePolicy value")
         no_match_behavior = _validate_enum(
@@ -946,6 +945,23 @@ class StrategyDefinition:
             InvalidStrategyError,
             "strategy_mode",
         )
+        fallback_active = (
+            strategy_mode is StrategyEvaluationMode.RULE_BASED
+            and no_match_behavior is NoMatchBehavior.USE_FALLBACK
+        )
+        if fallback_active:
+            if self.fallback is not None and not isinstance(self.fallback, FallbackAllocation):
+                raise InvalidStrategyError("fallback must be a FallbackAllocation value")
+            object.__setattr__(self, "_inactive_fallback_json", None)
+        elif self.fallback is not None:
+            # Preserve frozen wire identity without giving inactive content runtime semantics.
+            raw = (
+                self.fallback.to_dict()
+                if isinstance(self.fallback, FallbackAllocation)
+                else self.fallback
+            )
+            object.__setattr__(self, "_inactive_fallback_json", _canonical_json(raw))
+            object.__setattr__(self, "fallback", None)
         if self.initial_allocation is not None and not isinstance(
             self.initial_allocation, AllocationSpecification
         ):
@@ -993,6 +1009,8 @@ class StrategyDefinition:
         }
         if self.fallback is not None:
             payload["fallback"] = self.fallback.to_dict()
+        elif self._inactive_fallback_json is not None:
+            payload["fallback"] = json.loads(self._inactive_fallback_json)
         if current_schema:
             payload["strategy_schema_version"] = CURRENT_STRATEGY_SCHEMA_VERSION
         if self.no_match_behavior is not NoMatchBehavior.USE_FALLBACK:
@@ -1045,11 +1063,21 @@ class StrategyDefinition:
     def from_dict(cls, payload: object) -> StrategyDefinition:
         data = _require_mapping(payload, "strategy definition")
         schema_version = data.get("strategy_schema_version", LEGACY_STRATEGY_SCHEMA_VERSION)
+        strategy_mode = data.get("strategy_mode", StrategyEvaluationMode.RULE_BASED.value)
+        no_match_behavior = data.get("no_match_behavior", NoMatchBehavior.USE_FALLBACK.value)
         asset_type = (
             StrategyAssetReference
             if schema_version == CURRENT_STRATEGY_SCHEMA_VERSION
             else AssetReference
         )
+        fallback_payload = data.get("fallback")
+        fallback = None
+        fallback_active = (
+            strategy_mode == StrategyEvaluationMode.RULE_BASED.value
+            and no_match_behavior == NoMatchBehavior.USE_FALLBACK.value
+        )
+        if fallback_active and fallback_payload is not None:
+            fallback = FallbackAllocation.from_dict(fallback_payload)
         return cls(
             strategy_id=data.get("strategy_id", ""),
             name=data.get("name", ""),
@@ -1063,20 +1091,21 @@ class StrategyDefinition:
                 AllocationRule.from_dict(item)
                 for item in _normalize_sequence(data.get("rules", []), "rules")
             ),
-            fallback=(
-                FallbackAllocation.from_dict(data["fallback"])
-                if data.get("fallback") is not None
+            fallback=fallback,
+            _inactive_fallback_json=(
+                _canonical_json(fallback_payload)
+                if not fallback_active and "fallback" in data
                 else None
             ),
             rebalance_policy=RebalancePolicy.from_dict(data.get("rebalance_policy")),
-            no_match_behavior=data.get("no_match_behavior", NoMatchBehavior.USE_FALLBACK.value),
+            no_match_behavior=no_match_behavior,
             initial_allocation=(
                 AllocationSpecification.from_dict(data["initial_allocation"])
                 if data.get("initial_allocation") is not None
                 else None
             ),
             strategy_schema_version=schema_version,
-            strategy_mode=data.get("strategy_mode", StrategyEvaluationMode.RULE_BASED.value),
+            strategy_mode=strategy_mode,
             initial_regime=data.get("initial_regime"),
             regimes=tuple(
                 RegimeDefinition.from_dict(item)

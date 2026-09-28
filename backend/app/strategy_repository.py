@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -44,6 +46,25 @@ class StrategyRecord:
     updated_at: datetime
     status: str
     metadata: Mapping[str, Any]
+    lifecycle_status: str = "ACTIVE"
+    is_protected: bool = False
+    deleted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class StrategyDependency:
+    kind: str
+    identifier: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class BulkStrategyTrashResult:
+    requested: int
+    trashed: tuple[str, ...]
+    skipped_protected: tuple[str, ...]
+    blocked_dependencies: tuple[str, ...]
+    not_found: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -80,7 +101,11 @@ class StrategyRepository:
     so separate application threads cannot allocate the same version number.
     """
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
+    ACTIVE = "ACTIVE"
+    TRASHED = "TRASHED"
+    DESTRUCTIVE_OPERATION_BLOCKED = "DESTRUCTIVE_OPERATION_BLOCKED"
+    _BACKUP_RETENTION = 5
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = (
@@ -111,6 +136,8 @@ class StrategyRepository:
     def _initialize(self) -> None:
         connection = self._connect()
         try:
+            if self._migration_requires_backup(connection):
+                self._create_safety_backup(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -127,6 +154,9 @@ class StrategyRepository:
                     updated_at TEXT,
                     status TEXT,
                     metadata_json TEXT
+                    ,lifecycle_status TEXT NOT NULL DEFAULT 'ACTIVE'
+                    ,is_protected INTEGER NOT NULL DEFAULT 0 CHECK(is_protected IN (0, 1))
+                    ,deleted_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -176,12 +206,22 @@ class StrategyRepository:
             self._ensure_column(connection, "strategies", "updated_at", "TEXT")
             self._ensure_column(connection, "strategies", "status", "TEXT")
             self._ensure_column(connection, "strategies", "metadata_json", "TEXT")
+            self._ensure_column(
+                connection, "strategies", "lifecycle_status", "TEXT NOT NULL DEFAULT 'ACTIVE'"
+            )
+            self._ensure_column(
+                connection, "strategies", "is_protected", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(connection, "strategies", "deleted_at", "TEXT")
             self._ensure_column(connection, "strategy_versions", "source_draft_revision", "INTEGER")
             self._ensure_column(connection, "strategy_versions", "source_draft_hash", "TEXT")
             self._ensure_column(connection, "strategy_versions", "source_provenance_json", "TEXT")
             connection.execute(
                 "UPDATE strategies SET updated_at = COALESCE(updated_at, created_at), "
-                "status = COALESCE(status, 'active'), metadata_json = COALESCE(metadata_json, '{}')"
+                "status = COALESCE(status, 'active'), "
+                "metadata_json = COALESCE(metadata_json, '{}'), "
+                "lifecycle_status = COALESCE(lifecycle_status, 'ACTIVE'), "
+                "is_protected = COALESCE(is_protected, 0)"
             )
             row = connection.execute(
                 "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
@@ -192,7 +232,7 @@ class StrategyRepository:
                     "INSERT INTO schema_metadata(schema_key, schema_version) VALUES (?, ?)",
                     ("strategy_repository", self.SCHEMA_VERSION),
                 )
-            elif int(row["schema_version"]) in {1, 2}:
+            elif int(row["schema_version"]) in {1, 2, 3}:
                 connection.execute(
                     "UPDATE schema_metadata SET schema_version = ? WHERE schema_key = ?",
                     (self.SCHEMA_VERSION, "strategy_repository"),
@@ -223,6 +263,70 @@ class StrategyRepository:
             raise StrategyPersistenceError("could not initialize strategy database") from exc
         finally:
             connection.close()
+
+    def _migration_requires_backup(self, connection: sqlite3.Connection) -> bool:
+        if not self.db_path.exists():
+            return False
+        try:
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'"
+            ).fetchone()
+            if table is None:
+                return (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'strategies'"
+                    ).fetchone()
+                    is not None
+                )
+            row = connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                ("strategy_repository",),
+            ).fetchone()
+            return row is None or int(row["schema_version"]) < self.SCHEMA_VERSION
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not inspect strategy schema version") from exc
+
+    def _create_safety_backup(self, connection: sqlite3.Connection) -> None:
+        backup_dir = self.db_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / f"strategy-before-schema-v{self.SCHEMA_VERSION}-{timestamp}.db"
+        temporary = target.with_suffix(".db.tmp")
+        destination = sqlite3.connect(temporary)
+        try:
+            connection.backup(destination)
+            destination.commit()
+            destination.close()
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            temporary.replace(target)
+        except (OSError, sqlite3.Error) as exc:
+            try:
+                destination.close()
+            except sqlite3.Error:
+                pass
+            temporary.unlink(missing_ok=True)
+            raise StrategyPersistenceError(
+                "could not create strategy schema safety backup"
+            ) from exc
+        finally:
+            try:
+                destination.close()
+            except sqlite3.Error:
+                pass
+        backups = sorted(
+            backup_dir.glob("strategy-before-schema-v*.db"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for old_backup in backups[self._BACKUP_RETENTION :]:
+            old_backup.unlink(missing_ok=True)
+
+    def _is_temporary_database(self) -> bool:
+        try:
+            return self.db_path.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
+        except OSError:
+            return False
 
     @staticmethod
     def _ensure_column(
@@ -335,8 +439,9 @@ class StrategyRepository:
             try:
                 connection.execute(
                     "INSERT INTO strategies(strategy_id, name, description, created_at, "
-                    "latest_version_number, updated_at, status, metadata_json) "
-                    "VALUES (?, ?, ?, ?, 0, ?, 'active', ?)",
+                    "latest_version_number, updated_at, status, metadata_json, "
+                    "lifecycle_status, is_protected, deleted_at) "
+                    "VALUES (?, ?, ?, ?, 0, ?, 'active', ?, 'ACTIVE', 0, NULL)",
                     (
                         strategy_id,
                         name,
@@ -374,7 +479,7 @@ class StrategyRepository:
         try:
             row = connection.execute(
                 "SELECT strategy_id, name, description, created_at, updated_at, status, "
-                "metadata_json "
+                "metadata_json, lifecycle_status, is_protected, deleted_at "
                 "FROM strategies WHERE strategy_id = ?",
                 (strategy_id,),
             ).fetchone()
@@ -384,17 +489,272 @@ class StrategyRepository:
         finally:
             connection.close()
 
-    def list_strategies(self) -> tuple[StrategyRecord, ...]:
+    def list_strategies(self, lifecycle_status: str = ACTIVE) -> tuple[StrategyRecord, ...]:
+        if lifecycle_status not in {self.ACTIVE, self.TRASHED, "ALL"}:
+            raise StrategyPersistenceError("invalid strategy lifecycle status")
         connection = self._connect()
         try:
+            where = "" if lifecycle_status == "ALL" else " WHERE lifecycle_status = ?"
+            params: tuple[str, ...] = () if not where else (lifecycle_status,)
             rows = connection.execute(
                 "SELECT strategy_id, name, description, created_at, updated_at, status, "
-                "metadata_json "
-                "FROM strategies ORDER BY strategy_id"
+                "metadata_json, lifecycle_status, is_protected, deleted_at "
+                f"FROM strategies{where} ORDER BY strategy_id",
+                params,
             ).fetchall()
             return tuple(self._row_to_strategy(row) for row in rows)
         except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StrategyPersistenceError("could not list strategy identities") from exc
+        finally:
+            connection.close()
+
+    def trash(self, strategy_id: str) -> str:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT lifecycle_status, is_protected FROM strategies WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                return "not_found"
+            if int(row["is_protected"]):
+                connection.execute("ROLLBACK")
+                return "protected"
+            if row["lifecycle_status"] == self.TRASHED:
+                connection.execute("COMMIT")
+                return "already_trashed"
+            connection.execute(
+                "UPDATE strategies SET lifecycle_status = ?, deleted_at = ? WHERE strategy_id = ?",
+                (self.TRASHED, datetime.now(UTC).isoformat(), strategy_id),
+            )
+            connection.execute("COMMIT")
+            return "trashed"
+        except sqlite3.Error as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError("could not move strategy to trash") from exc
+        finally:
+            connection.close()
+
+    def restore(self, strategy_id: str) -> str:
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                "UPDATE strategies SET lifecycle_status = ?, deleted_at = NULL "
+                "WHERE strategy_id = ?",
+                (self.ACTIVE, strategy_id),
+            )
+            return "restored" if cursor.rowcount else "not_found"
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not restore strategy") from exc
+        finally:
+            connection.close()
+
+    def set_protected(self, strategy_id: str, protected: bool) -> str:
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                "UPDATE strategies SET is_protected = ? WHERE strategy_id = ?",
+                (1 if protected else 0, strategy_id),
+            )
+            return "updated" if cursor.rowcount else "not_found"
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not update strategy protection") from exc
+        finally:
+            connection.close()
+
+    def bulk_trash(self, strategy_ids: tuple[str, ...]) -> BulkStrategyTrashResult:
+        trashed: list[str] = []
+        skipped: list[str] = []
+        not_found: list[str] = []
+        for strategy_id in dict.fromkeys(strategy_ids):
+            result = self.trash(strategy_id)
+            if result in {"trashed", "already_trashed"}:
+                trashed.append(strategy_id)
+            elif result == "protected":
+                skipped.append(strategy_id)
+            else:
+                not_found.append(strategy_id)
+        return BulkStrategyTrashResult(
+            requested=len(strategy_ids),
+            trashed=tuple(trashed),
+            skipped_protected=tuple(skipped),
+            blocked_dependencies=(),
+            not_found=tuple(not_found),
+        )
+
+    def dependencies(self, strategy_id: str) -> tuple[StrategyDependency, ...]:
+        connection = self._connect()
+        try:
+            return self._dependencies_in_connection(connection, strategy_id)
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not inspect strategy dependencies") from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _dependencies_in_connection(
+        connection: sqlite3.Connection, strategy_id: str
+    ) -> tuple[StrategyDependency, ...]:
+        version_rows = connection.execute(
+            "SELECT version_id FROM strategy_versions WHERE strategy_id = ? "
+            "UNION SELECT version_id FROM materialized_strategy_versions WHERE strategy_id = ?",
+            (strategy_id, strategy_id),
+        ).fetchall()
+        version_ids = tuple(str(row["version_id"]) for row in version_rows)
+        tables = [
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        ]
+        dependencies: list[StrategyDependency] = []
+        for table in tables:
+            if table.startswith("sqlite_") or table in {
+                "strategies",
+                "strategy_drafts",
+                "strategy_versions",
+                "materialized_strategy_versions",
+                "schema_metadata",
+            }:
+                continue
+            columns = {
+                str(row["name"])
+                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            direct_columns = columns.intersection({"strategy_id", "strategy_definition_id"})
+            version_columns = columns.intersection(
+                {
+                    "strategy_version_id",
+                    "base_strategy_version_id",
+                    "derived_strategy_version_id",
+                    "selected_strategy_version_id",
+                    "selected_derived_strategy_version_id",
+                }
+            )
+            payload_columns = columns.intersection(
+                {
+                    "payload_json",
+                    "run_json",
+                    "experiment_json",
+                    "definition_json",
+                    "preflight_json",
+                    "canonical_json",
+                    "provenance_json",
+                    "evidence_json",
+                    "selection_json",
+                    "result_json",
+                }
+            )
+            for column in sorted(direct_columns):
+                rows = connection.execute(
+                    f"SELECT DISTINCT {column} AS value FROM {table} WHERE {column} = ?",
+                    (strategy_id,),
+                ).fetchall()
+                dependencies.extend(
+                    StrategyDependency(
+                        kind=table,
+                        identifier=f"{table}:{column}:{row['value']}",
+                        detail=f"{table} references Strategy {strategy_id}",
+                    )
+                    for row in rows
+                )
+            for column in sorted(version_columns):
+                if not version_ids:
+                    continue
+                placeholders = ", ".join("?" for _ in version_ids)
+                rows = connection.execute(
+                    f"SELECT DISTINCT {column} AS value FROM {table} "
+                    f"WHERE {column} IN ({placeholders})",
+                    version_ids,
+                ).fetchall()
+                dependencies.extend(
+                    StrategyDependency(
+                        kind=table,
+                        identifier=f"{table}:{column}:{row['value']}",
+                        detail=f"{table} references StrategyVersion {row['value']}",
+                    )
+                    for row in rows
+                )
+            if not direct_columns and not version_columns:
+                for column in sorted(payload_columns):
+                    references = (strategy_id, *version_ids)
+                    for reference in references:
+                        rows = connection.execute(
+                            f"SELECT rowid AS row_id FROM {table} "
+                            f"WHERE {column} LIKE '%' || ? || '%'",
+                            (reference,),
+                        ).fetchall()
+                        dependencies.extend(
+                            StrategyDependency(
+                                kind=table,
+                                identifier=f"{table}:{column}:{row['row_id']}",
+                                detail=f"{table} payload references {reference}",
+                            )
+                            for row in rows
+                        )
+        return tuple(dependencies)
+
+    def permanently_delete(self, strategy_id: str) -> str | tuple[StrategyDependency, ...]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT lifecycle_status, is_protected FROM strategies WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                return "not_found"
+            if row["lifecycle_status"] != self.TRASHED:
+                connection.execute("ROLLBACK")
+                return "must_be_trashed"
+            if int(row["is_protected"]):
+                connection.execute("ROLLBACK")
+                return "protected"
+            dependencies = self._dependencies_in_connection(connection, strategy_id)
+            if dependencies:
+                connection.execute("ROLLBACK")
+                return dependencies
+            connection.execute("DELETE FROM strategy_drafts WHERE strategy_id = ?", (strategy_id,))
+            connection.execute(
+                "DELETE FROM strategy_versions WHERE strategy_id = ?", (strategy_id,)
+            )
+            connection.execute(
+                "DELETE FROM materialized_strategy_versions WHERE strategy_id = ?", (strategy_id,)
+            )
+            connection.execute("DELETE FROM strategies WHERE strategy_id = ?", (strategy_id,))
+            connection.execute("COMMIT")
+            return "deleted"
+        except sqlite3.Error as exc:
+            self._rollback(connection)
+            raise StrategyPersistenceError("could not permanently delete strategy") from exc
+        finally:
+            connection.close()
+
+    def diagnostics(self) -> dict[str, object]:
+        connection = self._connect()
+        try:
+            schema = connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                ("strategy_repository",),
+            ).fetchone()
+            return {
+                "database_path": str(self.db_path.resolve()),
+                "schema_version": None if schema is None else int(schema["schema_version"]),
+                "strategy_count": int(
+                    connection.execute("SELECT COUNT(*) FROM strategies").fetchone()[0]
+                ),
+                "draft_count": int(
+                    connection.execute("SELECT COUNT(*) FROM strategy_drafts").fetchone()[0]
+                ),
+                "version_count": int(
+                    connection.execute("SELECT COUNT(*) FROM strategy_versions").fetchone()[0]
+                ),
+            }
+        except sqlite3.Error as exc:
+            raise StrategyPersistenceError("could not read strategy diagnostics") from exc
         finally:
             connection.close()
 
@@ -1048,8 +1408,9 @@ class StrategyRepository:
             )
             connection.execute(
                 "INSERT INTO strategies(strategy_id, name, description, created_at, "
-                "latest_version_number, updated_at, status, metadata_json) "
-                "VALUES (?, ?, ?, ?, 0, ?, 'active', ?)",
+                "latest_version_number, updated_at, status, metadata_json, "
+                "lifecycle_status, is_protected, deleted_at) "
+                "VALUES (?, ?, ?, ?, 0, ?, 'active', ?, 'ACTIVE', 0, NULL)",
                 (
                     new_strategy_id,
                     name,
@@ -1078,7 +1439,16 @@ class StrategyRepository:
             )
             connection.execute("COMMIT")
             record = StrategyRecord(
-                new_strategy_id, name, description, now, now, "active", metadata
+                new_strategy_id,
+                name,
+                description,
+                now,
+                now,
+                "active",
+                metadata,
+                self.ACTIVE,
+                False,
+                None,
             )
             draft = StrategyDraft(
                 new_strategy_id,
@@ -1181,7 +1551,12 @@ class StrategyRepository:
             connection.close()
 
     def clear(self) -> None:
-        """Remove all records; intended for isolated local tests."""
+        """Remove all records from a temporary test database only."""
+        if not self._is_temporary_database():
+            raise StrategyPersistenceError(
+                "destructive strategy clear is blocked for the canonical database",
+                code=self.DESTRUCTIVE_OPERATION_BLOCKED,
+            )
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -1373,6 +1748,11 @@ class StrategyRepository:
             updated_at=cls._parse_datetime(row["updated_at"] or row["created_at"]),
             status=str(row["status"] or "active"),
             metadata=json.loads(row["metadata_json"] or "{}"),
+            lifecycle_status=str(row["lifecycle_status"] or cls.ACTIVE),
+            is_protected=bool(row["is_protected"]),
+            deleted_at=(
+                None if row["deleted_at"] is None else cls._parse_datetime(row["deleted_at"])
+            ),
         )
 
     @classmethod

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
+from backend.app import strategy_lab
 from backend.app.main import app
-from backend.app.strategy_lab import strategy_version_store
+from backend.app.strategy_repository import StrategyRepository
 from tests.unit.test_value_zones import _strategy
 
 
-def test_strategy_version_semantic_target_discovery_hides_array_paths() -> None:
-    strategy_version_store.clear()
+def test_strategy_version_semantic_target_discovery_hides_array_paths(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        strategy_lab, "strategy_version_store", StrategyRepository(tmp_path / "strategy.db")
+    )
     client = TestClient(app)
     version = client.post("/strategy-lab/versions", json={"strategy": _strategy().to_dict()}).json()
 

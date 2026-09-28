@@ -34,7 +34,7 @@ const strategies: StrategyRecord[] = [
 describe("StrategyLibrary", () => {
   it("filters by name/id and exposes draft/version actions", () => {
     const onOpenDraft = vi.fn();
-    render(<StrategyLibrary strategies={strategies} loading={false} onNew={vi.fn()} onOpenDraft={onOpenDraft} onOpenLatest={vi.fn()} onOpenHistory={vi.fn()} onClone={vi.fn()} onBack={vi.fn()} />);
+    render(<StrategyLibrary strategies={strategies} loading={false} onNew={vi.fn()} onOpenDraft={onOpenDraft} onOpenLatest={vi.fn()} onOpenHistory={vi.fn()} onClone={vi.fn()} onTrash={vi.fn()} onRestore={vi.fn()} onProtect={vi.fn()} onPermanentDelete={vi.fn()} onBulkTrash={vi.fn()} onBack={vi.fn()} />);
 
     expect(screen.getByText("QQQ SMA200")).toBeInTheDocument();
     expect(screen.getByText("Cash Rule")).toBeInTheDocument();
@@ -43,5 +43,16 @@ describe("StrategyLibrary", () => {
     expect(screen.queryByText("Cash Rule")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open Draft" }));
     expect(onOpenDraft).toHaveBeenCalledWith("qqq-sma200");
+  });
+
+  it("restores a trashed strategy from the Trash tab", () => {
+    const onRestore = vi.fn();
+    render(<StrategyLibrary strategies={[{ ...strategies[0], lifecycle_status: "TRASHED", deleted_at: "2026-02-01T00:00:00Z" }]} loading={false} onNew={vi.fn()} onOpenDraft={vi.fn()} onOpenLatest={vi.fn()} onOpenHistory={vi.fn()} onClone={vi.fn()} onTrash={vi.fn()} onRestore={onRestore} onProtect={vi.fn()} onPermanentDelete={vi.fn()} onBulkTrash={vi.fn()} onBack={vi.fn()} />);
+
+    const trashButtons = screen.getAllByRole("button", { name: "Trash" });
+    fireEvent.click(trashButtons[trashButtons.length - 1]);
+    expect(screen.getByText("TRASHED STRATEGY")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(onRestore).toHaveBeenCalledWith("qqq-sma200");
   });
 });

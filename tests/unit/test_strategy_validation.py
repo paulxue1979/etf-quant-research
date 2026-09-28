@@ -235,6 +235,14 @@ def test_hold_previous_does_not_validate_absent_or_invalid_fallback() -> None:
     }
     assert validate_strategy(payload).is_valid
 
+    payload["fallback"] = {"name": "draft-only", "allocations": []}
+    assert validate_strategy(payload).is_valid
+
+    payload["fallback"] = {"name": "draft-only", "allocations": "malformed"}
+    result = validate_strategy(payload)
+    assert result.is_valid
+    assert StrategyDefinition.from_dict(payload).fallback is None
+
 
 def test_use_fallback_still_requires_a_valid_fallback() -> None:
     payload = _definition().to_dict()
@@ -244,6 +252,68 @@ def test_use_fallback_still_requires_a_valid_fallback() -> None:
 
     assert not result.is_valid
     assert ValidationCode.MISSING_FALLBACK in _codes(result)
+
+    payload["fallback"] = {"name": "empty", "allocations": []}
+    result = validate_strategy(payload)
+    assert not result.is_valid
+    assert ValidationCode.INVALID_FALLBACK in _codes(result)
+
+
+def test_hold_previous_inactive_fallback_does_not_expand_active_asset_universe() -> None:
+    payload = _definition().to_dict()
+    payload.update(
+        {
+            "assets": [{"symbol": "QQQ"}],
+            "rules": [],
+            "no_match_behavior": "hold_previous_allocation",
+            "initial_allocation": {"allocations": [{"symbol": "QQQ", "target_weight": 1.0}]},
+            "fallback": {
+                "name": "inactive defensive draft",
+                "allocations": [{"symbol": "SGOV", "target_weight": 1.0}],
+            },
+        }
+    )
+    definition = StrategyDefinition.from_dict(payload)
+
+    assert validate_strategy(definition).is_valid
+    assert definition.execution_asset_symbols == frozenset({"QQQ"})
+
+
+@pytest.mark.parametrize(
+    "fallback", [None, {}, {"allocations": []}, "broken", {"allocations": "bad"}]
+)
+@pytest.mark.parametrize("regime", [False, True])
+def test_inactive_fallback_never_calls_domain_parser(monkeypatch, fallback, regime) -> None:
+    payload = _definition().to_dict()
+    payload.update(
+        no_match_behavior="hold_previous_allocation", initial_allocation={"allocations": []}
+    )
+    payload["fallback"] = fallback
+    if regime:
+        payload["assets"] = [{**asset, "role": "both"} for asset in payload["assets"]]
+        payload.update(
+            strategy_schema_version="2.0",
+            strategy_mode="regime_state_machine",
+            initial_regime="risk",
+            regimes=[
+                {
+                    "state_id": "risk",
+                    "display_name": "Risk",
+                    "target_allocation": {"allocations": []},
+                    "metadata": {},
+                }
+            ],
+            transitions=[],
+        )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("inactive fallback must not be parsed")
+
+    monkeypatch.setattr(FallbackAllocation, "from_dict", forbidden)
+    assert validate_strategy(payload).is_valid
+    definition = StrategyDefinition.from_dict(payload)
+    assert definition.fallback is None
+    assert definition.to_dict()["fallback"] == fallback
 
 
 def test_nested_rule_groups_and_condition_operands_are_validated_recursively() -> None:

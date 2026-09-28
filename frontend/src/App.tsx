@@ -37,6 +37,7 @@ import type {
   VersionDiff,
   ValidationIssue,
   ValidationResult,
+  StrategyDiagnostics,
 } from "./strategy/types";
 
 const emptyValidation: ValidationResult = { is_valid: false, errors: [], warnings: [] };
@@ -534,6 +535,7 @@ export function App() {
   const [newAsset, setNewAsset] = useState("");
   const [strategies, setStrategies] = useState<StrategyRecord[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [strategyDiagnostics, setStrategyDiagnostics] = useState<StrategyDiagnostics | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<StrategyVersion | null>(null);
   const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
@@ -553,11 +555,78 @@ export function App() {
   async function loadLibrary() {
     setLibraryLoading(true);
     try {
-      setStrategies(await strategyApi.listStrategies());
+      const [library, diagnostics] = await Promise.all([
+        strategyApi.listStrategies("ALL"),
+        strategyApi.diagnostics(),
+      ]);
+      setStrategies(library);
+      setStrategyDiagnostics(diagnostics);
     } catch {
       setStrategies([]);
+      setStrategyDiagnostics(null);
     } finally {
       setLibraryLoading(false);
+    }
+  }
+
+  async function trashStrategy(strategyId: string) {
+    if (!window.confirm(`Move strategy ${strategyId} to Trash? Existing research evidence will be retained.`)) return;
+    try {
+      await strategyApi.trashStrategy(strategyId);
+      await loadLibrary();
+      setNotice({ tone: "success", text: "Strategy moved to Trash." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Strategy trash failed." });
+    }
+  }
+
+  async function restoreStrategy(strategyId: string) {
+    try {
+      await strategyApi.restoreStrategy(strategyId);
+      await loadLibrary();
+      setNotice({ tone: "success", text: "Strategy restored." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Strategy restore failed." });
+    }
+  }
+
+  async function protectStrategy(strategyId: string, protectedValue: boolean) {
+    try {
+      await strategyApi.setStrategyProtected(strategyId, protectedValue);
+      await loadLibrary();
+      setNotice({ tone: "success", text: protectedValue ? "Strategy protected." : "Strategy unprotected." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Strategy protection update failed." });
+    }
+  }
+
+  async function permanentlyDeleteStrategy(strategyId: string) {
+    try {
+      const dependencies = await strategyApi.listDependencies(strategyId);
+      if (dependencies.length > 0) {
+        setNotice({ tone: "error", text: `Cannot permanently delete: ${dependencies.map((item) => item.detail).join("; ")}` });
+        return;
+      }
+      if (!window.confirm(`Permanently delete draft-only strategy ${strategyId}? This cannot be undone.`)) return;
+      const result = await strategyApi.permanentlyDeleteStrategy(strategyId);
+      if (result.result !== "deleted") {
+        setNotice({ tone: "error", text: `Permanent delete blocked: ${result.result}.` });
+        return;
+      }
+      await loadLibrary();
+      setNotice({ tone: "success", text: "Strategy permanently deleted." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Permanent delete failed." });
+    }
+  }
+
+  async function bulkTrashStrategies(strategyIds: string[]) {
+    try {
+      const result = await strategyApi.bulkTrashStrategies(strategyIds);
+      await loadLibrary();
+      setNotice({ tone: "success", text: `Trash complete: ${result.trashed.length} moved, ${result.skipped_protected.length} protected, ${result.not_found.length} not found.` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Bulk trash failed." });
     }
   }
 
@@ -806,7 +875,7 @@ export function App() {
   };
 
   return (
-    view === "library" ? <StrategyLibrary strategies={strategies} loading={libraryLoading} onNew={(request) => void createNewStrategy(request)} onOpenDraft={(id) => navigateWithDraftGuard(() => void openDraft(id))} onOpenLatest={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onOpenHistory={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onClone={(id, versionId) => navigateWithDraftGuard(() => void loadVersion(versionId, id))} onBack={() => navigateWithDraftGuard(() => setView("strategy"))} /> :
+    view === "library" ? <StrategyLibrary strategies={strategies} diagnostics={strategyDiagnostics} loading={libraryLoading} onNew={(request) => void createNewStrategy(request)} onOpenDraft={(id) => navigateWithDraftGuard(() => void openDraft(id))} onOpenLatest={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onOpenHistory={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onClone={(id, versionId) => navigateWithDraftGuard(() => void loadVersion(versionId, id))} onTrash={(id) => void trashStrategy(id)} onRestore={(id) => void restoreStrategy(id)} onProtect={(id, value) => void protectStrategy(id, value)} onPermanentDelete={(id) => void permanentlyDeleteStrategy(id)} onBulkTrash={(ids) => void bulkTrashStrategies(ids)} onBack={() => navigateWithDraftGuard(() => setView("strategy"))} /> :
     view === "version" && selectedVersion ? <StrategyVersionView version={selectedVersion} versions={versions} diff={versionDiff} onBack={() => navigateWithDraftGuard(() => setView("library"))} onCreateDraft={() => void createDraftFromVersion()} onClone={(request) => void cloneFromVersion(request)} onCompare={(id) => void compareVersion(id)} onRunBacktest={() => setView("backtest")} /> :
     view === "backtest" ? <BacktestLab initialStrategyId={selectedVersion?.strategy_id} initialVersionId={selectedVersion?.version_id} onOpenStrategyVersion={(strategyId, versionId) => void loadVersion(versionId, strategyId)} onBack={() => setView("strategy")} /> :
     view === "research" ? <ExperimentResearch onBack={() => setView("strategy")} /> :

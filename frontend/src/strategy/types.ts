@@ -172,6 +172,38 @@ export interface StrategyRecord {
   latest_version_id?: string | null;
   latest_version_number?: number | null;
   latest_version_created_at?: string | null;
+  lifecycle_status?: "ACTIVE" | "TRASHED" | string;
+  is_protected?: boolean;
+  deleted_at?: string | null;
+  version_count?: number;
+}
+
+export interface StrategyDependency {
+  kind: string;
+  identifier: string;
+  detail: string;
+}
+
+export interface StrategyLifecycleResponse {
+  strategy_id: string;
+  result: string;
+  dependencies: StrategyDependency[];
+}
+
+export interface BulkStrategyTrashResponse {
+  requested: number;
+  trashed: string[];
+  skipped_protected: string[];
+  blocked_dependencies: string[];
+  not_found: string[];
+}
+
+export interface StrategyDiagnostics {
+  database_path: string;
+  schema_version: number | null;
+  strategy_count: number;
+  draft_count: number;
+  version_count: number;
 }
 
 export interface StrategyOperandPayload {

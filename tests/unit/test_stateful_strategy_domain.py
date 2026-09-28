@@ -21,7 +21,6 @@ from research import (
 from strategies import (
     Allocation,
     AllocationSpecification,
-    FallbackAllocation,
     NoMatchBehavior,
     RebalanceFrequency,
     StrategyDefinition,
@@ -251,7 +250,8 @@ def test_initial_allocation_is_immutable_and_does_not_add_cash_asset() -> None:
     assert definition.initial_allocation is not None
     assert definition.initial_allocation.cash_weight == 1.0
     assert "CASH" not in {asset.symbol for asset in definition.assets}
-    assert isinstance(definition.fallback, FallbackAllocation)
+    assert definition.fallback is None
+    assert definition.to_dict()["fallback"]["name"] == "cash fallback"
     with pytest.raises(AttributeError):
         definition.initial_allocation.allocations = ()  # type: ignore[misc]
 

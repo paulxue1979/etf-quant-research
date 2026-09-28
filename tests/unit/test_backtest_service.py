@@ -136,6 +136,30 @@ def test_service_orchestrates_existing_chain_and_preserves_warmup_scope(tmp_path
     assert len(runs.list("service-fixture")) == 2
 
 
+@pytest.mark.parametrize(
+    "fallback",
+    [None, {"allocations": []}, {"allocations": [{"symbol": "SGOV", "target_weight": 1}]}],
+)
+def test_hold_previous_backtest_never_requests_inactive_fallback_assets(tmp_path, fallback) -> None:
+    payload = _definition().to_dict()
+    payload.update(
+        no_match_behavior="hold_previous_allocation",
+        fallback=fallback,
+        initial_allocation={"allocations": [{"symbol": "QQQ", "target_weight": 1}]},
+    )
+    strategies = StrategyRepository(tmp_path / "strategy.db")
+    version = strategies.create(StrategyDefinition.from_dict(payload))
+    runs = BacktestRepository(tmp_path / "strategy.db")
+    data = SymbolDataService({"QQQ": _dataset()})
+    service = BacktestService(
+        strategy_repository=strategies, backtest_repository=runs, data_service=data
+    )
+    result = service.run(_request(version.version_id))
+    assert {request.symbol for request in data.requests} == {"QQQ"}
+    assert result.strategy_version_id == version.version_id
+    assert runs.get(result.backtest_run_id) is not None
+
+
 def test_service_rejects_price_field_mismatch_before_fetching_data(tmp_path) -> None:
     strategies = StrategyRepository(tmp_path / "strategy.db")
     version = strategies.create(_definition())

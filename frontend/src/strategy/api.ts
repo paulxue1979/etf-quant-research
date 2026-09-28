@@ -8,6 +8,10 @@ import type {
   SemanticTargetCatalog,
   VersionDiff,
   ValidationResult,
+  BulkStrategyTrashResponse,
+  StrategyDependency,
+  StrategyLifecycleResponse,
+  StrategyDiagnostics,
 } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -70,8 +74,53 @@ export const strategyApi = {
     );
   },
 
-  listStrategies(): Promise<StrategyRecord[]> {
-    return requestJson<StrategyRecord[]>("/strategy-lab/strategies");
+  listStrategies(lifecycle: "ACTIVE" | "TRASHED" | "ALL" = "ALL"): Promise<StrategyRecord[]> {
+    return requestJson<StrategyRecord[]>(`/strategy-lab/strategies?lifecycle=${lifecycle}`);
+  },
+
+  listDependencies(strategyId: string): Promise<StrategyDependency[]> {
+    return requestJson<StrategyDependency[]>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/dependencies`,
+    );
+  },
+
+  trashStrategy(strategyId: string): Promise<StrategyLifecycleResponse> {
+    return requestJson<StrategyLifecycleResponse>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/trash`,
+      { method: "POST" },
+    );
+  },
+
+  restoreStrategy(strategyId: string): Promise<StrategyLifecycleResponse> {
+    return requestJson<StrategyLifecycleResponse>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/restore`,
+      { method: "POST" },
+    );
+  },
+
+  setStrategyProtected(strategyId: string, protectedValue: boolean): Promise<StrategyLifecycleResponse> {
+    return requestJson<StrategyLifecycleResponse>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/${protectedValue ? "protect" : "unprotect"}`,
+      { method: "POST" },
+    );
+  },
+
+  permanentlyDeleteStrategy(strategyId: string): Promise<StrategyLifecycleResponse> {
+    return requestJson<StrategyLifecycleResponse>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}`,
+      { method: "DELETE" },
+    );
+  },
+
+  bulkTrashStrategies(strategyIds: string[]): Promise<BulkStrategyTrashResponse> {
+    return requestJson<BulkStrategyTrashResponse>("/strategy-lab/strategies/bulk-trash", {
+      method: "POST",
+      body: JSON.stringify({ strategy_ids: strategyIds }),
+    });
+  },
+
+  diagnostics(): Promise<StrategyDiagnostics> {
+    return requestJson<StrategyDiagnostics>("/strategy-lab/diagnostics");
   },
 
   async getDraft(strategyId: string): Promise<StrategyDraftResponse | null> {
