@@ -12,6 +12,10 @@ from backend.app.experiment_repository import ExperimentPersistenceError, Experi
 from backend.app.experiment_result_repository import ExperimentResultRepository
 from backend.app.strategy_repository import StrategyRepository
 from research.canonical import canonical_json, sha256_hash
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.enums import ExperimentStatus
 from research.execution import CandidateExecutionStatus, candidate_id_for
 from research.experiment_read_model import (
@@ -264,14 +268,27 @@ class ExperimentResultsReadService:
                 "backtest run was not found", code="BACKTEST_RUN_NOT_FOUND"
             )
         analysis = backtest.performance_analysis
+        try:
+            validate_effective_range_within_requested(
+                result.is_start,
+                result.is_end,
+                backtest.backtest_result.effective_start_date,
+                backtest.backtest_result.effective_end_date,
+            )
+            validate_effective_range_within_requested(
+                result.is_start,
+                result.is_end,
+                analysis.start_date,
+                analysis.end_date,
+            )
+        except EffectiveDateRangeError as exc:
+            raise self._integrity(
+                "backtest run effective range is outside requested range"
+            ) from exc
         if any(
             (
                 backtest.strategy_version_id != result.derived_strategy_version_id,
                 backtest.strategy_version_content_hash != result.derived_strategy_version_hash,
-                backtest.backtest_result.start_date < result.is_start,
-                backtest.backtest_result.end_date != result.is_end,
-                analysis.start_date < result.is_start,
-                analysis.end_date != result.is_end,
                 analysis.price_field_used is not result.price_field_used,
                 backtest.backtest_result.engine_version != result.engine_version,
                 self._analytics_payload(analysis.to_dict())

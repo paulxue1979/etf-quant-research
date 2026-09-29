@@ -103,7 +103,7 @@ describe("OOS Research View", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load official OOS" }));
 
     await waitFor(() => expect(screen.getByText("FINALIZED · READ ONLY")).toBeInTheDocument());
-    expect(screen.getByText("12.0000%")).toBeInTheDocument();
+    expect(screen.getAllByText("12.0000%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Not Evaluable").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Official backend series").length).toBe(2);
     expect(screen.queryByRole("button", { name: /rerun|select|recommend|winner/i })).not.toBeInTheDocument();

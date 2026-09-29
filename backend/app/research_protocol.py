@@ -20,6 +20,11 @@ from uuid import uuid4
 from backend.app.backtest_models import BacktestRun
 from backtest.models import ContributionSchedule, ExecutionRule, RebalanceFrequency
 from data.models import PriceField
+from research.canonical import canonical_json
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.materialization import derived_strategy_version_hash, derived_strategy_version_id
 from strategies.models import StrategyVersion
 
@@ -136,9 +141,7 @@ def _finite_number(value: object, label: str, *, positive: bool = False) -> floa
 
 
 def _canonical_json(payload: Mapping[str, Any] | object) -> str:
-    return json.dumps(
-        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
+    return canonical_json(payload)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1254,15 +1257,31 @@ class ResearchProtocolRepository:
                     "IS backtest strategy hash does not match handoff",
                     code="DERIVED_STRATEGY_HASH_MISMATCH",
                 )
-            if (
-                run.backtest_result.start_date != protocol.is_start_date
-                or run.backtest_result.end_date != protocol.is_end_date
-            ):
+            try:
+                validate_effective_range_within_requested(
+                    protocol.is_start_date,
+                    protocol.is_end_date,
+                    run.backtest_result.effective_start_date,
+                    run.backtest_result.effective_end_date,
+                )
+            except EffectiveDateRangeError as exc:
                 raise ResearchProtocolError(
                     "handoff may reference IS backtest runs only",
                     code="HANDOFF_INTEGRITY_ERROR",
-                )
+                ) from exc
             provenance_payload = _canonical_json(dict(provenance))
+            # Freeze must serialize against pre-freeze researcher reselection.
+            active_selection = connection.execute(
+                "SELECT selection_hash FROM research_experiment_selections WHERE experiment_id = ?",
+                (provenance.get("experiment_id"),),
+            ).fetchone()
+            if active_selection is None or active_selection["selection_hash"] != provenance.get(
+                "selection_hash"
+            ):
+                raise ResearchProtocolError(
+                    "experiment selection changed before freeze; reload research",
+                    code="SELECTION_MISMATCH",
+                )
 
             existing_row = connection.execute(
                 "SELECT payload_json FROM research_selection_decisions WHERE protocol_id = ?",
@@ -1615,8 +1634,17 @@ class ResearchProtocolRepository:
             )
         if run.strategy_version_content_hash != stored_freeze.strategy_version_content_hash:
             raise ResearchProtocolError("OOS run strategy hash does not match the frozen strategy")
-        if result.start_date != protocol.oos_start_date or result.end_date != protocol.oos_end_date:
-            raise ResearchProtocolError("OOS backtest must exactly match the protocol OOS period")
+        try:
+            validate_effective_range_within_requested(
+                protocol.oos_start_date,
+                protocol.oos_end_date,
+                result.effective_start_date,
+                result.effective_end_date,
+            )
+        except EffectiveDateRangeError as exc:
+            raise ResearchProtocolError(
+                "OOS backtest effective range is outside the protocol OOS period"
+            ) from exc
         expected_config = self.get_frozen_evaluation_config(evaluation.protocol_id)
         if expected_config is None:
             raise ResearchProtocolError(

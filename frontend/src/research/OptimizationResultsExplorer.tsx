@@ -17,6 +17,7 @@ interface OptimizationResultsExplorerProps {
   protocolId: string;
   experimentId: string;
   parameterLabels?: ParameterLabels;
+  selectedCandidateId?: string;
 }
 
 type ExplorerView = "results" | "heatmap" | "pareto" | "stability" | "sensitivity";
@@ -77,13 +78,13 @@ function MetricValue({ metricId, results, registry }: { metricId: string; result
   return <span>{formatMetric(metric.value, registry.get(metricId))}</span>;
 }
 
-function CandidateTable({ results, registry, parameterLabels }: { results: OptimizationResults; registry: Map<string, OptimizationMetricDefinition>; parameterLabels: ParameterLabels }) {
+function CandidateTable({ results, registry, parameterLabels, selectedCandidateId }: { results: OptimizationResults; registry: Map<string, OptimizationMetricDefinition>; parameterLabels: ParameterLabels; selectedCandidateId?: string }) {
   return (
     <div className="table-scroll optimization-table-scroll">
       <table className="data-table optimization-table">
         <thead><tr><th>Candidate</th><th>Parameters</th>{DEFAULT_METRICS.map((id) => <th key={id}>{registry.get(id)?.display_name ?? id}</th>)}<th>Status</th></tr></thead>
-        <tbody>{results.candidates.map((candidate) => <tr key={candidate.candidate_id}>
-          <td><strong>#{candidate.candidate_index}</strong><small>{candidate.candidate_id.slice(0, 12)}</small></td>
+        <tbody>{results.candidates.map((candidate) => <tr key={candidate.candidate_id} className={candidate.candidate_id === selectedCandidateId ? "is-selected" : undefined}>
+          <td><strong>#{candidate.candidate_index}</strong>{candidate.candidate_id === selectedCandidateId && <span className="status-pill is-valid">Selected</span>}<small>{candidate.candidate_id.slice(0, 12)}</small></td>
           <td>{Object.entries(candidate.parameter_values).map(([key, value]) => <div key={key} title={key}>{parameterLabels[key]?.label ?? key}：{parameterValueDisplay(value, parameterLabels[key]?.unit)}</div>)}</td>
           {DEFAULT_METRICS.map((id) => <td key={id}><MetricValue metricId={id} results={candidate} registry={registry} /></td>)}
           <td><span className={`status-pill ${candidate.result_status === "failed" ? "is-error" : "is-valid"}`}>{candidate.result_status}</span>{candidate.failure_code && <small>{candidate.failure_code}</small>}</td>
@@ -161,7 +162,7 @@ function SensitivityView({ sensitivity }: { sensitivity: OptimizationSensitivity
   </div>;
 }
 
-export function OptimizationResultsExplorer({ protocolId, experimentId, parameterLabels = {} }: OptimizationResultsExplorerProps) {
+export function OptimizationResultsExplorer({ protocolId, experimentId, parameterLabels = {}, selectedCandidateId }: OptimizationResultsExplorerProps) {
   const [registry, setRegistry] = useState<OptimizationMetricRegistry | null>(null);
   const [results, setResults] = useState<OptimizationResults | null>(null);
   const [view, setView] = useState<ExplorerView>("results");
@@ -247,7 +248,7 @@ export function OptimizationResultsExplorer({ protocolId, experimentId, paramete
         {(view === "heatmap" || view === "sensitivity") && fixedNames.map((name) => <label key={name}>Fix {name}<select aria-label={`Fix ${name}`} value={optionKey(fixedValues[name])} onChange={(event) => setFixedValues((current) => ({ ...current, [name]: domains[name].find((value) => optionKey(value) === event.target.value) }))}>{domains[name].map((value) => <option key={optionKey(value)} value={optionKey(value)}>{displayValue(value)}</option>)}</select></label>)}
         <button className="button button-primary" type="button" disabled={busy || (view === "heatmap" && xParameter === yParameter) || (view === "pareto" && metricId === secondaryMetricId)} onClick={() => void analyze()}>{busy ? "Analyzing..." : "Analyze"}</button>
       </div>}
-      {view === "results" && <CandidateTable results={results} registry={metricMap} parameterLabels={parameterLabels} />}
+      {view === "results" && <CandidateTable results={results} registry={metricMap} parameterLabels={parameterLabels} selectedCandidateId={selectedCandidateId} />}
       {view === "heatmap" && heatmap && <><p className="optimization-context">Slice: {JSON.stringify(heatmap.fixed_parameter_values)} · Aggregation: NONE · Interpolation: OFF</p><HeatmapView heatmap={heatmap} /></>}
       {view === "pareto" && pareto && <ParetoView pareto={pareto} />}
       {view === "stability" && stability && <StabilityView stability={stability} />}

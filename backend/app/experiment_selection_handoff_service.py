@@ -23,6 +23,10 @@ from backend.app.research_protocol import (
 )
 from backend.app.strategy_repository import StrategyRepository
 from research.canonical import canonical_json, sha256_hash
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.execution import CandidateExecutionStatus, candidate_id_for
 from research.materialization import derived_strategy_version_hash, derived_strategy_version_id
 
@@ -160,15 +164,28 @@ class ExperimentSelectionHandoffService:
         if len(records) != 1:
             self._fail("selected result backtest run was not found", "BACKTEST_RUN_NOT_FOUND")
         run = records[0].run
+        try:
+            validate_effective_range_within_requested(
+                experiment.is_start_date,
+                experiment.is_end_date,
+                run.backtest_result.effective_start_date,
+                run.backtest_result.effective_end_date,
+            )
+            validate_effective_range_within_requested(
+                experiment.is_start_date,
+                experiment.is_end_date,
+                run.performance_analysis.start_date,
+                run.performance_analysis.end_date,
+            )
+        except EffectiveDateRangeError:
+            self._fail(
+                "selected result backtest evidence is inconsistent", "BACKTEST_EVIDENCE_MISMATCH"
+            )
         if any(
             (
                 run.backtest_run_id != result.backtest_run_id,
                 run.strategy_version_id != result.derived_strategy_version_id,
                 run.strategy_version_content_hash != result.derived_strategy_version_hash,
-                run.backtest_result.start_date != experiment.is_start_date,
-                run.backtest_result.end_date != experiment.is_end_date,
-                run.performance_analysis.start_date != experiment.is_start_date,
-                run.performance_analysis.end_date != experiment.is_end_date,
                 run.performance_analysis.price_field_used is not result.price_field_used,
                 not self._analysis_summary_matches(run, result),
             )
@@ -265,7 +282,7 @@ class ExperimentSelectionHandoffService:
             selected_strategy_version_id=derived.version_id,
             is_backtest_run_ids=(run.backtest_run_id,),
             selected_metrics=metrics,
-            rationale=selection.researcher_rationale,
+            rationale=selection.researcher_rationale or "Human selection; no rationale supplied.",
             created_at=selection.created_at,
             data_provenance=provenance,
             source="experiment_selection_handoff",

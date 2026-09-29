@@ -18,6 +18,10 @@ from analytics.models import PerformanceAnalysisResult
 from backtest.models import BacktestResult
 from data.models import PriceField
 from research.canonical import sha256_hash
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.oos import OosDataProvenance
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -101,16 +105,21 @@ class OosExecutionOutcome:
             raise ValueError("backtest result strategy version does not match outcome")
         if self.performance_analysis.strategy_version_id != self.strategy_version_id:
             raise ValueError("analytics strategy version does not match outcome")
-        if (
-            self.backtest_result.start_date != self.oos_start
-            or self.backtest_result.end_date != self.oos_end
-        ):
-            raise ValueError("backtest result must cover exactly the OOS range")
-        if (
-            self.performance_analysis.start_date != self.oos_start
-            or self.performance_analysis.end_date != self.oos_end
-        ):
-            raise ValueError("performance analysis must cover exactly the OOS range")
+        try:
+            validate_effective_range_within_requested(
+                self.oos_start,
+                self.oos_end,
+                self.backtest_result.effective_start_date,
+                self.backtest_result.effective_end_date,
+            )
+            validate_effective_range_within_requested(
+                self.oos_start,
+                self.oos_end,
+                self.performance_analysis.start_date,
+                self.performance_analysis.end_date,
+            )
+        except EffectiveDateRangeError as exc:
+            raise ValueError("OOS evidence must be inside the requested OOS range") from exc
         if self.backtest_result.engine_version != self.engine_version:
             raise ValueError("backtest engine version does not match outcome")
         try:

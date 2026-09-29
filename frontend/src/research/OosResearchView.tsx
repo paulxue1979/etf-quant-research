@@ -16,6 +16,14 @@ function metricText(metric: MetricValue | undefined, percentage = false): string
   return `${(percentage ? metric.value * 100 : metric.value).toFixed(4)}${percentage ? "%" : ""}`;
 }
 
+function comparisonMetricText(value: unknown, percentage = false): string {
+  const metric = typeof value === "object" && value !== null
+    ? value as { status?: string; value?: unknown }
+    : { value };
+  if (metric.status === "not_evaluable" || typeof metric.value !== "number" || !Number.isFinite(metric.value)) return "Not Evaluable";
+  return `${(percentage ? metric.value * 100 : metric.value).toFixed(4)}${percentage ? "%" : ""}`;
+}
+
 function statusLabel(value: unknown): string {
   return text(value, "unknown").replaceAll("_", " ").toUpperCase();
 }
@@ -56,8 +64,18 @@ function Provenance({ view }: { view: OosResearchViewModel }) {
     ["Price field", p.price_field_used], ["Initial capital", p.initial_capital], ["Commission", p.commission], ["Slippage", p.slippage], ["Execution rule", p.execution_rule],
     ["Fractional shares", p.fractional_shares], ["Rebalance policy", JSON.stringify(p.rebalance_policy)], ["Engine version", p.engine_version], ["Analytics version", p.analytics_version],
     ["Asset universe", Array.isArray(p.asset_universe) ? p.asset_universe.join(", ") : undefined], ["Data provenance", JSON.stringify(p.data_provenance)],
+    ["Frozen configuration", JSON.stringify(p.strategy_version_configuration)],
   ];
   return <dl className="research-detail-list oos-provenance-list">{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd className={label.includes("Hash") || label.includes("ID") ? "research-hash" : undefined}>{text(value)}</dd></div>)}</dl>;
+}
+
+function IsOosComparison({ view }: { view: OosResearchViewModel }) {
+  const selected = view.selection_decision.selected_metrics;
+  const metrics: Array<[string, string, boolean]> = [
+    ["CAGR", "cagr", true], ["Total Return", "total_return", true], ["Max Drawdown", "max_drawdown", true],
+    ["Sharpe", "sharpe_ratio", false], ["Calmar", "calmar_ratio", false], ["Volatility", "annualized_volatility", true],
+  ];
+  return <section className="panel"><div className="section-header compact"><div><span className="eyebrow">IS VS OFFICIAL OOS</span><h2>Persisted facts</h2></div><span className="muted">No automatic verdict</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Metric</th><th>Selected IS candidate</th><th>Official OOS</th></tr></thead><tbody>{metrics.map(([label, key, percentage]) => <tr key={key}><th>{label}</th><td>{comparisonMetricText(selected?.[key], percentage)}</td><td>{metricText(view.oos_result.performance_summary.metrics[key], percentage)}</td></tr>)}</tbody></table></div></section>;
 }
 
 export function OosResearchView({ onBack }: OosResearchViewProps) {
@@ -83,6 +101,7 @@ export function OosResearchView({ onBack }: OosResearchViewProps) {
     {view && result && run && backtestResult && <div className="research-workspace oos-view">
       <section className="panel"><div className="section-header compact"><div><span className="eyebrow">OFFICIAL OOS EVALUATION</span><h2>{result.oos_result_id}</h2></div><span className="status-pill is-valid">FINALIZED · READ ONLY</span></div><p className="oos-statement">This result comes from the pre-frozen strategy evaluated once over the frozen OOS range. It is an observation, not an optimization, selection, recommendation, forecast, or live-trading result.</p><dl className="research-detail-list summary-list"><dt>Protocol state</dt><dd>{statusLabel(view.protocol.status)}</dd><dt>Strategy version</dt><dd>{result.strategy_version_id}</dd><dt>OOS range</dt><dd>{result.oos_start} to {result.oos_end}</dd><dt>Backtest run</dt><dd>{result.backtest_run_id}</dd><dt>Final equity</dt><dd>{backtestResult.final_equity.toLocaleString(undefined, { style: "currency", currency: "USD" })}</dd></dl></section>
       <section className="panel"><div className="section-header compact"><div><span className="eyebrow">PERFORMANCE</span><h2>Persisted analytics</h2></div><span className="muted">No metrics recalculated in this view</span></div><MetricGrid metrics={result.performance_summary.metrics} /></section>
+      <IsOosComparison view={view} />
       <section className="panel chart-grid"><ReadOnlySeries label="OOS equity curve" points={backtestResult.equity_curve.map((point) => ({ date: point.date, value: point.total_equity }))} color="#6bd7d0" /><ReadOnlySeries label="OOS drawdown curve" points={run.performance_analysis.drawdown_curve} color="#ff8b8b" /></section>
       <section className="panel result-tables"><div className="table-block"><div className="subsection-heading"><h3>Trades</h3><span className="muted">Persisted closed trades</span></div>{backtestResult.trades.length ? <div className="table-scroll"><table><thead><tr><th>Symbol</th><th>Entry</th><th>Exit</th><th>Qty</th><th>P&amp;L</th><th>Return</th><th>Hold</th></tr></thead><tbody>{backtestResult.trades.map((trade) => <tr key={`${trade.symbol}-${trade.entry_date}-${trade.exit_date}`}><td>{trade.symbol}</td><td>{trade.entry_date}</td><td>{trade.exit_date}</td><td>{trade.quantity}</td><td>{trade.pnl.toFixed(2)}</td><td>{(trade.pnl_pct * 100).toFixed(2)}%</td><td>{trade.holding_period}d</td></tr>)}</tbody></table></div> : <p className="muted">No closed trades.</p>}</div><div className="table-block"><div className="subsection-heading"><h3>Allocation history</h3><span className="muted">Persisted backend output</span></div>{backtestResult.allocation_history.length ? <div className="table-scroll"><table><thead><tr><th>Date</th><th>Symbol</th><th>Target</th><th>Actual</th></tr></thead><tbody>{backtestResult.allocation_history.map((item, index) => <tr key={`${item.date}-${item.symbol}-${index}`}><td>{item.date}</td><td>{item.symbol}</td><td>{(item.target_weight * 100).toFixed(1)}%</td><td>{(item.actual_weight * 100).toFixed(1)}%</td></tr>)}</tbody></table></div> : <p className="muted">No allocation history.</p>}</div><div className="table-block"><div className="subsection-heading"><h3>Latest positions</h3><span className="muted">Persisted snapshot</span></div>{backtestResult.positions.at(-1)?.positions.length ? <div className="table-scroll"><table><thead><tr><th>Symbol</th><th>Qty</th><th>Price</th><th>Value</th></tr></thead><tbody>{backtestResult.positions.at(-1)?.positions.map((position) => <tr key={position.symbol}><td>{position.symbol}</td><td>{position.quantity}</td><td>{position.market_price.toFixed(2)}</td><td>{position.market_value.toFixed(2)}</td></tr>)}</tbody></table></div> : <p className="muted">No position snapshot.</p>}</div></section>
       <section className="panel result-tables"><div className="table-block"><div className="subsection-heading"><h3>Orders</h3><span className="muted">Signal(T Close) to T+1 open</span></div><div className="table-scroll"><table><thead><tr><th>Signal date</th><th>Execution date</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th></tr></thead><tbody>{backtestResult.orders.map((order) => <tr key={order.order_id}><td>{order.signal_date}</td><td>{order.date}</td><td>{order.symbol}</td><td>{order.side}</td><td>{order.quantity}</td><td>{order.status}</td></tr>)}</tbody></table></div></div><div className="table-block"><div className="subsection-heading"><h3>Fills</h3><span className="muted">Persisted executions</span></div><div className="table-scroll"><table><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th></tr></thead><tbody>{backtestResult.fills.map((fill) => <tr key={`${fill.order_id}-${fill.date}`}><td>{fill.date}</td><td>{fill.symbol}</td><td>{fill.side}</td><td>{fill.quantity}</td><td>{fill.price.toFixed(2)}</td></tr>)}</tbody></table></div></div></section>

@@ -22,6 +22,10 @@ from data.exceptions import (
 from data.models import HistoricalDataRequest, HistoricalDataSet, PriceField
 from data.validation import validate_historical_data
 from indicators.preparation import PreparedStrategyInputs, prepare_strategy_inputs
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.exceptions import (
     OosConfigurationMismatchError,
     OosExecutionError,
@@ -396,10 +400,17 @@ class OosExecutionService:
 
     @staticmethod
     def _validate_backtest_bounds(result: Any, start: date, end: date) -> None:
-        if result.start_date != start or result.end_date != end:
+        try:
+            validate_effective_range_within_requested(
+                start,
+                end,
+                result.effective_start_date,
+                result.effective_end_date,
+            )
+        except EffectiveDateRangeError as exc:
             raise OosRangeMismatchError(
                 "backtest result escaped OOS range", code="OOS_RANGE_MISMATCH"
-            )
+            ) from exc
         dates = [
             *(item.date for item in result.equity_curve),
             *(item.date for item in result.orders),
@@ -419,12 +430,14 @@ class OosExecutionService:
     def _validate_analysis(
         analysis: PerformanceAnalysisResult, strategy_version_id: str, start: date, end: date
     ) -> None:
-        if (
-            analysis.strategy_version_id != strategy_version_id
-            or analysis.start_date != start
-            or analysis.end_date != end
-        ):
+        if analysis.strategy_version_id != strategy_version_id:
             raise OosResultIntegrityError("analytics identity or range is invalid")
+        try:
+            validate_effective_range_within_requested(
+                start, end, analysis.start_date, analysis.end_date
+            )
+        except EffectiveDateRangeError as exc:
+            raise OosResultIntegrityError("analytics identity or range is invalid") from exc
         if any(point.date < start or point.date > end for point in analysis.drawdown_curve):
             raise OosRangeMismatchError(
                 "drawdown analytics escaped OOS range", code="OOS_RANGE_MISMATCH"

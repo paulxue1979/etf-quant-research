@@ -495,7 +495,7 @@ def test_oos_range_and_transition_require_observed_record(tmp_path) -> None:
         observed_at=datetime(2026, 9, 8, tzinfo=UTC),
         created_at=datetime(2026, 9, 8, tzinfo=UTC),
     )
-    with pytest.raises(ResearchProtocolError, match="exactly match"):
+    with pytest.raises(ResearchProtocolError, match="outside the protocol OOS period"):
         repository.create_oos_evaluation(
             evaluation,
             freeze=freeze,
@@ -503,7 +503,7 @@ def test_oos_range_and_transition_require_observed_record(tmp_path) -> None:
                 _oos_run(version),
                 backtest_result=replace(
                     _oos_run(version).backtest_result,
-                    end_date=date(2026, 1, 7),
+                    end_date=date(2026, 1, 9),
                 ),
             ),
         )

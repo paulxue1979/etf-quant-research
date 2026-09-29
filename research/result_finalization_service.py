@@ -16,6 +16,10 @@ from backend.app.strategy_execution_provenance import strategy_execution_provena
 from backtest.integration import StrategyBacktestResult
 from data.models import PriceField
 from research.canonical import canonical_json, sha256_hash
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.enums import ExperimentStatus
 from research.exceptions import ExperimentFinalizationError, ExperimentResultConflictError
 from research.execution import CandidateExecutionStatus, candidate_id_for
@@ -169,14 +173,28 @@ class ExperimentResultFinalizationService:
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: backtest strategy version does not match outcome"
             )
-        if backtest.start_date < outcome.is_start or backtest.end_date > outcome.is_end:
+        try:
+            validate_effective_range_within_requested(
+                outcome.is_start,
+                outcome.is_end,
+                backtest.effective_start_date,
+                backtest.effective_end_date,
+            )
+        except EffectiveDateRangeError as exc:
             raise ExperimentFinalizationError(
                 "IS_RANGE_VIOLATION: backtest result is outside the IS range"
+            ) from exc
+        try:
+            validate_effective_range_within_requested(
+                outcome.is_start,
+                outcome.is_end,
+                analysis.start_date,
+                analysis.end_date,
             )
-        if analysis.start_date < outcome.is_start or analysis.end_date > outcome.is_end:
+        except EffectiveDateRangeError as exc:
             raise ExperimentFinalizationError(
                 "IS_RANGE_VIOLATION: analytics result is outside the IS range"
-            )
+            ) from exc
         if analysis.strategy_version_id != outcome.derived_strategy_version_id:
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: analytics strategy version does not match outcome"

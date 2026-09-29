@@ -489,6 +489,8 @@ def test_is_boundary_allows_effective_first_trading_day_inside_requested_range(t
                 {
                     "start_date": experiment.is_start_date + timedelta(days=2),
                     "end_date": experiment.is_end_date,
+                    "effective_start_date": experiment.is_start_date + timedelta(days=2),
+                    "effective_end_date": experiment.is_end_date,
                     "orders": (),
                     "equity_curve": (),
                 },

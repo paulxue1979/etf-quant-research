@@ -34,6 +34,10 @@ from research.backtest_materialization import (
     materialize_backtest_config,
 )
 from research.canonical import sha256_hash
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.enums import ExperimentStatus
 from research.execution import CandidateExecution, CandidateExecutionStatus, candidate_id_for
 from research.execution_outcome import (
@@ -618,7 +622,14 @@ class ExperimentExecutionService:
         self, integration: StrategyBacktestResult, experiment: Experiment
     ) -> None:
         result = integration.backtest_result
-        if result.start_date < experiment.is_start_date or result.end_date > experiment.is_end_date:
+        try:
+            validate_effective_range_within_requested(
+                experiment.is_start_date,
+                experiment.is_end_date,
+                result.effective_start_date,
+                result.effective_end_date,
+            )
+        except EffectiveDateRangeError:
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
         if any(order.date > experiment.is_end_date for order in result.orders):
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
@@ -626,10 +637,14 @@ class ExperimentExecutionService:
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
 
     def _assert_is_only_analysis(self, analysis: Any, experiment: Experiment) -> None:
-        if (
-            analysis.start_date < experiment.is_start_date
-            or analysis.end_date > experiment.is_end_date
-        ):
+        try:
+            validate_effective_range_within_requested(
+                experiment.is_start_date,
+                experiment.is_end_date,
+                analysis.start_date,
+                analysis.end_date,
+            )
+        except EffectiveDateRangeError:
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
 
     def _runtime_failure(

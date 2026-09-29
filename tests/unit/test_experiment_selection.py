@@ -174,6 +174,26 @@ def test_explicit_human_selection_is_immutable_and_round_trips() -> None:
     assert decision == type(decision).from_dict(decision.to_dict())
 
 
+def test_selection_accepts_opaque_derived_version_ids_and_empty_rationale() -> None:
+    opaque_id = "QQQ State Machine Strategy Version 1.0-v2-394c1a5f6836--derived-09644782804e5910"
+    experiment = _experiment()
+    version = replace(_version(), version_id=opaque_id)
+    candidate = replace(
+        _candidate(experiment, derived_strategy_version_hash=version.content_hash),
+        derived_strategy_version_id=opaque_id,
+    )
+
+    decision = _make(
+        experiment=experiment,
+        candidates=(candidate,),
+        derived_strategy_version=version,
+        researcher_rationale="",
+    )
+
+    assert decision.selected_derived_strategy_version_id == opaque_id
+    assert decision.researcher_rationale == ""
+
+
 def test_semantic_hash_is_deterministic_and_excludes_created_at() -> None:
     first = _make(created_at=datetime(2026, 1, 1, tzinfo=UTC))
     second = _make(created_at=datetime(2030, 1, 1, tzinfo=UTC))

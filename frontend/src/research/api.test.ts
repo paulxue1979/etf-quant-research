@@ -18,4 +18,27 @@ describe("research API error classification", () => {
       status: 500,
     });
   });
+
+  it("uses server-controlled official OOS workflow endpoints without overrides", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ execution: { execution_id: "oos-1", status: "pending" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await researchApi.prepareOfficialOos("protocol/1");
+    await researchApi.executeOfficialOos("protocol/1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:8000/research/protocols/protocol%2F1/oos/prepare",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/research/protocols/protocol%2F1/oos/execute",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });

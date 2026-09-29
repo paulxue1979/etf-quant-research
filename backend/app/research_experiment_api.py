@@ -37,6 +37,7 @@ from research.exceptions import (
 )
 from research.experiment_selection import (
     ExperimentSelectionMethod,
+    assess_selection_eligibility,
     create_experiment_selection_decision,
 )
 from research.objective_evaluation import (
@@ -57,7 +58,7 @@ class ResearcherSelectionRequest(BaseModel):
 
     selected_candidate_id: str = Field(min_length=1)
     selection_method: ExperimentSelectionMethod
-    researcher_rationale: str = Field(min_length=1, max_length=2_000)
+    researcher_rationale: str = Field(default="", max_length=2_000)
 
 
 # These are module-level on purpose: tests and deployments can provide the
@@ -119,6 +120,7 @@ def _safe_error(exc: Exception, *, fallback_code: str, fallback_message: str) ->
         ),
         "CANDIDATE_NOT_FOUND": (404, "candidate was not found"),
         "SELECTION_NOT_FOUND": (404, "experiment selection was not found"),
+        "SELECTION_CONFLICT": (409, "frozen selection cannot be changed"),
         "EXPERIMENT_INVALID_STATE": (409, "experiment is not in a valid state for this operation"),
         "EXPERIMENT_NOT_COMPLETED": (409, "experiment is not completed"),
         "OBJECTIVE_CONSTRAINT_FAILED": (422, "selected candidate failed the frozen constraints"),
@@ -209,6 +211,46 @@ def _model_payload(model: Any) -> dict[str, Any]:
         "is_only": True,
         "candidate_order": "candidate_index_ascending",
     }
+    experiment = experiment_repository.get(payload.get("experiment_id", ""))
+    if experiment is not None:
+        try:
+            evaluations = {
+                item.candidate_id: evaluate_candidate_objective(experiment, item)
+                for item in model.candidates
+            }
+            compatibility = ExperimentCompatibilityService().diagnose(model)
+            by_id = {item.candidate_id: item for item in model.candidates}
+            for item in payload.get("candidates", []):
+                candidate = by_id.get(item.get("candidate_id"))
+                derived = strategy_repository.get_any_version(
+                    candidate.derived_strategy_version_id if candidate else ""
+                )
+                if candidate is None or derived is None:
+                    item["selection_eligibility"] = {
+                        "eligible": False,
+                        "failure_code": "DERIVED_VERSION_MISSING",
+                        "eligibility_reason": "derived StrategyVersion is missing",
+                    }
+                    continue
+                result = assess_selection_eligibility(
+                    experiment,
+                    candidate,
+                    objective_evaluation=evaluations[candidate.candidate_id],
+                    compatibility=compatibility,
+                    derived_strategy_version=derived,
+                )
+                item["selection_eligibility"] = {
+                    "eligible": result.eligible,
+                    "failure_code": None if result.eligible else result.reason_code.value,
+                    "eligibility_reason": result.reason,
+                }
+        except Exception:
+            for item in payload.get("candidates", []):
+                item["selection_eligibility"] = {
+                    "eligible": False,
+                    "failure_code": "ELIGIBILITY_UNAVAILABLE",
+                    "eligibility_reason": "selection eligibility could not be verified",
+                }
     return payload
 
 
@@ -369,7 +411,12 @@ def create_selection(
             researcher_rationale=request.researcher_rationale,
             created_at=datetime.now(UTC),
         )
-        stored = selection_repository.create(decision)
+        existing = selection_repository.get_by_experiment_id(experiment_id)
+        stored = (
+            selection_repository.replace_before_freeze(decision)
+            if existing is not None
+            else selection_repository.create(decision)
+        )
         return stored.to_dict()
     except ResearchExperimentApiError as exc:
         raise _raise_http(exc)
@@ -378,11 +425,15 @@ def create_selection(
         InvalidExperimentSelectionError,
         ObjectiveEvaluationError,
     ) as exc:
-        raise _safe_error(
-            exc,
-            fallback_code="CANDIDATE_NOT_SELECTABLE",
-            fallback_message="candidate is not eligible for selection",
-        ) from exc
+        detail = {
+            "code": getattr(exc, "code", "CANDIDATE_NOT_SELECTABLE"),
+            "message": str(exc) or "candidate is not eligible for selection",
+            "failure_code": getattr(exc, "code", "CANDIDATE_NOT_SELECTABLE"),
+            "eligibility_reason": str(exc) or "candidate is not eligible for selection",
+        }
+        if getattr(exc, "details", None):
+            detail.update(exc.details)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except ExperimentSelectionConflictError as exc:
         raise _safe_error(
             exc,

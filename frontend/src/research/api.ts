@@ -9,6 +9,8 @@ import type {
   SelectionDecision,
   SelectionRequest,
   OosResearchView,
+  OfficialOosExecutionResponse,
+  OfficialOosPreparation,
   OptimizationFilter,
   OptimizationHeatmap,
   OptimizationMetricRegistry,
@@ -171,6 +173,15 @@ export const researchApi = {
   },
   getExperimentHandoff(protocolId: string, experimentId: string) {
     return requestJson<HandoffResponse>(path(protocolId, experimentId, "handoff"));
+  },
+  prepareOfficialOos(protocolId: string) {
+    return requestJson<OfficialOosPreparation>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/prepare`, { method: "POST" });
+  },
+  getOfficialOosExecution(protocolId: string) {
+    return requestJson<{ execution: OfficialOosExecutionResponse["execution"]; events: Array<Record<string, unknown>> }>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/execution`);
+  },
+  executeOfficialOos(protocolId: string) {
+    return requestJson<OfficialOosExecutionResponse>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/execute`, { method: "POST" });
   },
   getOfficialOosResearchView(protocolId: string) {
     return requestJson<OosResearchView>(`/research/protocols/${encodeURIComponent(protocolId)}/oos`);

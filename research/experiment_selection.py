@@ -91,6 +91,21 @@ def _hash(value: object, label: str) -> str:
     return value
 
 
+def _strategy_version_id(value: object, label: str) -> str:
+    # StrategyVersion IDs are opaque persisted references, not research slugs.
+    # Keep their exact identity, including spaces and non-ASCII names.
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        or _UNSAFE_TEXT.search(value)
+        or _MARKUP.search(value)
+    ):
+        raise InvalidExperimentSelectionError(f"{label} is invalid")
+    return value
+
+
 def _candidate_id(value: object, label: str = "candidate_id") -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidExperimentSelectionError(f"{label} must be a non-empty string")
@@ -229,7 +244,13 @@ class ExperimentSelectionEvidence:
             "engine_version",
             "analysis_version",
         ):
-            validator = _candidate_id if label == "selected_candidate_id" else _text
+            validator = (
+                _candidate_id
+                if label == "selected_candidate_id"
+                else _strategy_version_id
+                if label == "selected_derived_strategy_version_id"
+                else _text
+            )
             object.__setattr__(self, label, validator(getattr(self, label), label))
         if (
             isinstance(self.selected_candidate_index, bool)
@@ -335,7 +356,13 @@ class ExperimentSelectionDecision:
             "selected_experiment_result_id",
             "selected_derived_strategy_version_id",
         ):
-            validator = _candidate_id if label == "selected_candidate_id" else _text
+            validator = (
+                _candidate_id
+                if label == "selected_candidate_id"
+                else _strategy_version_id
+                if label == "selected_derived_strategy_version_id"
+                else _text
+            )
             object.__setattr__(self, label, validator(getattr(self, label), label))
         if (
             isinstance(self.selected_candidate_index, bool)
@@ -360,10 +387,11 @@ class ExperimentSelectionDecision:
             raise InvalidExperimentSelectionError("selection_method is not human-directed") from exc
         if (
             not isinstance(self.researcher_rationale, str)
-            or not self.researcher_rationale.strip()
             or len(self.researcher_rationale.strip()) > 2000
         ):
-            raise InvalidExperimentSelectionError("researcher_rationale must be 1-2000 characters")
+            raise InvalidExperimentSelectionError(
+                "researcher_rationale must be at most 2000 characters"
+            )
         rationale = self.researcher_rationale.strip()
         if (
             _UNSAFE_TEXT.search(rationale)
@@ -657,7 +685,7 @@ def create_experiment_selection_decision(
     if isinstance(candidates, ExperimentResultsReadModel) and (
         candidates.experiment_id != experiment.experiment_id
         or candidates.protocol_id != experiment.protocol_id
-        ):
+    ):
         _ineligible(
             selected_candidate_id,
             SelectionEligibilityReasonCode.EXPERIMENT_BINDING_MISMATCH,
@@ -716,7 +744,6 @@ def create_experiment_selection_decision(
         _ineligible(selected_candidate_id, eligibility.reason_code, eligibility.reason)
     if (
         not isinstance(researcher_rationale, str)
-        or not researcher_rationale.strip()
         or len(researcher_rationale.strip()) > 2000
         or _UNSAFE_TEXT.search(researcher_rationale)
         or _MARKUP.search(researcher_rationale)

@@ -76,6 +76,7 @@ export interface CandidateResult {
   data_snapshot_reference?: Record<string, unknown>;
   configuration_snapshot?: Record<string, unknown>;
   performance_summary?: Record<string, MetricValue>;
+  selection_eligibility?: { eligible: boolean; failure_code: string | null; eligibility_reason: string };
 }
 
 export interface ResultsSummary {
@@ -189,10 +190,25 @@ export interface SelectionDecision {
 export interface HandoffResponse {
   experiment_id: string;
   protocol_id: string;
-  selection_decision: Record<string, unknown>;
+  selection_decision: Record<string, unknown> & { selected_metrics?: Record<string, unknown> };
   strategy_freeze: Record<string, unknown>;
   identity: { strategy_version_id: string; strategy_version_content_hash: string };
   provenance?: Record<string, unknown>;
+}
+
+export interface OfficialOosPreparation {
+  execution: { execution_id: string; status: string; attempt_count: number; [key: string]: unknown };
+  identity: Record<string, string>;
+  evaluation_range: Record<string, string>;
+  configuration: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}
+
+export interface OfficialOosExecutionResponse {
+  execution: { execution_id: string; status: string; attempt_count: number; failure_code?: string | null; [key: string]: unknown };
+  status: string;
+  idempotent?: boolean;
+  official_result?: Record<string, unknown>;
 }
 
 export type OptimizationMetricStatus = "available" | "unavailable" | "not_applicable" | "failed" | "excluded";
@@ -412,7 +428,7 @@ export interface GridSearchProgress {
 export interface OosResearchView {
   read_only: boolean;
   protocol: Record<string, unknown>;
-  selection_decision: Record<string, unknown>;
+  selection_decision: Record<string, unknown> & { selected_metrics?: Record<string, unknown> };
   strategy_freeze: Record<string, unknown>;
   oos_result: {
     oos_result_id: string;

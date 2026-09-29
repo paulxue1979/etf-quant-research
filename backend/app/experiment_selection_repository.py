@@ -1,4 +1,4 @@
-"""Atomic persistence for one immutable researcher selection per experiment.
+"""Atomic persistence for one active researcher selection per experiment.
 
 This repository stores the PHASE 8E-1D experiment-level selection record.  It
 is deliberately separate from the PHASE 7 protocol selection repository: a
@@ -13,6 +13,7 @@ import re
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
+from uuid import uuid4
 
 from backend.app.backtest_repository import BacktestRepository
 from backend.app.candidate_execution_repository import CandidateExecutionRepository
@@ -38,7 +39,7 @@ from research.objective_evaluation import evaluate_candidate_objective
 
 
 class ExperimentSelectionRepository:
-    """Durable, append-only storage for an experiment's official selection."""
+    """Durable active selection with audited pre-freeze replacement."""
 
     SCHEMA_VERSION = 1
     _SCHEMA_KEY = "experiment_selection_repository"
@@ -270,6 +271,103 @@ class ExperimentSelectionRepository:
     persist = create
     record = create
 
+    def replace_before_freeze(
+        self, decision: ExperimentSelectionDecision
+    ) -> ExperimentSelectionDecision:
+        """Replace the one active selection while its protocol is not frozen.
+
+        The row remains the canonical active selection. A replacement event is
+        appended to the experiment audit log; after a StrategyFreezeRecord
+        exists, replacements are rejected.
+        """
+        self._validate_decision(decision)
+        selection_payload = self._safe_json(decision.to_dict())
+        evidence_payload = self._safe_json(decision.evidence.to_dict())
+        if decision.selection_hash != sha256_hash(decision.semantic_payload()):
+            raise ExperimentSelectionPersistenceError(
+                "selection hash does not match semantic payload", code="SELECTION_INTEGRITY_ERROR"
+            )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_row = connection.execute(
+                "SELECT * FROM research_experiment_selections WHERE experiment_id = ?",
+                (decision.experiment_id,),
+            ).fetchone()
+            if existing_row is None:
+                connection.execute("ROLLBACK")
+                return self.create(decision)
+            existing = self._decode(existing_row)
+            experiment = self._load_experiment(connection, decision.experiment_id)
+            self._validate_existing_terminal_state(connection, experiment, existing)
+            if existing.semantic_payload() == decision.semantic_payload():
+                connection.execute("COMMIT")
+                return existing
+            frozen = connection.execute(
+                "SELECT 1 FROM research_strategy_freezes WHERE protocol_id = ? LIMIT 1",
+                (decision.protocol_id,),
+            ).fetchone()
+            if frozen is not None:
+                raise ExperimentSelectionConflictError(
+                    "selection cannot change after strategy freeze"
+                )
+            if experiment.status is not ExperimentStatus.SELECTION_RECORDED:
+                raise ExperimentSelectionPersistenceError(
+                    "selection replacement requires selection-recorded experiment state",
+                    code="SELECTION_INTEGRITY_ERROR",
+                )
+            self._validate_database_bindings(connection, experiment, decision)
+            values = self._values(decision, evidence_payload, selection_payload)
+            connection.execute(
+                """
+                UPDATE research_experiment_selections SET
+                    selection_id = ?, protocol_id = ?, selected_candidate_id = ?,
+                    selected_candidate_index = ?, selected_parameter_set_hash = ?,
+                    selected_experiment_result_id = ?, selected_result_hash = ?,
+                    selected_derived_strategy_version_id = ?,
+                    selected_derived_strategy_content_hash = ?,
+                    objective_hash = ?, candidate_set_hash = ?, parameter_space_hash = ?,
+                    selection_method = ?, researcher_rationale = ?, evidence_json = ?,
+                    selection_hash = ?, created_at = ?, selection_json = ?
+                WHERE experiment_id = ?
+                """,
+                (*values[0:1], *values[2:], decision.experiment_id),
+            )
+            self._experiments._insert_event(
+                connection,
+                decision.experiment_id,
+                "SELECTION_REPLACED_BEFORE_FREEZE",
+                {
+                    "selection_id": decision.selection_id,
+                    "selection_hash": decision.selection_hash,
+                    "selected_candidate_id": decision.selected_candidate_id,
+                    "selected_experiment_result_id": decision.selected_experiment_result_id,
+                },
+                decision.created_at,
+                transition_key=f"experiment-selection-replacement:{decision.experiment_id}:{uuid4().hex}",
+                from_status=ExperimentStatus.SELECTION_RECORDED,
+                to_status=ExperimentStatus.SELECTION_RECORDED,
+                provenance={
+                    "selection_id": decision.selection_id,
+                    "selection_hash": decision.selection_hash,
+                    "result_id": decision.selected_experiment_result_id,
+                    "result_hash": decision.selected_result_hash,
+                    "previous_selection": existing.to_dict(),
+                },
+            )
+            connection.execute("COMMIT")
+            return decision
+        except (ExperimentSelectionPersistenceError, ExperimentSelectionConflictError):
+            self._rollback(connection)
+            raise
+        except Exception as exc:
+            self._rollback(connection)
+            raise ExperimentSelectionPersistenceError(
+                "could not replace experiment selection", code="SELECTION_INTEGRITY_ERROR"
+            ) from exc
+        finally:
+            connection.close()
+
     def get(self, selection_id: str) -> ExperimentSelectionDecision | None:
         connection = self._connect()
         try:
@@ -444,7 +542,8 @@ class ExperimentSelectionRepository:
         try:
             model = self._read_service.get(experiment.experiment_id)
             candidate = next(
-                item for item in model.candidates
+                item
+                for item in model.candidates
                 if item.candidate_id == decision.selected_candidate_id
             )
             objective = evaluate_candidate_objective(experiment, candidate)
@@ -541,19 +640,32 @@ class ExperimentSelectionRepository:
                 code="PERSISTED_SELECTION_INTEGRITY_ERROR",
             )
         event = connection.execute(
-            "SELECT * FROM experiment_events WHERE experiment_id = ? AND transition_key = ?",
-            (experiment.experiment_id, f"experiment-selection:{experiment.experiment_id}"),
+            "SELECT * FROM experiment_events WHERE experiment_id = ? "
+            "AND event_type = 'SELECTION_REPLACED_BEFORE_FREEZE' "
+            "ORDER BY event_sequence DESC LIMIT 1",
+            (experiment.experiment_id,),
         ).fetchone()
+        replacement = event is not None
+        if event is None:
+            event = connection.execute(
+                "SELECT * FROM experiment_events WHERE experiment_id = ? AND transition_key = ?",
+                (experiment.experiment_id, f"experiment-selection:{experiment.experiment_id}"),
+            ).fetchone()
         if event is None:
             raise ExperimentSelectionPersistenceError(
                 "selection exists without its lifecycle event",
                 code="PERSISTED_SELECTION_INTEGRITY_ERROR",
             )
         if (
-            event["event_type"] != "SELECTION_RECORDED"
-            or event["from_status"] != ExperimentStatus.COMPLETED.value
+            event["event_type"]
+            != ("SELECTION_REPLACED_BEFORE_FREEZE" if replacement else "SELECTION_RECORDED")
+            or event["from_status"]
+            != (
+                ExperimentStatus.SELECTION_RECORDED.value
+                if replacement
+                else ExperimentStatus.COMPLETED.value
+            )
             or event["to_status"] != ExperimentStatus.SELECTION_RECORDED.value
-            or event["transition_key"] != f"experiment-selection:{experiment.experiment_id}"
         ):
             raise ExperimentSelectionPersistenceError(
                 "selection lifecycle event does not match experiment state",
@@ -562,6 +674,12 @@ class ExperimentSelectionRepository:
         try:
             payload = json.loads(event["payload_json"], parse_constant=_reject_nonfinite)
             provenance = json.loads(event["provenance_json"], parse_constant=_reject_nonfinite)
+            if replacement:
+                previous = ExperimentSelectionDecision.from_dict(
+                    provenance.pop("previous_selection")
+                )
+                if previous.selection_hash != sha256_hash(previous.semantic_payload()):
+                    raise ValueError("previous selection hash mismatch")
             expected_payload = {
                 "selection_id": decision.selection_id,
                 "selection_hash": decision.selection_hash,
@@ -574,10 +692,9 @@ class ExperimentSelectionRepository:
                 "result_id": decision.selected_experiment_result_id,
                 "result_hash": decision.selected_result_hash,
             }
-            if (
-                canonical_json(payload) != canonical_json(expected_payload)
-                or canonical_json(provenance) != canonical_json(expected_provenance)
-            ):
+            if canonical_json(payload) != canonical_json(expected_payload) or canonical_json(
+                provenance
+            ) != canonical_json(expected_provenance):
                 raise ValueError("selection lifecycle event provenance mismatch")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ExperimentSelectionPersistenceError(

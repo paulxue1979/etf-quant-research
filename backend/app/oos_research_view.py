@@ -15,6 +15,10 @@ from backend.app.research_protocol import (
     ResearchProtocolRepository,
 )
 from backend.app.strategy_repository import StrategyPersistenceError, StrategyRepository
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.oos import (
     OosEvaluationConfig,
     OosEvaluationIdentity,
@@ -122,7 +126,7 @@ class OosResearchViewService:
                 "official OOS provenance failed integrity validation",
             ) from exc
 
-        return self._projection(protocol, selection, freeze, result, run)
+        return self._projection(protocol, selection, freeze, result, run, strategy)
 
     def _validate_provenance(
         self,
@@ -167,14 +171,18 @@ class OosResearchViewService:
                 "official backtest strategy hash does not match the result",
             )
         backtest_result = run.backtest_result
-        if (
-            backtest_result.start_date != result.oos_start
-            or backtest_result.end_date != result.oos_end
-        ):
+        try:
+            validate_effective_range_within_requested(
+                result.oos_start,
+                result.oos_end,
+                backtest_result.effective_start_date,
+                backtest_result.effective_end_date,
+            )
+        except EffectiveDateRangeError as exc:
             raise OosResearchViewError(
                 "OOS_PROVENANCE_INTEGRITY_ERROR",
                 "official backtest range does not match the frozen OOS range",
-            )
+            ) from exc
         if (
             backtest_result.configuration_snapshot.get("price_field_used")
             != result.price_field_used.value
@@ -252,6 +260,7 @@ class OosResearchViewService:
         freeze: Any,
         result: Any,
         run: BacktestRun,
+        strategy: Any,
     ) -> dict[str, Any]:
         config = dict(run.backtest_result.configuration_snapshot)
         return {
@@ -267,6 +276,7 @@ class OosResearchViewService:
                 "strategy_freeze_id": result.strategy_freeze_id,
                 "strategy_version_id": result.strategy_version_id,
                 "strategy_content_hash": result.strategy_content_hash,
+                "strategy_version_configuration": strategy.configuration.to_dict(),
                 "oos_result_id": result.oos_result_id,
                 "backtest_run_id": result.backtest_run_id,
                 "execution_id": result.execution_id,

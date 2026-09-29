@@ -81,6 +81,46 @@ def test_routes_are_registered_under_research_namespace(client: TestClient) -> N
     assert response.json()["provenance"]["candidate_order"] == "candidate_index_ascending"
 
 
+def test_results_expose_server_side_selection_eligibility(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluation = SimpleNamespace()
+    diagnostic = SimpleNamespace(status="compatible")
+    eligibility = SimpleNamespace(
+        eligible=True,
+        reason_code=SimpleNamespace(value="ELIGIBLE"),
+        reason="candidate is eligible for explicit researcher selection",
+    )
+    monkeypatch.setattr(
+        api, "evaluate_candidate_objective", lambda experiment, candidate: evaluation
+    )
+    monkeypatch.setattr(
+        api,
+        "ExperimentCompatibilityService",
+        lambda: SimpleNamespace(diagnose=lambda model: diagnostic),
+    )
+    monkeypatch.setattr(
+        api,
+        "strategy_repository",
+        SimpleNamespace(get_any_version=lambda version_id: SimpleNamespace(version_id=version_id)),
+    )
+    monkeypatch.setattr(
+        api,
+        "assess_selection_eligibility",
+        lambda experiment, candidate, **kwargs: eligibility,
+    )
+    monkeypatch.setattr(api, "experiment_repository", SimpleNamespace(get=lambda _: _experiment()))
+
+    response = client.get("/research/protocols/protocol-1/experiments/experiment-1/results")
+
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["selection_eligibility"] == {
+        "eligible": True,
+        "failure_code": None,
+        "eligibility_reason": "candidate is eligible for explicit researcher selection",
+    }
+
+
 def test_result_summary_route_is_paginated_without_full_result_loading(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -264,7 +304,14 @@ def test_selection_resolves_provenance_server_side_and_is_idempotent(
         return decision
 
     monkeypatch.setattr(api, "create_experiment_selection_decision", create_decision)
-    monkeypatch.setattr(api, "selection_repository", SimpleNamespace(create=lambda item: item))
+    monkeypatch.setattr(
+        api,
+        "selection_repository",
+        SimpleNamespace(
+            create=lambda item: item,
+            get_by_experiment_id=lambda _: None,
+        ),
+    )
 
     request = {
         "selected_candidate_id": "candidate-0",

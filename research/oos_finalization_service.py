@@ -22,6 +22,10 @@ from backend.app.research_protocol import (
     _selection_from_dict,
 )
 from research.canonical import sha256_hash
+from research.date_boundaries import (
+    EffectiveDateRangeError,
+    validate_effective_range_within_requested,
+)
 from research.exceptions import (
     OosAlreadyObservedError,
     OosFinalizationConflictError,
@@ -336,11 +340,15 @@ class OosFinalizationService:
             raise OosResultIntegrityError("official backtest identity mismatch")
         if run.strategy_version_id != result.strategy_version_id:
             raise OosResultIntegrityError("official backtest strategy identity mismatch")
-        if (
-            run.backtest_result.start_date != result.oos_start
-            or run.backtest_result.end_date != result.oos_end
-        ):
-            raise OosResultIntegrityError("official backtest range mismatch")
+        try:
+            validate_effective_range_within_requested(
+                result.oos_start,
+                result.oos_end,
+                run.backtest_result.effective_start_date,
+                run.backtest_result.effective_end_date,
+            )
+        except EffectiveDateRangeError as exc:
+            raise OosResultIntegrityError("official backtest range mismatch") from exc
         if (
             run.backtest_result.configuration_snapshot.get("price_field_used")
             != result.price_field_used.value
