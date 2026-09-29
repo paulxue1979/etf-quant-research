@@ -15,6 +15,7 @@ from backend.app.research_protocol import (
     ResearchProtocolRepository,
 )
 from backend.app.strategy_repository import StrategyRepository
+from backtest.exceptions import StrategyBacktestIntegrationError
 from backtest.integration import StrategyBacktestResult, run_strategy_backtest
 from backtest.models import BacktestConfig
 from data.exceptions import (
@@ -152,8 +153,11 @@ class ExperimentExecutionService:
             )
 
         try:
+            stage = "market_data"
             data = self._load_is_data(prepared)
+            stage = "indicator_preparation"
             prepared_inputs = self._calculate_inputs(prepared.derived_strategy, data)
+            stage = "strategy_evaluation"
             context = EvaluationContext.from_components(
                 data,
                 prepared_inputs.indicators,
@@ -172,6 +176,7 @@ class ExperimentExecutionService:
                 raise _RuntimeFailure("INDICATOR_NOT_EVALUABLE", retryable=False)
             if any(item.status is StrategyEvaluationStatus.ERROR for item in timeline.evaluations):
                 raise _RuntimeFailure("STRATEGY_EVALUATION_ERROR", retryable=False)
+            stage = "backtest"
             integration = run_strategy_backtest(
                 prepared.derived_strategy,
                 timeline,
@@ -180,7 +185,12 @@ class ExperimentExecutionService:
             )
             self._assert_is_only_backtest(integration, prepared.experiment)
         except _RuntimeFailure as failure:
-            return self._runtime_failure(prepared, claimed, claimed_by, failure)
+            return self._runtime_failure(
+                prepared,
+                claimed,
+                claimed_by,
+                _ensure_failure_diagnostic(failure, stage, prepared),
+            )
         except DataEngineError as exc:
             retryable = isinstance(
                 exc,
@@ -190,27 +200,44 @@ class ExperimentExecutionService:
                 prepared,
                 claimed,
                 claimed_by,
-                _RuntimeFailure("MISSING_MARKET_DATA", retryable=retryable),
+                _diagnostic_failure(
+                    "MISSING_MARKET_DATA", stage, exc, prepared, retryable=retryable
+                ),
             )
-        except Exception:
+        except StrategyBacktestIntegrationError as exc:
             return self._runtime_failure(
                 prepared,
                 claimed,
                 claimed_by,
-                _RuntimeFailure("BACKTEST_ERROR", retryable=False),
+                _diagnostic_failure(
+                    "BACKTEST_CONFIGURATION_ERROR", stage, exc, prepared, retryable=False
+                ),
+            )
+        except Exception as exc:
+            return self._runtime_failure(
+                prepared,
+                claimed,
+                claimed_by,
+                _diagnostic_failure("BACKTEST_ERROR", stage, exc, prepared, retryable=False),
             )
 
         try:
+            stage = "analytics"
             analysis = analyze_backtest(integration.backtest_result)
             self._assert_is_only_analysis(analysis, prepared.experiment)
         except _RuntimeFailure as failure:
-            return self._runtime_failure(prepared, claimed, claimed_by, failure)
-        except Exception:
             return self._runtime_failure(
                 prepared,
                 claimed,
                 claimed_by,
-                _RuntimeFailure("ANALYTICS_ERROR", retryable=False),
+                _ensure_failure_diagnostic(failure, stage, prepared),
+            )
+        except Exception as exc:
+            return self._runtime_failure(
+                prepared,
+                claimed,
+                claimed_by,
+                _diagnostic_failure("ANALYTICS_ERROR", stage, exc, prepared, retryable=False),
             )
 
         completed_at = self._now()
@@ -591,10 +618,7 @@ class ExperimentExecutionService:
         self, integration: StrategyBacktestResult, experiment: Experiment
     ) -> None:
         result = integration.backtest_result
-        if (
-            result.start_date != experiment.is_start_date
-            or result.end_date != experiment.is_end_date
-        ):
+        if result.start_date < experiment.is_start_date or result.end_date > experiment.is_end_date:
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
         if any(order.date > experiment.is_end_date for order in result.orders):
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
@@ -603,8 +627,8 @@ class ExperimentExecutionService:
 
     def _assert_is_only_analysis(self, analysis: Any, experiment: Experiment) -> None:
         if (
-            analysis.start_date != experiment.is_start_date
-            or analysis.end_date != experiment.is_end_date
+            analysis.start_date < experiment.is_start_date
+            or analysis.end_date > experiment.is_end_date
         ):
             raise _RuntimeFailure("IS_RANGE_VIOLATION", retryable=False)
 
@@ -623,8 +647,11 @@ class ExperimentExecutionService:
                 now,
                 now,
                 failure.code,
-                _failure_message(failure.code),
+                failure.message or _failure_message(failure.code),
                 failure.retryable,
+                failure_stage=failure.stage,
+                failure_exception_type=failure.exception_type,
+                failure_context=failure.context,
             )
             execution_id = failed.execution_id
         except Exception:
@@ -784,6 +811,14 @@ class ExperimentExecutionService:
             candidate_execution_id=candidate_execution_id,
             failure_code=code,
             failure_message=_failure_message(code),
+            failure_stage=scope,
+            failure_context={
+                "candidate_id": candidate_id_for(
+                    experiment.experiment_id, candidate.candidate_index, parameter_set.content_hash
+                )
+                if experiment and candidate and parameter_set
+                else None
+            },
             provenance={"service_version": ENGINE_SERVICE_VERSION, "scope": scope},
         )
 
@@ -827,7 +862,12 @@ class ExperimentExecutionService:
             backtest_result=integration,
             performance_analysis_result=analysis,
             failure_code=failure.code if failure else None,
-            failure_message=_failure_message(failure.code) if failure else None,
+            failure_message=(
+                (failure.message or _failure_message(failure.code)) if failure else None
+            ),
+            failure_stage=failure.stage if failure else None,
+            failure_exception_type=failure.exception_type if failure else None,
+            failure_context=failure.context if failure else {},
             provenance={
                 "service_version": ENGINE_SERVICE_VERSION,
                 "data_snapshot_reference": (
@@ -876,6 +916,65 @@ def _failure_message(code: str) -> str:
     return f"Candidate execution failed with {code}."
 
 
+def _diagnostic_failure(
+    code: str,
+    stage: str,
+    exc: Exception,
+    prepared: _PreparedExecution,
+    *,
+    retryable: bool,
+) -> _RuntimeFailure:
+    """Keep bounded, non-secret diagnostics without exposing traceback details."""
+    raw_message = " ".join(str(exc).split())
+    unsafe = (
+        not raw_message
+        or len(raw_message) > 240
+        or "/" in raw_message
+        or "\\" in raw_message
+        or any(token in raw_message.lower() for token in ("api_key", "token", "secret", "password"))
+    )
+    context = _diagnostic_context(prepared, stage)
+    return _RuntimeFailure(
+        code,
+        retryable=retryable,
+        stage=stage,
+        exception_type=type(exc).__name__,
+        message=None if unsafe else raw_message,
+        context=context,
+    )
+
+
+def _ensure_failure_diagnostic(
+    failure: _RuntimeFailure, stage: str, prepared: _PreparedExecution
+) -> _RuntimeFailure:
+    if failure.stage is not None and failure.context:
+        return failure
+    return _RuntimeFailure(
+        failure.code,
+        retryable=failure.retryable,
+        stage=failure.stage or stage,
+        exception_type=failure.exception_type,
+        message=failure.message,
+        context=failure.context or _diagnostic_context(prepared, stage),
+    )
+
+
+def _diagnostic_context(prepared: _PreparedExecution, stage: str) -> dict[str, Any]:
+    return {
+        "candidate_id": prepared.execution.candidate_id,
+        "execution_id": prepared.execution.execution_id,
+        "backtest_run_id": None,
+        "strategy_version_id": prepared.derived_strategy.version_id,
+        "strategy_version_hash": prepared.derived_strategy.content_hash,
+        "is_start": prepared.experiment.is_start_date.isoformat(),
+        "is_end": prepared.experiment.is_end_date.isoformat(),
+        "assets": [item.symbol for item in prepared.derived_strategy.configuration.assets],
+        "price_field": prepared.backtest_config.price_field_used.value,
+        "warmup_start": prepared.warmup_start.isoformat(),
+        "execution_stage": stage,
+    }
+
+
 def _combined_binding_hash(
     strategy_bindings: ParameterBindingSet,
     backtest_bindings: BacktestParameterBindingSet,
@@ -899,9 +998,22 @@ def _configuration_identity_payload(
 
 
 class _RuntimeFailure(Exception):
-    def __init__(self, code: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        retryable: bool,
+        stage: str | None = None,
+        exception_type: str | None = None,
+        message: str | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
         self.code = code
         self.retryable = retryable
+        self.stage = stage
+        self.exception_type = exception_type
+        self.message = message
+        self.context = dict(context or {})
 
 
 class _ExecutionFailure(Exception):

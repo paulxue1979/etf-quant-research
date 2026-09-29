@@ -16,15 +16,20 @@ import type {
   OptimizationResults,
   OptimizationSensitivity,
   OptimizationStability,
+  ExperimentWorkflowList,
+  ExperimentWorkflowRecord,
+  ResearchProtocolDetail,
 } from "./types";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiBaseUrl } from "../apiConfig";
 
 export class ResearchApiError extends Error {
   constructor(
     public readonly kind: "network" | "server" | "malformed",
     message: string,
     public readonly code: string = "RESEARCH_REQUEST_FAILED",
+    public readonly status?: number,
+    public readonly endpoint?: string,
   ) {
     super(message);
     this.name = "ResearchApiError";
@@ -51,17 +56,23 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
   } catch {
-    throw new ResearchApiError("network", "Unable to reach the Experiment Research service.", "NETWORK_ERROR");
+    throw new ResearchApiError("network", "Unable to reach the Experiment Research service (backend unreachable or browser CORS blocked).", "NETWORK_OR_CORS_FAILURE", undefined, path);
+  }
+  if (!response.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new ResearchApiError("server", `Research request failed (${response.status}).`, `HTTP_${response.status}`, response.status, path);
+    }
+    const error = safeMessage(payload, response.status);
+    throw new ResearchApiError("server", error.message, error.code, response.status, path);
   }
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw new ResearchApiError("malformed", "Experiment Research returned an invalid response.", "MALFORMED_RESPONSE");
-  }
-  if (!response.ok) {
-    const error = safeMessage(payload, response.status);
-    throw new ResearchApiError("server", error.message, error.code);
+    throw new ResearchApiError("malformed", "Experiment Research returned an invalid response.", "INVALID_RESPONSE", response.status, path);
   }
   return payload as T;
 }
@@ -70,6 +81,39 @@ const path = (protocolId: string, experimentId: string, suffix: string) =>
   `/research/protocols/${encodeURIComponent(protocolId)}/experiments/${encodeURIComponent(experimentId)}/${suffix}`;
 
 export const researchApi = {
+  createProtocol(request: Record<string, unknown>) {
+    return requestJson<ResearchProtocolDetail>("/research/protocols", {
+      method: "POST", body: JSON.stringify(request),
+    });
+  },
+  getProtocol(protocolId: string) {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}`);
+  },
+  createCandidateSet(protocolId: string, strategyVersionIds: string[]) {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/candidate-sets`, {
+      method: "POST", body: JSON.stringify({ strategy_version_ids: strategyVersionIds }),
+    });
+  },
+  lockCandidateSet(candidateSetId: string) {
+    return requestJson<ResearchProtocolDetail>(`/research/candidate-sets/${encodeURIComponent(candidateSetId)}/lock`, { method: "POST" });
+  },
+  transitionProtocol(protocolId: string, status: "frozen" | "is_evaluated" | "selection_recorded" | "oos_evaluated" | "closed") {
+    return requestJson<ResearchProtocolDetail>(`/research/protocols/${encodeURIComponent(protocolId)}/transitions`, {
+      method: "POST", body: JSON.stringify({ status }),
+    });
+  },
+  listExperiments() {
+    return requestJson<ExperimentWorkflowList>("/research/experiments");
+  },
+  getExperiment(experimentId: string) {
+    return requestJson<ExperimentWorkflowRecord>(`/research/experiments/${encodeURIComponent(experimentId)}`);
+  },
+  preflightExperiment(request: Record<string, unknown>) {
+    return requestJson<GridSearchPreflight>("/research/experiments/preflight", { method: "POST", body: JSON.stringify(request) });
+  },
+  createExperiment(request: Record<string, unknown>) {
+    return requestJson<ExperimentWorkflowRecord>("/research/experiments", { method: "POST", body: JSON.stringify(request) });
+  },
   getGridTemplate(experimentId: string) {
     return requestJson<GridSearchTemplate>(
       `/research/experiments/${encodeURIComponent(experimentId)}/grid/template`,

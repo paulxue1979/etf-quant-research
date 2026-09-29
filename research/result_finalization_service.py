@@ -169,11 +169,11 @@ class ExperimentResultFinalizationService:
             raise ExperimentFinalizationError(
                 "PROVENANCE_MISMATCH: backtest strategy version does not match outcome"
             )
-        if backtest.start_date != outcome.is_start or backtest.end_date != outcome.is_end:
+        if backtest.start_date < outcome.is_start or backtest.end_date > outcome.is_end:
             raise ExperimentFinalizationError(
                 "IS_RANGE_VIOLATION: backtest result is outside the IS range"
             )
-        if analysis.start_date != outcome.is_start or analysis.end_date != outcome.is_end:
+        if analysis.start_date < outcome.is_start or analysis.end_date > outcome.is_end:
             raise ExperimentFinalizationError(
                 "IS_RANGE_VIOLATION: analytics result is outside the IS range"
             )

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.backtest_lab import router as backtest_lab_router
 from backend.app.backtest_report_api import router as backtest_report_router
+from backend.app.experiment_workflow_api import router as experiment_workflow_router
 from backend.app.grid_search_api import router as grid_search_router
 from backend.app.oos_research_api import router as oos_research_router
 from backend.app.optimization_research_api import router as optimization_research_router
@@ -32,6 +33,7 @@ app.include_router(backtest_report_router)
 app.include_router(research_protocol_router)
 app.include_router(research_execution_router)
 app.include_router(grid_search_router)
+app.include_router(experiment_workflow_router)
 app.include_router(research_experiment_router)
 app.include_router(oos_research_router)
 app.include_router(optimization_research_router)

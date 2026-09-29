@@ -100,6 +100,9 @@ class ExperimentExecutionOutcome:
     performance_analysis_result: PerformanceAnalysisResult | None = None
     failure_code: str | None = None
     failure_message: str | None = None
+    failure_stage: str | None = None
+    failure_exception_type: str | None = None
+    failure_context: Mapping[str, Any] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         for label in (
@@ -139,9 +142,7 @@ class ExperimentExecutionOutcome:
         if not isinstance(self.price_field_used, PriceField):
             object.__setattr__(self, "price_field_used", PriceField(self.price_field_used))
         if not isinstance(self.status, ExperimentExecutionOutcomeStatus):
-            object.__setattr__(
-                self, "status", ExperimentExecutionOutcomeStatus(self.status)
-            )
+            object.__setattr__(self, "status", ExperimentExecutionOutcomeStatus(self.status))
         if self.candidate_execution_id is not None:
             object.__setattr__(
                 self,
@@ -168,17 +169,39 @@ class ExperimentExecutionOutcome:
             raise TypeError("provenance must be a mapping")
         canonical_json(self.provenance)
         object.__setattr__(self, "provenance", _freeze_provenance(self.provenance))
+        for label in ("failure_stage", "failure_exception_type"):
+            value = getattr(self, label)
+            if value is not None:
+                object.__setattr__(self, label, _text(value, label, maximum=128))
+        if not isinstance(self.failure_context, Mapping):
+            raise TypeError("failure_context must be a mapping")
+        object.__setattr__(self, "failure_context", _freeze_provenance(self.failure_context))
 
         complete = self.status is ExperimentExecutionOutcomeStatus.COMPLETED
         if complete:
             if self.backtest_result is None or self.performance_analysis_result is None:
                 raise ValueError("completed outcome requires backtest and analytics results")
-            if self.failure_code is not None or self.failure_message is not None:
+            if any(
+                value
+                for value in (
+                    self.failure_code,
+                    self.failure_message,
+                    self.failure_stage,
+                    self.failure_exception_type,
+                    self.failure_context,
+                )
+            ):
                 raise ValueError("completed outcome must not contain failure metadata")
         else:
             if not self.failure_code or not self.failure_message:
                 raise ValueError("failed outcome requires failure metadata")
             if _SENSITIVE.search(self.failure_code) or _SENSITIVE.search(self.failure_message):
+                raise ValueError("failure metadata contains sensitive data")
+            if self.failure_stage is not None and _SENSITIVE.search(self.failure_stage):
+                raise ValueError("failure metadata contains sensitive data")
+            if self.failure_exception_type is not None and _SENSITIVE.search(
+                self.failure_exception_type
+            ):
                 raise ValueError("failure metadata contains sensitive data")
             if self.backtest_result is not None or self.performance_analysis_result is not None:
                 raise ValueError("failed outcome must not contain partial results")

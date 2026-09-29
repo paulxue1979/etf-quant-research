@@ -10,6 +10,7 @@ const metrics = [
   { metric_id: "calmar_ratio", display_name: "Calmar Ratio", source_path: ["calmar_ratio"], direction: "maximize", format: "ratio", category: "risk", nullable: true, heatmap_eligible: true, pareto_eligible: true },
   { metric_id: "turnover", display_name: "Realized Turnover", source_path: ["turnover"], direction: "minimize", format: "percent", category: "trading", nullable: true, heatmap_eligible: true, pareto_eligible: true },
   { metric_id: "trade_count", display_name: "Closed Trades", source_path: ["trade_metrics", "number_of_closed_trades"], direction: "maximize", format: "integer", category: "trading", nullable: true, heatmap_eligible: true, pareto_eligible: false },
+  { metric_id: "total_return", display_name: "Total Return", source_path: ["total_return"], direction: "maximize", format: "percent", category: "strategy", nullable: true, heatmap_eligible: true, pareto_eligible: true },
 ] as const;
 
 const projected = (metric_id: string, value: number | null, status = value === null ? "not_applicable" : "available") => ({ metric_id, value, status, reason: value === null ? "insufficient observations" : null });
@@ -35,6 +36,7 @@ const candidate = (index: number, status = "completed") => ({
   failure_code: status === "failed" ? "EXECUTION_FAILED" : null,
   failure_summary: status === "failed" ? "safe failure" : null,
   metrics: {
+    total_return: projected("total_return", status === "completed" ? 2.91 : null),
     cagr: projected("cagr", status === "completed" ? 0.1 + index / 100 : null, status === "failed" ? "failed" : undefined),
     max_drawdown: projected("max_drawdown", status === "completed" ? -0.2 : null, status === "failed" ? "failed" : undefined),
     sharpe_ratio: projected("sharpe_ratio", status === "completed" ? 1.2 : null),
@@ -97,6 +99,17 @@ function mockApi(overrides: { heatmapError?: boolean; resultsValue?: typeof resu
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("OptimizationResultsExplorer", () => {
+  it("displays semantic parameter units and Total Return without changing canonical values", async () => {
+    const snapshot = JSON.stringify(results);
+    mockApi();
+    render(<OptimizationResultsExplorer protocolId="protocol-grid" experimentId="experiment-grid" parameterLabels={{ threshold: { label: "恢复持有 → 全风险开启｜触发阈值", unit: "%" } }} />);
+    expect(await screen.findByRole("columnheader", { name: "Total Return" })).toBeInTheDocument();
+    expect(screen.getAllByText("291.00%")).toHaveLength(2);
+    expect(screen.getAllByText("恢复持有 → 全风险开启｜触发阈值：10%")).toHaveLength(3);
+    expect(screen.getAllByTitle("threshold")).toHaveLength(3);
+    expect(JSON.stringify(results)).toBe(snapshot);
+  });
+
   it("loads a lightweight result table with failed and unavailable candidates", async () => {
     mockApi();
     render(<OptimizationResultsExplorer protocolId="protocol-grid" experimentId="experiment-grid" />);

@@ -112,9 +112,7 @@ class ExperimentResultsReadService:
         for candidate in model.candidates:
             if candidate.candidate_id == candidate_id:
                 return candidate
-        raise ExperimentResultsReadModelError(
-            "candidate was not found", code="CANDIDATE_NOT_FOUND"
-        )
+        raise ExperimentResultsReadModelError("candidate was not found", code="CANDIDATE_NOT_FOUND")
 
     def _build_candidate_view(self, experiment: Any, candidate: Any) -> ExperimentCandidateView:
         execution = self._executions.get_execution_by_candidate(
@@ -148,9 +146,11 @@ class ExperimentResultsReadService:
             return ExperimentCandidateView(
                 **base, result_status=ExperimentResultStatus.MISSING_RESULT
             )
-        if execution.experiment_id != experiment.experiment_id or execution.candidate_id != base[
-            "candidate_id"
-        ] or execution.candidate_index != candidate.candidate_index:
+        if (
+            execution.experiment_id != experiment.experiment_id
+            or execution.candidate_id != base["candidate_id"]
+            or execution.candidate_index != candidate.candidate_index
+        ):
             return self._inconsistent(base, "candidate execution identity does not match candidate")
         if execution.status is CandidateExecutionStatus.FAILED:
             if result is not None:
@@ -165,6 +165,9 @@ class ExperimentResultsReadService:
                 result_status=status,
                 failure_code=execution.failure_code,
                 failure_summary=self._safe_failure(execution.failure_message),
+                failure_stage=execution.failure_stage,
+                failure_exception_type=execution.failure_exception_type,
+                failure_context=execution.failure_context,
                 created_at=execution.created_at,
                 completed_at=execution.failed_at,
             )
@@ -220,21 +223,21 @@ class ExperimentResultsReadService:
         )
         if any(
             (
-            result.experiment_id != experiment.experiment_id,
-            result.candidate_id != expected_id,
-            result.candidate_index != candidate.candidate_index,
-            result.parameter_set_hash != candidate.parameter_set_hash,
-            result.candidate_set_hash != candidate.candidate_set_hash,
-            result.parameter_space_hash != experiment.parameter_space_hash,
-            result.base_strategy_version_id != experiment.base_strategy_version_id,
-            result.base_strategy_version_hash != experiment.base_strategy_version_hash,
-            result.is_start != experiment.is_start_date,
-            result.is_end != experiment.is_end_date,
-            result.engine_version != experiment.engine_version,
-            result.analysis_version != experiment.analysis_version,
-            result.binding_hash != execution.parameter_binding_hash,
-            execution.derived_strategy_version_id != result.derived_strategy_version_id,
-            execution.derived_strategy_version_hash != result.derived_strategy_version_hash,
+                result.experiment_id != experiment.experiment_id,
+                result.candidate_id != expected_id,
+                result.candidate_index != candidate.candidate_index,
+                result.parameter_set_hash != candidate.parameter_set_hash,
+                result.candidate_set_hash != candidate.candidate_set_hash,
+                result.parameter_space_hash != experiment.parameter_space_hash,
+                result.base_strategy_version_id != experiment.base_strategy_version_id,
+                result.base_strategy_version_hash != experiment.base_strategy_version_hash,
+                result.is_start != experiment.is_start_date,
+                result.is_end != experiment.is_end_date,
+                result.engine_version != experiment.engine_version,
+                result.analysis_version != experiment.analysis_version,
+                result.binding_hash != execution.parameter_binding_hash,
+                execution.derived_strategy_version_id != result.derived_strategy_version_id,
+                execution.derived_strategy_version_hash != result.derived_strategy_version_hash,
             )
         ):
             raise self._integrity("experiment result identity does not match candidate")
@@ -263,16 +266,16 @@ class ExperimentResultsReadService:
         analysis = backtest.performance_analysis
         if any(
             (
-            backtest.strategy_version_id != result.derived_strategy_version_id,
-            backtest.strategy_version_content_hash != result.derived_strategy_version_hash,
-            backtest.backtest_result.start_date != result.is_start,
-            backtest.backtest_result.end_date != result.is_end,
-            analysis.start_date != result.is_start,
-            analysis.end_date != result.is_end,
-            analysis.price_field_used is not result.price_field_used,
-            backtest.backtest_result.engine_version != result.engine_version,
-            self._analytics_payload(analysis.to_dict())
-            != self._analytics_payload(dict(result.performance_summary)),
+                backtest.strategy_version_id != result.derived_strategy_version_id,
+                backtest.strategy_version_content_hash != result.derived_strategy_version_hash,
+                backtest.backtest_result.start_date < result.is_start,
+                backtest.backtest_result.end_date != result.is_end,
+                analysis.start_date < result.is_start,
+                analysis.end_date != result.is_end,
+                analysis.price_field_used is not result.price_field_used,
+                backtest.backtest_result.engine_version != result.engine_version,
+                self._analytics_payload(analysis.to_dict())
+                != self._analytics_payload(dict(result.performance_summary)),
             )
         ):
             raise self._integrity("backtest run identity does not match experiment result")
@@ -303,10 +306,11 @@ class ExperimentResultsReadService:
     ) -> None:
         if any(
             (
-            candidate.experiment_id != experiment.experiment_id,
-            candidate.candidate_index != index,
-            candidate.parameter_set_hash != candidate.parameter_set.content_hash,
-            candidate_set_hash is not None and candidate.candidate_set_hash != candidate_set_hash,
+                candidate.experiment_id != experiment.experiment_id,
+                candidate.candidate_index != index,
+                candidate.parameter_set_hash != candidate.parameter_set.content_hash,
+                candidate_set_hash is not None
+                and candidate.candidate_set_hash != candidate_set_hash,
             )
         ):
             raise ExperimentResultsReadModelError(
@@ -335,11 +339,13 @@ class ExperimentResultsReadService:
         )
         results = sum(item.experiment_result_id is not None for item in views)
         complete = all(
-            item.execution_status in {
+            item.execution_status
+            in {
                 CandidateExecutionStatus.COMPLETED.value,
                 CandidateExecutionStatus.FAILED.value,
             }
-            and item.result_status in {
+            and item.result_status
+            in {
                 ExperimentResultStatus.COMPLETED,
                 ExperimentResultStatus.FAILED,
                 ExperimentResultStatus.NOT_EVALUABLE,

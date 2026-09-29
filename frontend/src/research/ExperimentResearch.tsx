@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { strategyApi } from "../strategy/api";
 import { researchApi, ResearchApiError } from "./api";
+import { parameterValueDisplay, semanticTargetDisplay, type ParameterLabels } from "./semanticTargetDisplay";
 import { GridSearchPanel } from "./GridSearchPanel";
 import { OptimizationResultsExplorer } from "./OptimizationResultsExplorer";
 import type {
@@ -15,15 +17,29 @@ import type {
   SelectionRequest,
 } from "./types";
 
-interface ExperimentResearchProps {
-  onBack: () => void;
-}
-
 const selectionMethods: Array<{ value: SelectionMethod; label: string }> = [
   { value: "researcher_judgment", label: "Researcher judgment" },
   { value: "constraint_filtered_researcher_selection", label: "Constraint-filtered researcher selection" },
   { value: "manual_research_selection", label: "Manual research selection" },
 ];
+
+const resultMetrics = [
+  ["cagr", "CAGR"], ["total_return", "Total Return"], ["max_drawdown", "Max Drawdown"],
+  ["sharpe_ratio", "Sharpe Ratio"], ["calmar_ratio", "Calmar Ratio"],
+] as const;
+
+function ParameterDisplay({ candidate, labels }: { candidate: CandidateResult; labels: ParameterLabels }) {
+  const nested = candidate.parameter_set.values;
+  const values = typeof nested === "object" && nested !== null && !Array.isArray(nested) ? nested : candidate.parameter_set;
+  return <>
+    {Object.entries(values).map(([name, value]) => {
+      const display = labels[name];
+      const text = parameterValueDisplay(value, display?.unit);
+      return <div key={name}>{display?.label ?? name}：{text}</div>;
+    })}
+    <details><summary>Canonical parameters</summary><pre className="parameter-json">{safeJson(candidate.parameter_set)}</pre></details>
+  </>;
+}
 
 function safeJson(value: unknown): string {
   try {
@@ -62,6 +78,7 @@ function CandidateTable({
   persistedSelection,
   compatibility,
   onSelect,
+  parameterLabels,
 }: {
   candidates: CandidateResult[];
   objective: Map<string, ObjectiveState>;
@@ -69,6 +86,7 @@ function CandidateTable({
   persistedSelection: SelectionDecision | null;
   compatibility: CompatibilityDiagnostic | null;
   onSelect: (candidate: CandidateResult) => void;
+  parameterLabels: ParameterLabels;
 }) {
   return (
     <div className="table-scroll">
@@ -88,24 +106,24 @@ function CandidateTable({
                 <td>{candidate.candidate_index}</td>
                 <td className="research-hash" title={candidate.candidate_id}>{candidate.candidate_id}</td>
                 <td>
-                  <details>
-                    <summary>View parameters</summary>
-                    <pre className="parameter-json">{safeJson(candidate.parameter_set)}</pre>
-                  </details>
+                  <ParameterDisplay candidate={candidate} labels={parameterLabels} />
                   <small className="research-hash">{candidate.parameter_set_hash}</small>
                 </td>
                 <td>
                   <span className={`status-pill ${candidate.result_status === "completed" ? "is-valid" : "is-warning"}`}>
                     {candidate.result_status === "not_evaluable" ? "NOT_EVALUABLE" : statusLabel(candidate.result_status)}
                   </span>
+                  {candidate.failure_code && <small className="cell-note">{candidate.failure_code}</small>}
                   {candidate.failure_summary && <small className="cell-note">{candidate.failure_summary}</small>}
+                  {candidate.failure_stage && <small className="cell-note">Stage: {candidate.failure_stage}</small>}
+                  {candidate.failure_exception_type && <small className="cell-note">Type: {candidate.failure_exception_type}</small>}
                 </td>
                 <td>
                   <span className={`status-pill ${objectiveStateClass(state)}`}>{statusLabel(state)}</span>
                 </td>
                 <td>
-                  {candidate.performance_summary && Object.entries(candidate.performance_summary).slice(0, 4).map(([key, metric]) => (
-                    <div className="metric-line" key={key}><span>{key.replaceAll("_", " ")}</span><strong>{metricText(metric)}</strong></div>
+                  {resultMetrics.map(([key, label]) => (
+                    <div className="metric-line" key={key}><span>{label}</span><strong>{metricText(candidate.performance_summary?.[key])}</strong></div>
                   ))}
                   {!candidate.performance_summary && <span className="muted">NOT_EVALUABLE</span>}
                 </td>
@@ -231,10 +249,18 @@ function HandoffPanel({ handoff, onHandoff, busy }: { handoff: HandoffResponse |
   return <section className="panel handoff-panel"><span className="eyebrow">PHASE 7 HANDOFF</span><h2>Submit frozen selection</h2><p className="muted">This action only hands the persisted selection to the research protocol. It does not run another backtest or change the selected candidate.</p>{!confirming ? <button className="button button-primary" type="button" disabled={busy} onClick={() => setConfirming(true)}>Proceed to PHASE 7 Handoff</button> : <div className="handoff-confirmation" role="dialog" aria-label="Confirm PHASE 7 handoff"><p>This does not execute OOS, run a backtest, reselect a candidate, or regenerate a strategy version. It only hands the persisted selection to PHASE 7.</p><div className="action-buttons"><button className="button button-quiet" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button><button className="button button-primary" type="button" disabled={busy} onClick={onHandoff}>{busy ? "Submitting..." : "Confirm handoff"}</button></div></div>}</section>;
 }
 
-export function ExperimentResearch({ onBack }: ExperimentResearchProps) {
-  const [protocolId, setProtocolId] = useState("");
-  const [experimentId, setExperimentId] = useState("");
+export interface ExperimentResearchProps {
+  onBack: () => void;
+  initialProtocolId?: string;
+  initialExperimentId?: string;
+  onOpenOos?: (protocolId: string) => void;
+}
+
+export function ExperimentResearch({ onBack, initialProtocolId = "", initialExperimentId = "", onOpenOos }: ExperimentResearchProps) {
+  const [protocolId, setProtocolId] = useState(initialProtocolId);
+  const [experimentId, setExperimentId] = useState(initialExperimentId);
   const [results, setResults] = useState<ExperimentResults | null>(null);
+  const [parameterLabels, setParameterLabels] = useState<ParameterLabels>({});
   const [compatibility, setCompatibility] = useState<CompatibilityDiagnostic | null>(null);
   const [objective, setObjective] = useState<ObjectiveEvaluationResponse | null>(null);
   const [selection, setSelection] = useState<SelectionDecision | null>(null);
@@ -244,6 +270,27 @@ export function ExperimentResearch({ onBack }: ExperimentResearchProps) {
   const [error, setError] = useState<ResearchApiError | string | null>(null);
 
   const objectiveByCandidate = useMemo(() => new Map((objective?.evaluations ?? []).map((item) => [item.candidate_id, item.evaluation.overall_constraint_state])), [objective]);
+
+  useEffect(() => {
+    let active = true;
+    setParameterLabels({});
+    if (!results) return;
+    void (async () => {
+      try {
+        const experiment = await researchApi.getExperiment(results.experiment_id);
+        if (experiment.base_strategy_version_id !== results.base_strategy_version_id || experiment.base_strategy_version_hash !== results.base_strategy_version_hash) return;
+        const [version, catalog] = await Promise.all([
+          strategyApi.getVersion(experiment.strategy_definition_id, results.base_strategy_version_id),
+          strategyApi.getSemanticTargets(experiment.strategy_definition_id, results.base_strategy_version_id),
+        ]);
+        if (!active || version.content_hash !== results.base_strategy_version_hash || catalog.strategy_version_hash !== results.base_strategy_version_hash) return;
+        setParameterLabels(Object.fromEntries(catalog.targets.filter((target) => target.supported).map((target) => [target.parameter_name, semanticTargetDisplay(target, version.configuration)])));
+      } catch {
+        // Canonical parameters remain readable when display metadata is unavailable.
+      }
+    })();
+    return () => { active = false; };
+  }, [results]);
 
   async function loadResearch() {
     const protocol = protocolId.trim();
@@ -308,6 +355,10 @@ export function ExperimentResearch({ onBack }: ExperimentResearchProps) {
 
   const candidates = results ? [...results.candidates].sort((a, b) => a.candidate_index - b.candidate_index) : [];
 
+  useEffect(() => {
+    if (initialProtocolId && initialExperimentId) void loadResearch();
+  }, [initialExperimentId, initialProtocolId]);
+
   return (
     <main className="research-shell">
       <header className="backtest-topbar">
@@ -323,10 +374,10 @@ export function ExperimentResearch({ onBack }: ExperimentResearchProps) {
         <section className="panel"><div className="section-header compact"><div><span className="eyebrow">EXPERIMENT SUMMARY</span><h2>{results.experiment_id}</h2></div><span className="status-pill">{statusLabel(results.experiment_status)}</span></div><dl className="research-detail-list summary-list"><dt>Protocol</dt><dd>{results.protocol_id}</dd><dt>IS range</dt><dd>{results.is_start} to {results.is_end}</dd><dt>Candidates</dt><dd>{results.summary.candidate_count}</dd><dt>Completed</dt><dd>{results.summary.completed_count}</dd><dt>Failed</dt><dd>{results.summary.failed_count}</dd><dt>Not evaluable</dt><dd>{results.summary.not_evaluable_count}</dd><dt>Pending / running</dt><dd>{results.summary.pending_count} / {results.summary.running_count}</dd><dt>Completeness</dt><dd>{results.summary.completeness_status}</dd><dt>Candidate set hash</dt><dd className="research-hash">{results.candidate_set?.candidate_set_hash ?? "Unavailable"}</dd><dt>Parameter space hash</dt><dd className="research-hash">{results.parameter_space_hash}</dd><dt>Objective hash</dt><dd className="research-hash">{results.objective_spec_hash}</dd><dt>Engine / analytics</dt><dd>{results.engine_version} / {results.analysis_version}</dd></dl></section>
         <CompatibilityPanel diagnostic={compatibility} />
         <ObjectivePanel response={objective} />
-        <OptimizationResultsExplorer protocolId={results.protocol_id} experimentId={results.experiment_id} />
-        <section className="panel"><div className="section-header compact"><div><span className="eyebrow">CANDIDATE RESULTS</span><h2>Persisted IS evidence</h2></div><span className="muted">Candidate index order</span></div><CandidateTable candidates={candidates} objective={objectiveByCandidate} selectedCandidateId={selectedCandidate?.candidate_id ?? ""} persistedSelection={selection} compatibility={compatibility} onSelect={setSelectedCandidate} /></section>
+        <OptimizationResultsExplorer protocolId={results.protocol_id} experimentId={results.experiment_id} parameterLabels={parameterLabels} />
+        <section className="panel"><div className="section-header compact"><div><span className="eyebrow">CANDIDATE RESULTS</span><h2>Persisted IS evidence</h2></div><span className="muted">Candidate index order</span></div><CandidateTable candidates={candidates} parameterLabels={parameterLabels} objective={objectiveByCandidate} selectedCandidateId={selectedCandidate?.candidate_id ?? ""} persistedSelection={selection} compatibility={compatibility} onSelect={setSelectedCandidate} /></section>
         {selectedCandidate && !selection && <SelectionPanel candidate={selectedCandidate} objectiveState={objectiveByCandidate.get(selectedCandidate.candidate_id)} onCancel={() => setSelectedCandidate(null)} onSubmit={(request) => void submitSelection(request)} busy={busy === "selection"} />}
-        {selection && <><PersistedSelection selection={selection} /><HandoffPanel handoff={handoff} onHandoff={() => void submitHandoff()} busy={busy === "handoff"} /></>}
+        {selection && <><PersistedSelection selection={selection} /><HandoffPanel handoff={handoff} onHandoff={() => void submitHandoff()} busy={busy === "handoff"} />{handoff && onOpenOos && <button className="button button-primary" type="button" onClick={() => onOpenOos(protocolId)}>Open Official OOS</button>}</>}
       </>}
     </main>
   );

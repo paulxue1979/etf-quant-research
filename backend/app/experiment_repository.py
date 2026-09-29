@@ -72,6 +72,18 @@ class ExperimentEventRecord:
     provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ExperimentReadPage:
+    """Read-model result that isolates unavailable historical bindings."""
+
+    items: tuple[Experiment, ...]
+    skipped_reasons: tuple[str, ...] = ()
+
+    @property
+    def skipped_count(self) -> int:
+        return len(self.skipped_reasons)
+
+
 class ExperimentRepository:
     """Durable storage for PHASE 8C experiment definitions and candidates."""
 
@@ -1093,6 +1105,49 @@ class ExperimentRepository:
                 self._validate_external_bindings(experiment)
                 self._validate_parameter_space_row(connection, experiment.parameter_space)
             return experiments
+        except ExperimentPersistenceError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:
+            raise ExperimentPersistenceError("stored experiments failed integrity checks") from exc
+        finally:
+            connection.close()
+
+    def list_for_read(self, protocol_id: str | None = None) -> ExperimentReadPage:
+        """Load a resilient read model without weakening strict persistence reads.
+
+        Historical experiments can outlive an external StrategyVersion.  Such a
+        row remains an integrity failure for execution and for ``get``/``list``;
+        it must not make the researcher-facing library unavailable.  Local
+        experiment corruption still raises, while only external binding failures
+        are isolated to the affected row.
+        """
+        connection = self._connect()
+        try:
+            query = "SELECT * FROM experiments"
+            parameters: tuple[object, ...] = ()
+            if protocol_id is not None:
+                query += " WHERE protocol_id = ?"
+                parameters = (protocol_id,)
+            query += " ORDER BY created_at ASC, experiment_id ASC"
+            rows = connection.execute(query, parameters).fetchall()
+            items: list[Experiment] = []
+            skipped_reasons: list[str] = []
+            for row in rows:
+                experiment = self._decode_experiment(row)
+                self._validate_parameter_space_row(connection, experiment.parameter_space)
+                try:
+                    self._validate_external_bindings(experiment)
+                except ExperimentPersistenceError as exc:
+                    if str(exc) not in {
+                        "STRATEGY_VERSION_NOT_FOUND",
+                        "STRATEGY_VERSION_HASH_MISMATCH",
+                        "RESEARCH_PROTOCOL_NOT_FOUND",
+                    }:
+                        raise
+                    skipped_reasons.append(str(exc))
+                    continue
+                items.append(experiment)
+            return ExperimentReadPage(tuple(items), tuple(skipped_reasons))
         except ExperimentPersistenceError:
             raise
         except (sqlite3.Error, TypeError, ValueError, OverflowError, json.JSONDecodeError) as exc:

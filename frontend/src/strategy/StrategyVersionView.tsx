@@ -12,6 +12,7 @@ interface StrategyVersionViewProps {
   onClone: (request: { new_strategy_id: string; name: string; description: string }) => void;
   onCompare: (versionId: string) => void;
   onRunBacktest: () => void;
+  onCreateExperiment?: () => void;
 }
 
 function value(value: unknown): string {
@@ -20,7 +21,7 @@ function value(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function StrategyVersionView({ version, versions, diff, onBack, onCreateDraft, onClone, onCompare, onRunBacktest }: StrategyVersionViewProps) {
+export function StrategyVersionView({ version, versions, diff, onBack, onCreateDraft, onClone, onCompare, onRunBacktest, onCreateExperiment }: StrategyVersionViewProps) {
   const [compareId, setCompareId] = useState("");
   const [cloneOpen, setCloneOpen] = useState(false);
   const [cloneId, setCloneId] = useState(`${version.strategy_id}-clone`);
@@ -44,7 +45,7 @@ export function StrategyVersionView({ version, versions, diff, onBack, onCreateD
   const mode = version.active_mode ?? configuration.strategy_mode ?? "rule_based";
   return (
     <main className="app-shell strategy-version-shell">
-      <header className="topbar"><div><span className="eyebrow">IMMUTABLE STRATEGY VERSION</span><h1>{configuration.name} · v{version.version_number}</h1><p>{version.version_id}</p></div><div className="topbar-status"><button className="button button-secondary" type="button" onClick={onBack}>Back to library</button><button className="button button-primary" type="button" onClick={onRunBacktest}>Run Backtest</button></div></header>
+      <header className="topbar"><div><span className="eyebrow">IMMUTABLE STRATEGY VERSION</span><h1>{configuration.name} · v{version.version_number}</h1><p>{version.version_id}</p></div><div className="topbar-status"><button className="button button-secondary" type="button" onClick={onBack}>Back to library</button><button className="button button-primary" type="button" onClick={onRunBacktest}>Run Backtest</button>{onCreateExperiment && <button className="button button-primary" type="button" onClick={onCreateExperiment}>Create Experiment</button>}</div></header>
       <section className="panel version-readonly-banner"><strong>READ ONLY</strong><span>This snapshot cannot be edited. Create a draft to continue editing.</span><div className="action-buttons"><button className="button button-secondary" type="button" onClick={onCreateDraft}>Create Draft From Version</button><button className="button button-quiet" type="button" onClick={() => setCloneOpen((open) => !open)}>Clone / Save As New Strategy</button></div></section>
       {cloneOpen && <section className="panel clone-panel"><div className="inline-fields"><label>New strategy ID<input value={cloneId} onChange={(event) => setCloneId(event.target.value)} /></label><label>Name<input value={cloneName} onChange={(event) => setCloneName(event.target.value)} /></label><label>Description<input value={cloneDescription} onChange={(event) => setCloneDescription(event.target.value)} /></label></div><button className="button button-primary" type="button" disabled={!cloneId.trim() || !cloneName.trim()} onClick={() => onClone({ new_strategy_id: cloneId.trim(), name: cloneName.trim(), description: cloneDescription })}>Create new strategy draft</button></section>}
       <section className="panel"><div className="section-header"><div><span className="eyebrow">SEMANTIC SNAPSHOT</span><h2>Strategy configuration</h2></div><span className="preview-tag">{mode}</span></div><div className="preview-grid"><div><span>Assets</span><strong>{assets || "None"}</strong></div><div><span>Rules</span><strong>{configuration.rules.length}</strong></div><div><span>Source draft</span><strong>{version.source_draft_revision ? `r${version.source_draft_revision}` : "Legacy / external"}</strong></div><div><span>Content hash</span><strong>{version.content_hash.slice(0, 12)}</strong></div></div><details className="version-details" open><summary>Read-only configuration JSON</summary><pre>{JSON.stringify(configuration, null, 2)}</pre></details></section>

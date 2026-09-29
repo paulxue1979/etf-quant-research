@@ -112,6 +112,9 @@ class ExperimentCandidateView:
     performance_summary: Mapping[str, Any] = MappingProxyType({})
     failure_code: str | None = None
     failure_summary: str | None = None
+    failure_stage: str | None = None
+    failure_exception_type: str | None = None
+    failure_context: Mapping[str, Any] = MappingProxyType({})
     created_at: datetime | None = None
     completed_at: datetime | None = None
 
@@ -122,14 +125,12 @@ class ExperimentCandidateView:
         object.__setattr__(self, "data_snapshot_reference", _mapping(self.data_snapshot_reference))
         object.__setattr__(self, "configuration_snapshot", _mapping(self.configuration_snapshot))
         object.__setattr__(self, "performance_summary", _mapping(self.performance_summary))
+        object.__setattr__(self, "failure_context", _mapping(self.failure_context))
         if self.price_field_used is not None and not isinstance(self.price_field_used, PriceField):
             object.__setattr__(self, "price_field_used", PriceField(self.price_field_used))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            key: _thaw(value)
-            for key, value in self.__dict__.items()
-        }
+        return {key: _thaw(value) for key, value in self.__dict__.items()}
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ import { useEffect, useReducer, useState } from "react";
 
 import { BacktestLab } from "./backtest/BacktestLab";
 import { ExperimentResearch } from "./research/ExperimentResearch";
+import { ExperimentWorkbench } from "./research/ExperimentWorkbench";
 import { OosResearchView } from "./research/OosResearchView";
 import { strategyApi, StrategyApiError } from "./strategy/api";
 import { RegimeStateMachineEditor } from "./strategy/RegimeStateMachineEditor";
@@ -524,7 +525,7 @@ function Preview({ state }: { state: EditorState }) {
 }
 
 export function App() {
-  const [view, setView] = useState<"strategy" | "library" | "version" | "backtest" | "research" | "oos">("strategy");
+  const [view, setView] = useState<"strategy" | "library" | "version" | "backtest" | "research" | "workbench" | "oos">("strategy");
   const [state, dispatch] = useReducer(editorReducer, undefined, () => {
     return createDefaultEditorState();
   });
@@ -537,6 +538,7 @@ export function App() {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [strategyDiagnostics, setStrategyDiagnostics] = useState<StrategyDiagnostics | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<StrategyVersion | null>(null);
+  const [researchIds, setResearchIds] = useState<{ protocolId: string; experimentId: string }>({ protocolId: "", experimentId: "" });
   const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const [assetRemovalConflict, setAssetRemovalConflict] = useState<{ asset: string; references: AssetReferenceDescriptor[] } | null>(null);
@@ -876,9 +878,10 @@ export function App() {
 
   return (
     view === "library" ? <StrategyLibrary strategies={strategies} diagnostics={strategyDiagnostics} loading={libraryLoading} onNew={(request) => void createNewStrategy(request)} onOpenDraft={(id) => navigateWithDraftGuard(() => void openDraft(id))} onOpenLatest={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onOpenHistory={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onClone={(id, versionId) => navigateWithDraftGuard(() => void loadVersion(versionId, id))} onTrash={(id) => void trashStrategy(id)} onRestore={(id) => void restoreStrategy(id)} onProtect={(id, value) => void protectStrategy(id, value)} onPermanentDelete={(id) => void permanentlyDeleteStrategy(id)} onBulkTrash={(ids) => void bulkTrashStrategies(ids)} onBack={() => navigateWithDraftGuard(() => setView("strategy"))} /> :
-    view === "version" && selectedVersion ? <StrategyVersionView version={selectedVersion} versions={versions} diff={versionDiff} onBack={() => navigateWithDraftGuard(() => setView("library"))} onCreateDraft={() => void createDraftFromVersion()} onClone={(request) => void cloneFromVersion(request)} onCompare={(id) => void compareVersion(id)} onRunBacktest={() => setView("backtest")} /> :
+    view === "version" && selectedVersion ? <StrategyVersionView version={selectedVersion} versions={versions} diff={versionDiff} onBack={() => navigateWithDraftGuard(() => setView("library"))} onCreateDraft={() => void createDraftFromVersion()} onClone={(request) => void cloneFromVersion(request)} onCompare={(id) => void compareVersion(id)} onRunBacktest={() => setView("backtest")} onCreateExperiment={() => setView("workbench")} /> :
     view === "backtest" ? <BacktestLab initialStrategyId={selectedVersion?.strategy_id} initialVersionId={selectedVersion?.version_id} onOpenStrategyVersion={(strategyId, versionId) => void loadVersion(versionId, strategyId)} onBack={() => setView("strategy")} /> :
-    view === "research" ? <ExperimentResearch onBack={() => setView("strategy")} /> :
+    view === "research" ? <ExperimentResearch initialProtocolId={researchIds.protocolId} initialExperimentId={researchIds.experimentId} onBack={() => setView("strategy")} onOpenOos={(protocolId) => { setResearchIds((current) => ({ ...current, protocolId })); setView("oos"); }} /> :
+    view === "workbench" ? <ExperimentWorkbench initialVersion={selectedVersion} onBack={() => setView("version")} onOpenResults={(protocolId, experimentId) => { setResearchIds({ protocolId, experimentId }); setView("research"); }} /> :
     view === "oos" ? <OosResearchView onBack={() => setView("strategy")} /> :
     <main className="app-shell">
       <header className="topbar">

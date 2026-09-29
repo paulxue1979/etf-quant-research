@@ -19,6 +19,7 @@ from backend.app.strategy_repository import StrategyRepository
 from backtest import BacktestConfig
 from backtest import RebalanceFrequency as BacktestRebalanceFrequency
 from backtest import RebalancePolicy as BacktestRebalancePolicy
+from backtest.exceptions import StrategyBacktestIntegrationError
 from data.exceptions import TiingoTimeoutError
 from data.models import (
     DataSource,
@@ -445,6 +446,66 @@ def test_rejects_oos_data_price_field_mismatch_and_missing_asset(tmp_path) -> No
         assert outcome.failure_code == code
         assert execution is not None and execution.status is CandidateExecutionStatus.FAILED
         assert execution.failure_retryable is False
+
+
+def test_backtest_failure_preserves_safe_structured_diagnostic_and_reload(
+    tmp_path, monkeypatch
+) -> None:
+    service, _, _, executions, _, experiment = _setup(tmp_path)
+
+    def fail_backtest(*args, **kwargs):
+        raise StrategyBacktestIntegrationError("strategy and backtest rebalance frequencies differ")
+
+    monkeypatch.setattr("research.execution_service.run_strategy_backtest", fail_backtest)
+    outcome = service.execute(
+        experiment_id=experiment.experiment_id,
+        candidate_index=0,
+        parameter_bindings=(_binding(),),
+    )
+
+    assert outcome.failure_code == "BACKTEST_CONFIGURATION_ERROR"
+    assert outcome.failure_stage == "backtest"
+    assert outcome.failure_exception_type == "StrategyBacktestIntegrationError"
+    assert outcome.failure_context["candidate_id"] == outcome.candidate_id
+    assert outcome.failure_context["is_start"] == IS_START.isoformat()
+    assert outcome.failure_context["price_field"] == "adjusted_close"
+    execution = executions.get_execution(outcome.candidate_execution_id or "")
+    assert execution is not None
+    assert execution.failure_code == outcome.failure_code
+    assert execution.failure_stage == "backtest"
+    assert execution.failure_exception_type == "StrategyBacktestIntegrationError"
+    assert execution.failure_context["candidate_id"] == outcome.candidate_id
+
+
+def test_is_boundary_allows_effective_first_trading_day_inside_requested_range(tmp_path) -> None:
+    service, _, _, _, _, experiment = _setup(tmp_path)
+    integration = type(
+        "Integration",
+        (),
+        {
+            "backtest_result": type(
+                "BacktestResult",
+                (),
+                {
+                    "start_date": experiment.is_start_date + timedelta(days=2),
+                    "end_date": experiment.is_end_date,
+                    "orders": (),
+                    "equity_curve": (),
+                },
+            )()
+        },
+    )()
+
+    service._assert_is_only_backtest(integration, experiment)
+    analysis = type(
+        "Analysis",
+        (),
+        {
+            "start_date": experiment.is_start_date + timedelta(days=2),
+            "end_date": experiment.is_end_date,
+        },
+    )()
+    service._assert_is_only_analysis(analysis, experiment)
 
 
 def test_transient_data_failure_is_retryable_and_reuses_candidate_identity(tmp_path) -> None:

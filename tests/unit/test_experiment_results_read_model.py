@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -81,6 +82,53 @@ def test_partial_read_model_preserves_order_and_completed_result(tmp_path) -> No
     assert model.summary.result_count == 1
     assert model.summary.completeness_status == "partial"
     assert "rank" not in model.to_dict()
+
+
+def test_read_model_accepts_effective_trading_range_inside_requested_is(tmp_path) -> None:
+    execution_service, experiments, _, executions, _, experiment = _setup(tmp_path)
+    strategies = execution_service._strategies
+    outcome = execution_service.execute(
+        experiment_id=experiment.experiment_id,
+        candidate_index=0,
+        parameter_bindings=(_binding(),),
+    )
+    assert outcome.backtest_result is not None
+    assert outcome.performance_analysis_result is not None
+    effective_start = outcome.is_start + timedelta(days=2)
+    effective_outcome = replace(
+        outcome,
+        backtest_result=replace(
+            outcome.backtest_result,
+            backtest_result=replace(
+                outcome.backtest_result.backtest_result,
+                start_date=effective_start,
+            ),
+        ),
+        performance_analysis_result=replace(
+            outcome.performance_analysis_result,
+            start_date=effective_start,
+        ),
+    )
+    finalizer = ExperimentResultFinalizationService(
+        backtest_repository=BacktestRepository(tmp_path / "research.db"),
+        experiment_result_repository=ExperimentResultRepository(tmp_path / "research.db"),
+        candidate_execution_repository=executions,
+        experiment_repository=experiments,
+        clock=lambda: execution_service._clock(),
+    )
+    run = finalizer._build_backtest_run(effective_outcome)
+    BacktestRepository(tmp_path / "research.db").create(run)
+    ExperimentResultRepository(tmp_path / "research.db").create(
+        ExperimentResult.from_outcome(
+            effective_outcome,
+            backtest_run_id=run.backtest_run_id,
+            created_at=execution_service._clock(),
+        )
+    )
+
+    model = _service(tmp_path, experiments, executions, strategies).get(experiment.experiment_id)
+
+    assert model.candidates[0].result_status is ExperimentResultStatus.COMPLETED
 
 
 def test_failed_candidate_remains_visible_with_safe_summary(tmp_path) -> None:

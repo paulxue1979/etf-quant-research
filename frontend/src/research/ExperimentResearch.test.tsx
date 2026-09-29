@@ -49,10 +49,16 @@ function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function mockResearchApi({ selection = false, handoff = false }: { selection?: boolean; handoff?: boolean } = {}) {
+function mockResearchApi({ selection = false, handoff = false, semanticHash, resultsValue = results }: { selection?: boolean; handoff?: boolean; semanticHash?: string; resultsValue?: unknown } = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/results")) return json(results);
+    if (url.endsWith("/results")) return json(resultsValue);
+    if (semanticHash && url.endsWith("/research/experiments/experiment-1")) return json({ strategy_definition_id: "base", base_strategy_version_id: "base-v1", base_strategy_version_hash: results.base_strategy_version_hash });
+    if (semanticHash && url.endsWith("/versions/base-v1")) return json({ content_hash: semanticHash, configuration: { transitions: [{ transition_id: "transition-10", from_state: "RECOVERY_HOLD", to_state: "FULL_RISK_ON" }] } });
+    if (semanticHash && url.endsWith("/semantic-targets")) return json({ strategy_version_hash: semanticHash, targets: [
+      { parameter_name: "nested_transition-10_0_threshold", target_kind: "nested_condition_threshold", value_type: "relative_threshold", descriptor: { transition_id: "transition-10" }, supported: true },
+      { parameter_name: "state_FULL_RISK_ON_QQQ_weight", target_kind: "state_allocation_weight", value_type: "allocation_weight", descriptor: { state_id: "FULL_RISK_ON", symbol: "QQQ" }, supported: true },
+    ] });
     if (url.endsWith("/comparison")) return json({ status: "compatible", is_compatible: true, experiment_id: "experiment-1", protocol_id: "protocol-1", reference_candidate_id: "candidate-0", compared_candidate_ids: ["candidate-1"], unavailable_candidate_ids: ["candidate-2"], checked_dimensions: [], mismatches: [] });
     if (url.endsWith("/objective-evaluation")) return json(objective);
     if (url.endsWith("/selection") && init?.method === "POST") return json({ selection_id: "selection-1", selection_hash: "s".repeat(64), experiment_id: "experiment-1", protocol_id: "protocol-1", selected_candidate_id: "candidate-0", selected_candidate_index: 0, selected_parameter_set_hash: "0".repeat(64), selected_experiment_result_id: "result-0", selected_result_hash: "r".repeat(64), selected_derived_strategy_version_id: "derived-v0", selected_derived_strategy_content_hash: "d".repeat(64), objective_hash: "o".repeat(64), candidate_set_hash: "c".repeat(64), parameter_space_hash: "p".repeat(64), selection_method: "researcher_judgment", researcher_rationale: "Reviewed frozen IS evidence.", evidence: {}, created_at: "2026-09-13T00:00:00Z" });
@@ -69,6 +75,34 @@ afterEach(() => {
 });
 
 describe("Experiment Research", () => {
+  it.each([true, false])("uses only matching frozen-version display metadata (matching=%s) and keeps all minimum metrics", async (matching) => {
+    const parameters = { values: { "nested_transition-10_0_threshold": 0.03, state_FULL_RISK_ON_QQQ_weight: 0.9 } };
+    const persisted = { ...results, candidates: [{ ...candidate(0), parameter_set: parameters, performance_summary: {
+      analysis_version: "v1", engine_version: "v1", is_start: "2020-01-01", is_end: "2020-12-31",
+      cagr: { value: 0.12, status: "available" }, total_return: { value: 2.91, status: "available" }, max_drawdown: { value: -0.37, status: "available" },
+    } }] };
+    const snapshot = JSON.stringify(persisted);
+    const fetchMock = mockResearchApi({ semanticHash: matching ? results.base_strategy_version_hash : "wrong-hash", resultsValue: persisted });
+    render(<ExperimentResearch onBack={vi.fn()} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Protocol ID" }), { target: { value: "protocol-1" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Experiment ID" }), { target: { value: "experiment-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load experiment" }));
+    await screen.findByText("Total Return");
+    expect(screen.getByText("2.9100")).toBeInTheDocument();
+    expect(screen.getByText("CAGR")).toBeInTheDocument();
+    expect(screen.getByText("Max Drawdown")).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/semantic-targets"))).toBe(true));
+    if (matching) {
+      expect(await screen.findByText("恢复持有 → 全风险开启｜触发阈值：3%")).toBeInTheDocument();
+      expect(screen.getByText("全风险开启｜QQQ 目标仓位：90%")).toBeInTheDocument();
+    } else {
+      expect(screen.getByText("nested_transition-10_0_threshold：0.03")).toBeInTheDocument();
+      expect(screen.queryByText("恢复持有 → 全风险开启｜触发阈值：3%")).not.toBeInTheDocument();
+    }
+    expect(screen.getByText("Canonical parameters").parentElement).toHaveTextContent("state_FULL_RISK_ON_QQQ_weight");
+    expect(JSON.stringify(persisted)).toBe(snapshot);
+  });
+
   it("renders deterministic candidate order, failed evidence, and explicit objective state", async () => {
     mockResearchApi();
     render(<ExperimentResearch onBack={vi.fn()} />);
@@ -81,7 +115,7 @@ describe("Experiment Research", () => {
     expect(rows[2]).toHaveTextContent("1");
     expect(screen.getByText("FAILED")).toBeInTheDocument();
     expect(screen.getAllByText("FAIL")).not.toHaveLength(0);
-    expect(screen.getAllByText("cagr")).not.toHaveLength(0);
+    expect(screen.getAllByText("CAGR")).not.toHaveLength(0);
     expect(screen.queryByText(/rank|winner|recommend|best|score/i)).not.toBeInTheDocument();
   });
 

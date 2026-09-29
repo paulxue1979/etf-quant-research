@@ -336,6 +336,9 @@ class CandidateExecutionRepository:
         failure_code: str,
         failure_message: str,
         retryable: bool,
+        failure_stage: str | None = None,
+        failure_exception_type: str | None = None,
+        failure_context: dict[str, Any] | None = None,
     ) -> CandidateExecution:
         return self._transition(
             execution_id,
@@ -346,11 +349,19 @@ class CandidateExecutionRepository:
                 failure_code=failure_code,
                 failure_message=failure_message,
                 retryable=retryable,
+                failure_stage=failure_stage,
+                failure_exception_type=failure_exception_type,
+                failure_context=failure_context,
             ),
             event_type="EXECUTION_FAILED",
             actor=actor,
             occurred_at=failed_at,
-            payload={"failure_code": failure_code, "retryable": retryable},
+            payload={
+                "failure_code": failure_code,
+                "retryable": retryable,
+                "failure_stage": failure_stage,
+                "failure_exception_type": failure_exception_type,
+            },
         )
 
     def retry_failed(

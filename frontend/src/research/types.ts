@@ -1,6 +1,40 @@
 export type ResultStatus = "completed" | "failed" | "not_evaluable" | "missing_result" | "inconsistent";
 export type ExecutionStatus = "pending" | "running" | "completed" | "failed" | null;
 
+export interface ExperimentWorkflowRecord {
+  experiment_id: string;
+  strategy_definition_id: string;
+  protocol_id: string;
+  display_name: string;
+  description: string;
+  base_strategy_version_id: string;
+  base_strategy_version_hash: string;
+  is_start_date: string;
+  is_end_date: string;
+  status: string;
+  parameter_space: {
+    parameters: Array<{ name: string; type: string; allowed_values: unknown[] }>;
+  };
+  grid_definition?: Record<string, unknown>;
+  provenance?: Record<string, unknown>;
+}
+
+export interface ExperimentWorkflowList {
+  items: ExperimentWorkflowRecord[];
+  total: number;
+  skipped_count?: number;
+  warnings?: string[];
+}
+
+export interface ResearchProtocolDetail {
+  protocol: Record<string, unknown>;
+  candidate_sets: Array<Record<string, unknown>>;
+  selections: Array<Record<string, unknown>>;
+  freezes: Array<Record<string, unknown>>;
+  oos_evaluations: Array<Record<string, unknown>>;
+  data_provenance_notice?: string;
+}
+
 export interface MetricValue {
   value: number | null;
   status: "available" | "not_evaluable";
@@ -19,6 +53,9 @@ export interface CandidateResult {
   result_status: ResultStatus;
   failure_code?: string | null;
   failure_summary?: string | null;
+  failure_stage?: string | null;
+  failure_exception_type?: string | null;
+  failure_context?: Record<string, unknown>;
   experiment_result_id?: string | null;
   result_hash?: string | null;
   backtest_run_id?: string | null;

@@ -119,6 +119,9 @@ class CandidateExecution:
     failure_code: str | None = None
     failure_message: str | None = None
     failure_retryable: bool | None = None
+    failure_stage: str | None = None
+    failure_exception_type: str | None = None
+    failure_context: Mapping[str, Any] = MappingProxyType({})
 
     @classmethod
     def pending(
@@ -231,6 +234,24 @@ class CandidateExecution:
                 "failure_message",
                 _text(self.failure_message, "failure_message", max_length=1000),
             )
+        for label in ("failure_stage", "failure_exception_type"):
+            value = getattr(self, label)
+            if value is not None:
+                normalized = _text(value, label, max_length=128)
+                if not _NAME.fullmatch(normalized):
+                    raise InvalidCandidateExecutionError(f"{label} must be a safe identifier")
+                object.__setattr__(self, label, normalized)
+        if not isinstance(self.failure_context, Mapping):
+            raise InvalidCandidateExecutionError("failure_context must be a mapping")
+        try:
+            object.__setattr__(
+                self,
+                "failure_context",
+                MappingProxyType(dict(self.failure_context)),
+            )
+            canonical_json(self.failure_context)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InvalidCandidateExecutionError("failure_context must be canonical JSON") from exc
         if self.failure_retryable is not None and not isinstance(self.failure_retryable, bool):
             raise InvalidCandidateExecutionError("failure_retryable must be a boolean")
         if self.status is CandidateExecutionStatus.RUNNING and not (
@@ -245,6 +266,9 @@ class CandidateExecution:
                 self.failure_code,
                 self.failure_message,
                 self.failure_retryable,
+                self.failure_stage,
+                self.failure_exception_type,
+                self.failure_context or None,
             )
         ):
             raise InvalidCandidateExecutionError("RUNNING execution must not retain final metadata")
@@ -257,6 +281,9 @@ class CandidateExecution:
                 self.failure_code,
                 self.failure_message,
                 self.failure_retryable,
+                self.failure_stage,
+                self.failure_exception_type,
+                self.failure_context or None,
             )
         ):
             raise InvalidCandidateExecutionError(
@@ -276,6 +303,9 @@ class CandidateExecution:
                 self.failure_code,
                 self.failure_message,
                 self.failure_retryable,
+                self.failure_stage,
+                self.failure_exception_type,
+                self.failure_context or None,
             )
         ):
             raise InvalidCandidateExecutionError("PENDING execution must not retain final metadata")
@@ -352,6 +382,9 @@ class CandidateExecution:
         failure_code: str,
         failure_message: str,
         retryable: bool,
+        failure_stage: str | None = None,
+        failure_exception_type: str | None = None,
+        failure_context: Mapping[str, Any] | None = None,
     ) -> CandidateExecution:
         self._require_live_owner(actor, now)
         if not isinstance(retryable, bool):
@@ -364,6 +397,9 @@ class CandidateExecution:
             failure_code=failure_code,
             failure_message=failure_message,
             failure_retryable=retryable,
+            failure_stage=failure_stage,
+            failure_exception_type=failure_exception_type,
+            failure_context=failure_context or {},
             claimed_at=None,
             claimed_by=None,
             lease_expires_at=None,
@@ -384,6 +420,9 @@ class CandidateExecution:
             failure_code=None,
             failure_message=None,
             failure_retryable=None,
+            failure_stage=None,
+            failure_exception_type=None,
+            failure_context={},
         )
 
     def recover_expired(self, *, now: datetime) -> CandidateExecution:
@@ -435,6 +474,9 @@ class CandidateExecution:
             "failure_code": self.failure_code,
             "failure_message": self.failure_message,
             "failure_retryable": self.failure_retryable,
+            "failure_stage": self.failure_stage,
+            "failure_exception_type": self.failure_exception_type,
+            "failure_context": dict(self.failure_context),
         }
         canonical_json(payload)
         return payload
@@ -473,6 +515,9 @@ class CandidateExecution:
                 failure_code=payload.get("failure_code"),
                 failure_message=payload.get("failure_message"),
                 failure_retryable=payload.get("failure_retryable"),
+                failure_stage=payload.get("failure_stage"),
+                failure_exception_type=payload.get("failure_exception_type"),
+                failure_context=payload.get("failure_context", {}),
             )
         except (TypeError, ValueError, OverflowError) as exc:
             raise InvalidCandidateExecutionError("execution payload is malformed") from exc

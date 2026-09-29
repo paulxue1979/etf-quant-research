@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -174,6 +174,31 @@ def test_finalization_rejects_is_range_mismatch(tmp_path) -> None:
 
     with pytest.raises(ExperimentFinalizationError, match="IS range"):
         finalizer.finalize(invalid)
+
+
+def test_finalization_accepts_effective_trading_range_inside_requested_is(tmp_path) -> None:
+    finalizer, outcome, _ = _finalize(tmp_path)
+    assert outcome.backtest_result is not None
+    assert outcome.performance_analysis_result is not None
+    effective_start = outcome.is_start + timedelta(days=2)
+    valid = replace(
+        outcome,
+        backtest_result=replace(
+            outcome.backtest_result,
+            backtest_result=replace(
+                outcome.backtest_result.backtest_result,
+                start_date=effective_start,
+            ),
+        ),
+        performance_analysis_result=replace(
+            outcome.performance_analysis_result,
+            start_date=effective_start,
+        ),
+    )
+
+    result = finalizer.finalize(valid)
+
+    assert result.is_start == outcome.is_start
 
 
 def test_finalization_rejects_price_field_mismatch(tmp_path) -> None:
