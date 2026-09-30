@@ -1,4 +1,4 @@
-import type { StrategyVersionSummary } from "../strategy/types";
+import type { PriceField, StrategyVersionSummary } from "../strategy/types";
 import type {
   BacktestRequest,
   BacktestMarkerReport,
@@ -21,6 +21,7 @@ import type {
   ResearchProtocolStatus,
   ResearchSortBy,
   StrategyCatalogItem,
+  DataAvailabilityProjection,
 } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -80,6 +81,19 @@ export const backtestApi = {
 
   create(request: BacktestRequest): Promise<BacktestRun> {
     return requestJson<BacktestRun>("/backtests", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+
+  getDataAvailability(request: {
+    strategy_id: string;
+    strategy_version_id: string;
+    requested_start: string;
+    requested_end: string;
+    price_field: PriceField;
+  }): Promise<DataAvailabilityProjection> {
+    return requestJson<DataAvailabilityProjection>("/research/data-availability", {
       method: "POST",
       body: JSON.stringify(request),
     });

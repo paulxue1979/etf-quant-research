@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 from analytics.benchmark import BenchmarkEvaluationService
@@ -19,6 +19,7 @@ from data.models import HistoricalDataRequest
 from data.service import HistoricalDataService
 from data.tiingo import TiingoClient
 from indicators.preparation import prepare_strategy_inputs
+from research.data_availability import warmup_start_for_strategy
 from strategies.evaluation import EvaluationContext
 from strategies.strategy_evaluation import evaluate_strategy, required_indicators
 
@@ -60,7 +61,7 @@ class BacktestService:
             )
 
         config = request.to_config(strategy_version.version_id, strategy.rebalance_policy)
-        warmup_start = _warmup_start(request.start_date, strategy_version)
+        warmup_start = warmup_start_for_strategy(request.start_date, strategy_version)
         data = {
             asset.symbol: self._data.get_history(
                 HistoricalDataRequest(
@@ -178,15 +179,7 @@ def create_default_backtest_service() -> BacktestService:
 
 
 def _warmup_start(start_date: date, strategy_version: Any) -> date:
-    requirements = required_indicators(strategy_version)
-    daily_period = max(
-        (item.period for item in requirements if item.timeframe.value == "daily"), default=1
-    )
-    weekly_period = max(
-        (item.period for item in requirements if item.timeframe.value == "weekly"), default=0
-    )
-    lookback = max(daily_period * 3 + 10, weekly_period * 7 + 21)
-    return start_date - timedelta(days=lookback)
+    return warmup_start_for_strategy(start_date, strategy_version)
 
 
 __all__ = ["BacktestService", "BacktestServiceError", "create_default_backtest_service"]

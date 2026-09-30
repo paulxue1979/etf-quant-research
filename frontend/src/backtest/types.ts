@@ -7,6 +7,42 @@ export interface StrategyCatalogItem {
   latest_version: number | null;
 }
 
+export interface DataAvailabilityAsset {
+  symbol: string;
+  first_available_date: string | null;
+  last_available_date: string | null;
+  requested_before_inception: boolean | null;
+  requested_after_last_available: boolean;
+  requested_before_observed_history?: boolean;
+  availability_scope?: string;
+  timeframes?: string[];
+  warnings?: DataAvailabilityIssue[];
+  blocking_issues?: DataAvailabilityIssue[];
+}
+
+export interface DataAvailabilityIssue {
+  code: string;
+  message: string;
+}
+
+export interface DataAvailabilityProjection {
+  status: "READY" | "READY_WITH_WARNINGS" | "BLOCKED";
+  strategy_id?: string;
+  strategy_version_id?: string;
+  strategy_version_content_hash?: string;
+  price_field?: PriceField;
+  requested_start: string;
+  requested_end: string;
+  effective_start_expected: string | null;
+  effective_end_expected: string | null;
+  warmup_start: string;
+  assets: DataAvailabilityAsset[];
+  indicator_requirements: Array<{ asset: string; kind: string; period: number; price_field: string; timeframe: string }>;
+  info: DataAvailabilityIssue[];
+  warnings: DataAvailabilityIssue[];
+  blocking_issues: DataAvailabilityIssue[];
+}
+
 export interface CommissionRequest {
   rate: number;
   per_order: number;

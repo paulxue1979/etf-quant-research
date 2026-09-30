@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import { strategyApi } from "../strategy/api";
 import type { SemanticTargetCatalog, StrategyVersion } from "../strategy/types";
+import { BacktestApiError, backtestApi } from "../backtest/api";
+import { DataAvailabilityPanel } from "../backtest/DataAvailabilityPanel";
+import type { DataAvailabilityProjection } from "../backtest/types";
 import { researchApi, ResearchApiError } from "./api";
 import { buildParameters, parameterRow, percentageType, type ParameterRow } from "./experimentParameters";
 import { semanticTargetDisplay } from "./semanticTargetDisplay";
@@ -41,6 +44,9 @@ export function ExperimentWorkbench({ initialVersion, onBack, onOpenResults }: E
   const [error, setError] = useState<string | null>(null);
   const [libraryWarnings, setLibraryWarnings] = useState<string[]>([]);
   const [serviceUnavailable, setServiceUnavailable] = useState(false);
+  const [availability, setAvailability] = useState<DataAvailabilityProjection | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
 
   useEffect(() => {
     void researchApi.listExperiments().then((response: ExperimentWorkflowList) => {
@@ -63,6 +69,26 @@ export function ExperimentWorkbench({ initialVersion, onBack, onOpenResults }: E
     }).catch((reason) => { if (active) setError(errorText(reason)); });
     return () => { active = false; };
   }, [initialVersion]);
+
+  useEffect(() => {
+    if (!initialVersion || !isStart || !isEnd) {
+      setAvailability(null);
+      return;
+    }
+    let active = true;
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+    void backtestApi.getDataAvailability({
+      strategy_id: initialVersion.strategy_id,
+      strategy_version_id: initialVersion.version_id,
+      requested_start: isStart,
+      requested_end: isEnd,
+      price_field: "adjusted_close",
+    }).then((value) => { if (active) setAvailability(value); }).catch((reason) => {
+      if (active) setAvailabilityError(reason instanceof BacktestApiError ? reason.message : "Unable to check data availability.");
+    }).finally(() => { if (active) setAvailabilityLoading(false); });
+    return () => { active = false; };
+  }, [initialVersion, isEnd, isStart]);
 
   const built = useMemo(() => {
     try { return { value: buildParameters(rows, catalog?.targets ?? [], limit), error: "" }; }
@@ -146,6 +172,7 @@ export function ExperimentWorkbench({ initialVersion, onBack, onOpenResults }: E
       <div className="inline-fields"><label>Experiment name<input aria-label="Experiment name" value={name} onChange={(event) => setName(event.target.value)} /></label><label>Description<input aria-label="Experiment description" value={description} onChange={(event) => setDescription(event.target.value)} /></label></div>
       <div className="inline-fields"><label>IS start<input type="date" value={isStart} onChange={(event) => setIsStart(event.target.value)} /></label><label>IS end<input type="date" value={isEnd} onChange={(event) => setIsEnd(event.target.value)} /></label><label>OOS start<input type="date" value={oosStart} onChange={(event) => setOosStart(event.target.value)} /></label><label>OOS end<input type="date" value={oosEnd} onChange={(event) => setOosEnd(event.target.value)} /></label></div>
       <div className="action-buttons"><button className="button button-secondary" type="button" disabled={busy || Boolean(protocolId)} onClick={() => void action(freezeProtocol)}>Freeze research protocol</button><span className="muted">{protocolId ? `Protocol ${protocolId} · candidate set ${candidateSetId}` : "Protocol not frozen"}</span></div>
+      <DataAvailabilityPanel projection={availability} loading={availabilityLoading} error={availabilityError} />
       <h2>Semantic parameters</h2><label>Candidate limit<input aria-label="Candidate limit" type="number" min="1" max="1000" value={limit} onChange={(event) => setLimit(Number(event.target.value))} /></label>
       {rows.map((row, index) => {
         const target = catalog?.targets.find((item) => item.parameter_name === row.targetName);

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BacktestApiError, backtestApi } from "./api";
 import { BacktestReportCharts } from "./BacktestReportCharts";
 import { CapitalResearchPanel } from "./CapitalResearchPanel";
+import { DataAvailabilityPanel } from "./DataAvailabilityPanel";
 import { DEFAULT_MARKER_TYPES } from "./eventMarkers";
 import { HoldingPeriodReport } from "./HoldingPeriodReport";
 import { MultiStrategyComparison } from "./MultiStrategyComparison";
@@ -13,6 +14,7 @@ import type {
   BacktestReport,
   BacktestReportSeries,
   BacktestRun,
+  DataAvailabilityProjection,
   ContributionFrequency,
   DrawdownPoint,
   EquityPoint,
@@ -321,6 +323,9 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
   const [researchError, setResearchError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"catalog" | "versions" | "run" | null>("catalog");
   const [error, setError] = useState<string | null>(null);
+  const [availability, setAvailability] = useState<DataAvailabilityProjection | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
 
   async function loadResearchRuns() {
     setResearchBusy(true);
@@ -395,6 +400,27 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
 
   const updateForm = <K extends keyof typeof EMPTY_FORM>(key: K, value: (typeof EMPTY_FORM)[K]) => setForm((current) => ({ ...current, [key]: value }));
   const selectedStrategy = catalog.find((item) => item.strategy_id === strategyId);
+
+  useEffect(() => {
+    if (!strategyId || !versionId || !form.startDate || !form.endDate) {
+      setAvailability(null);
+      setAvailabilityError(null);
+      return;
+    }
+    let active = true;
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+    void backtestApi.getDataAvailability({
+      strategy_id: strategyId,
+      strategy_version_id: versionId,
+      requested_start: form.startDate,
+      requested_end: form.endDate,
+      price_field: form.priceField,
+    }).then((value) => { if (active) setAvailability(value); }).catch((reason) => {
+      if (active) setAvailabilityError(reason instanceof BacktestApiError ? reason.message : "Unable to check data availability.");
+    }).finally(() => { if (active) setAvailabilityLoading(false); });
+    return () => { active = false; };
+  }, [form.endDate, form.priceField, form.startDate, strategyId, versionId]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -575,6 +601,7 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>
+      <DataAvailabilityPanel projection={availability} loading={availabilityLoading} error={availabilityError} />
       {run && <Results run={run} report={report} reportSeries={reportSeries} markerReport={markerReport} markerLoading={markerLoading} reportLoading={reportLoading} reportError={reportError} reportSeriesError={reportSeriesError} markerError={markerError} onMarkerTypesChange={(types) => void loadReportMarkers(run.backtest_run_id, types)} onOpenStrategyVersion={onOpenStrategyVersion} />}
       <section className="research-workspace">
         {researchError && <div className="inline-error backtest-error" role="alert">{researchError}</div>}
