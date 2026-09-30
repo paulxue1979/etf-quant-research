@@ -209,9 +209,7 @@ def test_single_failed_constraint_is_reported_without_a_score() -> None:
         for item in evaluation.constraints
         if item.state is ObjectiveEvaluationState.FAIL
     ]
-    assert failed_metrics == [
-        "cagr"
-    ]
+    assert failed_metrics == ["cagr"]
     assert "score" not in evaluation.to_dict()
 
 
@@ -227,8 +225,7 @@ def test_pass_and_not_evaluable_is_not_evaluable() -> None:
 
     assert evaluation.overall_constraint_state is ObjectiveEvaluationState.NOT_EVALUABLE
     assert (
-        evaluation.constraints[1].reason_code
-        is ObjectiveEvaluationReasonCode.METRIC_NOT_EVALUABLE
+        evaluation.constraints[1].reason_code is ObjectiveEvaluationReasonCode.METRIC_NOT_EVALUABLE
     )
     assert evaluation.constraints[1].metric_value is None
 

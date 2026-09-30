@@ -106,10 +106,13 @@ def test_identical_retry_is_idempotent_without_duplicate_event(tmp_path) -> None
 
     assert second == first
     assert len(repository.list(decision.protocol_id)) == 1
-    assert sum(
-        event.event_type == "SELECTION_RECORDED"
-        for event in experiments.list_events(decision.experiment_id)
-    ) == 1
+    assert (
+        sum(
+            event.event_type == "SELECTION_RECORDED"
+            for event in experiments.list_events(decision.experiment_id)
+        )
+        == 1
+    )
 
 
 def test_different_selection_conflicts_and_does_not_overwrite(tmp_path) -> None:
@@ -171,8 +174,7 @@ def test_db_unique_constraint_is_present(tmp_path) -> None:
         connection.close()
 
     assert any(
-        row[1] == "uq_research_experiment_selection_experiment" and row[2] == 1
-        for row in indexes
+        row[1] == "uq_research_experiment_selection_experiment" and row[2] == 1 for row in indexes
     )
 
 
@@ -199,6 +201,7 @@ def test_stored_selection_tampering_is_rejected(tmp_path) -> None:
 def test_selection_insert_failure_rolls_back_all_state(tmp_path, monkeypatch) -> None:
     database, decision, experiments = _decision_fixture(tmp_path)
     repository = ExperimentSelectionRepository(database)
+
     def fail_insert(*args, **kwargs):
         raise sqlite3.OperationalError("injected selection failure")
 
@@ -236,10 +239,13 @@ def test_concurrent_identical_selection_writes_one_record(tmp_path) -> None:
 
     assert results[0] == results[1] == decision
     assert len(ExperimentSelectionRepository(database).list()) == 1
-    assert sum(
-        event.event_type == "SELECTION_RECORDED"
-        for event in experiments.list_events(decision.experiment_id)
-    ) == 1
+    assert (
+        sum(
+            event.event_type == "SELECTION_RECORDED"
+            for event in experiments.list_events(decision.experiment_id)
+        )
+        == 1
+    )
 
 
 def test_selection_does_not_create_phase_7_protocol_selection(tmp_path) -> None:

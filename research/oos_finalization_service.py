@@ -138,10 +138,16 @@ class OosFinalizationService:
             self._transition_protocol(connection, protocol, result, now=now)
             connection.execute("COMMIT")
             return result
-        except (OosFinalizationConflictError, OosFinalizationStaleWriterError,
-                OosOfficialResultExistsError, OosPreconditionError, OosResultIntegrityError,
-                OosAlreadyObservedError, ResearchProtocolError,
-                OosFinalizationPersistenceError):
+        except (
+            OosFinalizationConflictError,
+            OosFinalizationStaleWriterError,
+            OosOfficialResultExistsError,
+            OosPreconditionError,
+            OosResultIntegrityError,
+            OosAlreadyObservedError,
+            ResearchProtocolError,
+            OosFinalizationPersistenceError,
+        ):
             self._rollback(connection)
             raise
         except (sqlite3.Error, ValueError, TypeError, KeyError, OverflowError) as exc:
@@ -261,15 +267,22 @@ class OosFinalizationService:
 
     @staticmethod
     def _build_result(
-        outcome: OosExecutionOutcome, *, execution: OosExecution, protocol: Any, now: datetime,
+        outcome: OosExecutionOutcome,
+        *,
+        execution: OosExecution,
+        protocol: Any,
+        now: datetime,
         backtest_run_id: str | None = None,
     ) -> OosEvaluationResult:
         resolved_backtest_run_id = backtest_run_id or OosFinalizationService._backtest_run_id(
             outcome
         )
         result_id = "oos-result-" + sha256_hash(
-            {"protocol_id": protocol.protocol_id, "execution_id": execution.execution_id,
-             "outcome_hash": outcome.outcome_hash}
+            {
+                "protocol_id": protocol.protocol_id,
+                "execution_id": execution.execution_id,
+                "outcome_hash": outcome.outcome_hash,
+            }
         )
         return OosEvaluationResult(
             oos_result_id=result_id,
@@ -322,9 +335,7 @@ class OosFinalizationService:
             performance_analysis=analysis,
             provenance=provenance,
             strategy_provenance=(
-                outcome.strategy_provenance
-                if outcome.strategy_provenance is not None
-                else None
+                outcome.strategy_provenance if outcome.strategy_provenance is not None else None
             ),
         )
 
@@ -356,8 +367,12 @@ class OosFinalizationService:
             raise OosResultIntegrityError("official backtest price field mismatch")
 
     def _insert_official_observation(
-        self, connection: sqlite3.Connection, *, result: OosEvaluationResult,
-        execution: OosExecution, freeze_id: str
+        self,
+        connection: sqlite3.Connection,
+        *,
+        result: OosEvaluationResult,
+        execution: OosExecution,
+        freeze_id: str,
     ) -> None:
         payload = {
             "evaluation_id": result.oos_result_id,
@@ -413,14 +428,23 @@ class OosFinalizationService:
         }
         connection.execute(
             "INSERT INTO research_protocol_events VALUES (?, ?, ?, ?, ?)",
-            (f"event-oos-finalized-{result.result_hash}", result.protocol_id,
-             ProtocolStatus.OOS_EVALUATED, event_time.isoformat(), _dump(payload)),
+            (
+                f"event-oos-finalized-{result.result_hash}",
+                result.protocol_id,
+                ProtocolStatus.OOS_EVALUATED,
+                event_time.isoformat(),
+                _dump(payload),
+            ),
         )
         connection.execute(
             "INSERT INTO research_protocol_events VALUES (?, ?, ?, ?, ?)",
-            (f"event-oos-observed-{result.result_hash}", result.protocol_id,
-             "oos_observation_finalized", (event_time + timedelta(microseconds=1)).isoformat(),
-             _dump(payload)),
+            (
+                f"event-oos-observed-{result.result_hash}",
+                result.protocol_id,
+                "oos_observation_finalized",
+                (event_time + timedelta(microseconds=1)).isoformat(),
+                _dump(payload),
+            ),
         )
 
     @staticmethod

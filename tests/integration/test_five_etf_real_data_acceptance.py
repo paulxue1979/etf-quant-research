@@ -323,8 +323,7 @@ def test_five_etf_real_data_acceptance(tmp_path) -> None:
             assert cached.source.value == "cache"
             assert first.price_field_used is PRICE_FIELD
             assert all(
-                point.close is not None and point.adj_close is not None
-                for point in first.points
+                point.close is not None and point.adj_close is not None for point in first.points
             )
             assert all(
                 point.high >= point.low and point.adj_high >= point.adj_low
@@ -338,9 +337,7 @@ def test_five_etf_real_data_acceptance(tmp_path) -> None:
         *(set(point.date for point in dataset.points) for dataset in full_request_data.values())
     )
     assert common_dates
-    assert not any(
-        day > OOS_END for day in common_dates
-    )
+    assert not any(day > OOS_END for day in common_dates)
 
     database = tmp_path / "research.db"
     protocols = ResearchProtocolRepository(database)
@@ -403,8 +400,7 @@ def test_five_etf_real_data_acceptance(tmp_path) -> None:
     assert outcome.performance_analysis_result.end_date == IS_END
     assert outcome.warmup_start is not None and outcome.warmup_start < IS_START
     assert all(
-        point.date <= IS_END
-        for point in outcome.backtest_result.backtest_result.equity_curve
+        point.date <= IS_END for point in outcome.backtest_result.backtest_result.equity_curve
     )
 
     finalizer = ExperimentResultFinalizationService(

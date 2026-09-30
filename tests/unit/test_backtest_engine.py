@@ -138,9 +138,7 @@ def test_commission_slippage_and_residual_cash_are_deterministic() -> None:
     assert result.fills[0].quantity == 89
     assert result.fills[0].commission == pytest.approx(2.0 + 89 * 11 * 0.01)
     assert result.cash_history[1][1] == pytest.approx(1_000 - (89 * 11 + 11.79))
-    assert result.equity_curve[1].total_equity == pytest.approx(
-        1_000 - (89 * 11 + 11.79) + 89 * 10
-    )
+    assert result.equity_curve[1].total_equity == pytest.approx(1_000 - (89 * 11 + 11.79) + 89 * 10)
 
 
 def test_cash_shortfall_does_not_create_negative_cash() -> None:

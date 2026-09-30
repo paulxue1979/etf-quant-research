@@ -461,9 +461,10 @@ def test_regime_semantic_grid_selection_freeze_oos_e2e(tmp_path) -> None:
     assert freeze.strategy_version_content_hash == derived.content_hash
     assert selection_decision.selected_strategy_version_id == candidate.derived_strategy_version_id
     selected_audit = derived.materialization_provenance.binding_audit
-    assert {
-        item["parameter_name"]: item["parameter_value"] for item in selected_audit
-    } == {"protective_threshold": -0.04, "risk_on_threshold": 0.03}
+    assert {item["parameter_name"]: item["parameter_value"] for item in selected_audit} == {
+        "protective_threshold": -0.04,
+        "risk_on_threshold": 0.03,
+    }
     assert tuple(item.transition_id for item in derived.configuration.transitions) == (
         "full-risk-on-to-protective",
         "recovery-to-full-risk-on",

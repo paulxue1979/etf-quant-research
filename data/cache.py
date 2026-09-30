@@ -43,8 +43,12 @@ class DiskCache:
                 f"schema-{identity['schema_version']}",
             )
         )
-        return self._root / "tiingo" / f"format-{CACHE_FORMAT_VERSION}" / request.symbol / (
-            filename + ".json"
+        return (
+            self._root
+            / "tiingo"
+            / f"format-{CACHE_FORMAT_VERSION}"
+            / request.symbol
+            / (filename + ".json")
         )
 
     def get(self, request: HistoricalDataRequest) -> HistoricalDataSet | None:
@@ -65,9 +69,7 @@ class DiskCache:
                 raise ValueError("cache data payload is missing")
             return HistoricalDataSet.from_cache_payload(data_payload).with_source(DataSource.CACHE)
         except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise CacheCorruptionError(
-                f"Market data cache entry is invalid: {path.name}"
-            ) from exc
+            raise CacheCorruptionError(f"Market data cache entry is invalid: {path.name}") from exc
 
     def set(self, data: HistoricalDataSet) -> None:
         """Persist validated data atomically so partial writes are never returned."""

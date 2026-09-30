@@ -88,9 +88,7 @@ def test_normalization_rejects_missing_or_malformed_required_values() -> None:
 
 
 def test_validation_accepts_strictly_ascending_valid_data() -> None:
-    validate_historical_data(
-        _data((_point(date(2024, 1, 2)), _point(date(2024, 1, 3))))
-    )
+    validate_historical_data(_data((_point(date(2024, 1, 2)), _point(date(2024, 1, 3)))))
 
 
 @pytest.mark.parametrize(

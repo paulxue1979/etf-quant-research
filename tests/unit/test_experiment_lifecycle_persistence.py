@@ -202,13 +202,16 @@ def test_competing_concurrent_transitions_allow_only_one_winner(tmp_path) -> Non
     def run(target: ExperimentStatus, key: str):
         repository = ExperimentRepository(db_path)
         try:
-            return ("ok", repository.transition_status(
-                experiment.experiment_id,
-                ExperimentStatus.SPACE_FROZEN,
-                target,
-                target.value.upper(),
-                key,
-            ))
+            return (
+                "ok",
+                repository.transition_status(
+                    experiment.experiment_id,
+                    ExperimentStatus.SPACE_FROZEN,
+                    target,
+                    target.value.upper(),
+                    key,
+                ),
+            )
         except ExperimentPersistenceError as exc:
             return (exc.code, None)
 
@@ -263,14 +266,17 @@ def test_restart_preserves_transition_and_retry_identity(tmp_path) -> None:
     reopened = ExperimentRepository(db_path)
     assert reopened.get(experiment.experiment_id) == updated
     assert reopened.list_events(experiment.experiment_id)[-1].transition_key == "restart-key"
-    assert reopened.transition_status(
-        experiment.experiment_id,
-        ExperimentStatus.SPACE_FROZEN,
-        ExperimentStatus.CANDIDATES_GENERATED,
-        "CANDIDATES_GENERATED",
-        "restart-key",
-        {"source": "restart-test"},
-    ) == updated
+    assert (
+        reopened.transition_status(
+            experiment.experiment_id,
+            ExperimentStatus.SPACE_FROZEN,
+            ExperimentStatus.CANDIDATES_GENERATED,
+            "CANDIDATES_GENERATED",
+            "restart-key",
+            {"source": "restart-test"},
+        )
+        == updated
+    )
     assert len(reopened.list_events(experiment.experiment_id)) == 3
 
 
@@ -323,13 +329,15 @@ def test_v1_event_migration_preserves_legacy_events(tmp_path) -> None:
         "SPACE_FROZEN",
     ]
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute(
-            "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
-            ("experiment_repository",),
-        ).fetchone()[0] == 2
+        assert (
+            connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                ("experiment_repository",),
+            ).fetchone()[0]
+            == 2
+        )
         columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(experiment_events)").fetchall()
+            row[1] for row in connection.execute("PRAGMA table_info(experiment_events)").fetchall()
         }
     assert {"transition_key", "from_status", "to_status", "provenance_json"} <= columns
 

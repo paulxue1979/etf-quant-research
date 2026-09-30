@@ -61,9 +61,7 @@ class ExperimentExecutionOrchestrator:
         experiment, candidate_index, candidate = self._resolve_candidate(
             experiment_id, candidate_id
         )
-        expected_id = candidate_id_for(
-            experiment_id, candidate_index, candidate.parameter_set_hash
-        )
+        expected_id = candidate_id_for(experiment_id, candidate_index, candidate.parameter_set_hash)
         existing_result = self._results.get_by_candidate(experiment_id, expected_id)
         if existing_result is not None:
             self._validate_result_identity(existing_result, experiment, candidate, expected_id)
@@ -106,10 +104,15 @@ class ExperimentExecutionOrchestrator:
             claimed_by=self.ACTOR,
         )
         if outcome.status is not ExperimentExecutionOutcomeStatus.COMPLETED:
-            status_code = 503 if outcome.failure_code in {
-                "MISSING_MARKET_DATA",
-                "CANDIDATE_EXECUTION_PERSISTENCE_ERROR",
-            } else 422
+            status_code = (
+                503
+                if outcome.failure_code
+                in {
+                    "MISSING_MARKET_DATA",
+                    "CANDIDATE_EXECUTION_PERSISTENCE_ERROR",
+                }
+                else 422
+            )
             raise ExperimentExecutionApiError(
                 status_code,
                 outcome.failure_code or "CANDIDATE_EXECUTION_FAILED",
@@ -182,9 +185,7 @@ class ExperimentExecutionOrchestrator:
                 "experiment does not contain frozen parameter bindings",
             )
         try:
-            return ParameterBindingSet.from_dict(
-                {"bindings": list(provenance.parameter_bindings)}
-            )
+            return ParameterBindingSet.from_dict({"bindings": list(provenance.parameter_bindings)})
         except Exception as exc:
             raise ExperimentExecutionApiError(
                 422, "FROZEN_BINDINGS_INVALID", "experiment frozen parameter bindings are invalid"

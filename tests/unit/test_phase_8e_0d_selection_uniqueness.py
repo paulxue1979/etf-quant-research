@@ -22,13 +22,10 @@ from tests.unit.test_research_protocol import (
 
 def _unique_index_columns(db_path, index_name: str) -> tuple[str, ...]:
     with sqlite3.connect(db_path) as connection:
-        indexes = connection.execute(
-            "PRAGMA index_list('research_selection_decisions')"
-        ).fetchall()
+        indexes = connection.execute("PRAGMA index_list('research_selection_decisions')").fetchall()
         assert any(row[1] == index_name and row[2] == 1 for row in indexes)
         return tuple(
-            row[2]
-            for row in connection.execute(f'PRAGMA index_info("{index_name}")').fetchall()
+            row[2] for row in connection.execute(f'PRAGMA index_info("{index_name}")').fetchall()
         )
 
 
@@ -44,14 +41,11 @@ def test_selection_protocol_unique_index_exists_and_oos_unique_index_is_preserve
         selection_indexes = connection.execute(
             "PRAGMA index_list('research_selection_decisions')"
         ).fetchall()
-        oos_indexes = connection.execute(
-            "PRAGMA index_list('research_oos_evaluations')"
-        ).fetchall()
+        oos_indexes = connection.execute("PRAGMA index_list('research_oos_evaluations')").fetchall()
 
     assert metadata == (3,)
     assert any(
-        row[1] == "uq_research_selection_protocol" and row[2] == 1
-        for row in selection_indexes
+        row[1] == "uq_research_selection_protocol" and row[2] == 1 for row in selection_indexes
     )
     assert any(row[1] == "uq_research_oos_protocol" and row[2] == 1 for row in oos_indexes)
     assert _unique_index_columns(db_path, "uq_research_selection_protocol") == ("protocol_id",)
@@ -85,10 +79,13 @@ def test_exact_selection_retry_is_idempotent_and_conflicting_selection_is_reject
     assert error.value.code == "SELECTION_CONFLICT"
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
-            (decision.protocol_id,),
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
+                (decision.protocol_id,),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_database_unique_constraint_rejects_direct_duplicate_insert(tmp_path) -> None:
@@ -140,9 +137,10 @@ def test_concurrent_different_selections_only_one_is_accepted(tmp_path) -> None:
         outcomes = list(executor.map(submit, (decision_a, decision_b)))
 
     assert sorted(outcome[0] for outcome in outcomes) == ["SELECTION_CONFLICT", "success"]
-    assert repository.get_selection("selection-1") is not None or repository.get_selection(
-        "selection-2"
-    ) is not None
+    assert (
+        repository.get_selection("selection-1") is not None
+        or repository.get_selection("selection-2") is not None
+    )
 
 
 def test_concurrent_exact_retries_persist_one_row(tmp_path) -> None:
@@ -165,10 +163,13 @@ def test_concurrent_exact_retries_persist_one_row(tmp_path) -> None:
 
     assert outcomes[0] == outcomes[1] == decision
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
-            (decision.protocol_id,),
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
+                (decision.protocol_id,),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_legacy_schema_migration_creates_selection_unique_index_and_preserves_data(
@@ -194,10 +195,13 @@ def test_legacy_schema_migration_creates_selection_unique_index_and_preserves_da
     assert reopened.get_selection(decision.decision_id) == decision
     assert _unique_index_columns(db_path, "uq_research_selection_protocol") == ("protocol_id",)
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute(
-            "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
-            (ResearchProtocolRepository._SCHEMA_KEY,),
-        ).fetchone()[0] == 3
+        assert (
+            connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                (ResearchProtocolRepository._SCHEMA_KEY,),
+            ).fetchone()[0]
+            == 3
+        )
 
     ResearchProtocolRepository(db_path)
     assert reopened.get_selection(decision.decision_id) == decision
@@ -243,14 +247,20 @@ def test_legacy_duplicate_selection_migration_rolls_back_without_deleting_or_cho
     assert sentinel not in str(error.value.details)
 
     with sqlite3.connect(db_path) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
-            (decision_a.protocol_id,),
-        ).fetchone()[0] == 2
-        assert connection.execute(
-            "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
-            (ResearchProtocolRepository._SCHEMA_KEY,),
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
+                (decision_a.protocol_id,),
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            connection.execute(
+                "SELECT schema_version FROM schema_metadata WHERE schema_key = ?",
+                (ResearchProtocolRepository._SCHEMA_KEY,),
+            ).fetchone()[0]
+            == 1
+        )
         index_names = {
             row[1]
             for row in connection.execute(

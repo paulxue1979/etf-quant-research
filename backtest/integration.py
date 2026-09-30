@@ -88,9 +88,7 @@ class StrategyBacktestResult:
     def submitted_allocations(self) -> tuple[TargetAllocation, ...]:
         """Return only target allocations handed to PHASE 3."""
         return tuple(
-            item.target_allocation
-            for item in self.signal_records
-            if item.submitted_to_backtest
+            item.target_allocation for item in self.signal_records if item.submitted_to_backtest
         )
 
     @property
@@ -135,8 +133,7 @@ def target_allocations_from_timeline(
     _validate_integration_inputs(strategy_version, evaluation_timeline, data, config)
     trading_dates = _common_trading_dates(data, config)
     next_date = {
-        trading_dates[index]: trading_dates[index + 1]
-        for index in range(len(trading_dates) - 1)
+        trading_dates[index]: trading_dates[index + 1] for index in range(len(trading_dates) - 1)
     }
 
     records: list[StrategyBacktestAllocation] = []
@@ -215,9 +212,7 @@ def run_strategy_backtest(
     engine: BacktestEngine | None = None,
 ) -> StrategyBacktestResult:
     """Run PHASE 3 using target allocations emitted by PHASE 4G."""
-    records = target_allocations_from_timeline(
-        strategy_version, evaluation_timeline, data, config
-    )
+    records = target_allocations_from_timeline(strategy_version, evaluation_timeline, data, config)
     backtest = (engine or BacktestEngine()).run(
         data,
         tuple(item.target_allocation for item in records if item.submitted_to_backtest),

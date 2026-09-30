@@ -64,9 +64,10 @@ def test_finalization_atomically_persists_all_official_records(tmp_path):
 
     assert executions.get_execution(outcome.execution_id).status is OosExecutionStatus.COMPLETED
     assert protocols.get_protocol(outcome.protocol_id).status == ProtocolStatus.OOS_EVALUATED
-    assert OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(
-        outcome.protocol_id
-    ) == result
+    assert (
+        OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(outcome.protocol_id)
+        == result
+    )
     run = BacktestRepository(tmp_path / "research.sqlite3").get(result.backtest_run_id)
     assert run is not None
     assert run.backtest_result == outcome.backtest_result
@@ -92,9 +93,10 @@ def test_finalization_retry_is_idempotent_and_deterministic(tmp_path):
     )
 
     assert second == first
-    assert OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(
-        outcome.protocol_id
-    ) is not None
+    assert (
+        OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(outcome.protocol_id)
+        is not None
+    )
     assert len(BacktestRepository(tmp_path / "research.sqlite3").list()) == 1
 
 
@@ -119,9 +121,10 @@ def test_stale_lease_is_rejected_before_persistence(tmp_path):
         )
     assert executions.get_execution(outcome.execution_id).status is OosExecutionStatus.RUNNING
     assert protocols.get_protocol(outcome.protocol_id).status == ProtocolStatus.SELECTION_RECORDED
-    assert OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(
-        outcome.protocol_id
-    ) is None
+    assert (
+        OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(outcome.protocol_id)
+        is None
+    )
 
 
 def test_result_write_failure_rolls_back_backtest_and_execution(monkeypatch, tmp_path):
@@ -146,9 +149,10 @@ def test_result_write_failure_rolls_back_backtest_and_execution(monkeypatch, tmp
 
     assert executions.get_execution(outcome.execution_id).status is OosExecutionStatus.RUNNING
     assert protocols.get_protocol(outcome.protocol_id).status == ProtocolStatus.SELECTION_RECORDED
-    assert OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(
-        outcome.protocol_id
-    ) is None
+    assert (
+        OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(outcome.protocol_id)
+        is None
+    )
     assert BacktestRepository(tmp_path / "research.sqlite3").list() == ()
 
 
@@ -170,9 +174,10 @@ def test_terminal_event_failure_rolls_back_every_record(monkeypatch, tmp_path):
 
     assert executions.get_execution(outcome.execution_id).status is OosExecutionStatus.RUNNING
     assert protocols.get_protocol(outcome.protocol_id).status == ProtocolStatus.SELECTION_RECORDED
-    assert OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(
-        outcome.protocol_id
-    ) is None
+    assert (
+        OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(outcome.protocol_id)
+        is None
+    )
     assert BacktestRepository(tmp_path / "research.sqlite3").list() == ()
 
 
@@ -194,9 +199,10 @@ def test_conflicting_retry_cannot_replace_official_result(tmp_path):
             lease_token=token,
             outcome=changed,
         )
-    assert OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(
-        outcome.protocol_id
-    ) == first
+    assert (
+        OosResultRepository(tmp_path / "research.sqlite3").get_by_protocol(outcome.protocol_id)
+        == first
+    )
 
 
 def test_result_and_backtest_hashes_round_trip_from_canonical_storage(tmp_path):

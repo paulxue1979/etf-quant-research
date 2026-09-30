@@ -135,17 +135,6 @@ from research.materialization import (
     materialization_spec_hash,
     materialize_strategy_version,
 )
-from research.semantic_bindings import (
-    OperandSide,
-    ResolvedSemanticBinding,
-    SemanticTargetCatalog,
-    SemanticParameterBinding,
-    SemanticTargetDescriptor,
-    SemanticTargetKind,
-    discover_semantic_bindings,
-    materialize_semantic_strategy_version,
-    resolve_semantic_bindings,
-)
 from research.objective_evaluation import (
     CandidateObjectiveEvaluation,
     ConstraintEvaluation,
@@ -154,6 +143,17 @@ from research.objective_evaluation import (
     ObjectiveEvaluationState,
     evaluate_candidate_objective,
     evaluate_objective,
+)
+from research.semantic_bindings import (
+    OperandSide,
+    ResolvedSemanticBinding,
+    SemanticParameterBinding,
+    SemanticTargetCatalog,
+    SemanticTargetDescriptor,
+    SemanticTargetKind,
+    discover_semantic_bindings,
+    materialize_semantic_strategy_version,
+    resolve_semantic_bindings,
 )
 
 if TYPE_CHECKING:

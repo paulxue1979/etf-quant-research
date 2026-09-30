@@ -96,12 +96,18 @@ def _advance_to_is(client: TestClient, version_id: str) -> tuple[str, str]:
     assert candidates.status_code == 201
     candidate_set_id = candidates.json()["candidate_sets"][0]["candidate_set_id"]
     assert client.post(f"/research/candidate-sets/{candidate_set_id}/lock").status_code == 200
-    assert client.post(
-        f"/research/protocols/{protocol_id}/transitions", json={"status": "frozen"}
-    ).status_code == 200
-    assert client.post(
-        f"/research/protocols/{protocol_id}/transitions", json={"status": "is_evaluated"}
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/research/protocols/{protocol_id}/transitions", json={"status": "frozen"}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/research/protocols/{protocol_id}/transitions", json={"status": "is_evaluated"}
+        ).status_code
+        == 200
+    )
     return protocol_id, candidate_set_id
 
 
@@ -123,10 +129,13 @@ def test_protocol_api_records_append_only_is_selection_and_oos_lifecycle(client)
     decision_id = selection.json()["selections"][0]["decision_id"]
     assert selection.json()["protocol"]["status"] == "is_evaluated"
 
-    assert http.post(
-        f"/research/protocols/{protocol_id}/transitions",
-        json={"status": "selection_recorded"},
-    ).status_code == 200
+    assert (
+        http.post(
+            f"/research/protocols/{protocol_id}/transitions",
+            json={"status": "selection_recorded"},
+        ).status_code
+        == 200
+    )
     freeze = http.post(
         f"/research/protocols/{protocol_id}/freeze",
         json={"selection_decision_id": decision_id, "reason": "Freeze before OOS observation."},
@@ -142,10 +151,13 @@ def test_protocol_api_records_append_only_is_selection_and_oos_lifecycle(client)
     assert observed.json()["oos_evaluations"][0]["untouched_oos"] is False
     assert observed.json()["oos_evaluations"][0]["provenance"]["selection_allowed"] is False
 
-    assert http.post(
-        f"/research/protocols/{protocol_id}/transitions",
-        json={"status": "oos_evaluated"},
-    ).status_code == 200
+    assert (
+        http.post(
+            f"/research/protocols/{protocol_id}/transitions",
+            json={"status": "oos_evaluated"},
+        ).status_code
+        == 200
+    )
     duplicate = http.post(
         f"/research/protocols/{protocol_id}/oos-evaluations",
         json={"freeze_id": freeze_id, "backtest_run_id": oos_run.backtest_run_id},
@@ -189,18 +201,12 @@ def test_protocol_api_selects_and_freezes_exact_persisted_derived_version(client
         base,
         ParameterSet(
             {"period": 20},
-            _space(
-                ParameterDefinition(
-                    "period", ParameterType.INTEGER, min=1, max=200, step=1
-                )
-            ),
+            _space(ParameterDefinition("period", ParameterType.INTEGER, min=1, max=200, step=1)),
         ),
         (_period_binding(),),
     )
     persisted = strategies.persist_exact_strategy_version(derived)
-    is_run = _backtest_run(
-        "derived-is-run", persisted, date(2026, 1, 2), date(2026, 1, 4)
-    )
+    is_run = _backtest_run("derived-is-run", persisted, date(2026, 1, 2), date(2026, 1, 4))
     research_protocol_api.backtest_repository.create(is_run)
 
     protocol_id, candidate_set_id = _advance_to_is(http, persisted.version_id)
@@ -216,10 +222,13 @@ def test_protocol_api_selects_and_freezes_exact_persisted_derived_version(client
     )
     assert selection.status_code == 201
     decision_id = selection.json()["selections"][0]["decision_id"]
-    assert http.post(
-        f"/research/protocols/{protocol_id}/transitions",
-        json={"status": "selection_recorded"},
-    ).status_code == 200
+    assert (
+        http.post(
+            f"/research/protocols/{protocol_id}/transitions",
+            json={"status": "selection_recorded"},
+        ).status_code
+        == 200
+    )
 
     freeze = http.post(
         f"/research/protocols/{protocol_id}/freeze",

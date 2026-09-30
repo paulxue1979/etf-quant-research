@@ -30,9 +30,7 @@ def completed_chain(tmp_path: Path):
     protocols = ResearchProtocolRepository(database)
     protocols.transition_protocol(decision.protocol_id, ProtocolStatus.IS_EVALUATED)
     handoff = ExperimentSelectionHandoffService(database)
-    stored_decision, stored_freeze = handoff.handoff_experiment_selection(
-        decision.experiment_id
-    )
+    stored_decision, stored_freeze = handoff.handoff_experiment_selection(decision.experiment_id)
     return database, stored_selection, stored_decision, stored_freeze, experiments
 
 

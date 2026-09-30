@@ -61,9 +61,7 @@ def test_execute_rejects_configuration_overrides(client: TestClient) -> None:
 
 
 def test_get_execution_and_result_are_read_only_routes(client: TestClient) -> None:
-    execution = client.get(
-        "/research/experiments/experiment/candidates/candidate/execution"
-    )
+    execution = client.get("/research/experiments/experiment/candidates/candidate/execution")
     result = client.get("/research/experiments/experiment/candidates/candidate/result")
 
     assert execution.status_code == 200
@@ -80,9 +78,7 @@ def test_domain_error_is_returned_as_structured_detail(
 
     monkeypatch.setattr(research_execution_api, "_orchestrator", SimpleNamespace(execute=fail))
 
-    response = client.post(
-        "/research/experiments/experiment/candidates/candidate/execute", json={}
-    )
+    response = client.post("/research/experiments/experiment/candidates/candidate/execute", json={})
 
     assert response.status_code == 409
     assert response.json() == {
@@ -98,9 +94,7 @@ def test_unexpected_dependency_error_does_not_leak_internal_details(
 
     monkeypatch.setattr(research_execution_api, "_orchestrator", SimpleNamespace(execute=fail))
 
-    response = client.post(
-        "/research/experiments/experiment/candidates/candidate/execute", json={}
-    )
+    response = client.post("/research/experiments/experiment/candidates/candidate/execute", json={})
 
     assert response.status_code == 503
     assert response.json() == {

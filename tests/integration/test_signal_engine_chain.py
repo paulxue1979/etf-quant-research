@@ -114,12 +114,8 @@ def test_existing_evaluation_and_allocation_results_are_assembled_without_recalc
     )
     as_of_date = START + timedelta(days=2)
 
-    rule_result = evaluate_rule_group(
-        rule_group, context, as_of_date, rule_group_id="risk-on"
-    )
-    allocation_result = resolve_allocations(
-        strategy, {"risk-on": rule_result}, as_of_date
-    )
+    rule_result = evaluate_rule_group(rule_group, context, as_of_date, rule_group_id="risk-on")
+    allocation_result = resolve_allocations(strategy, {"risk-on": rule_result}, as_of_date)
     signal = build_signal(
         version,
         rule_result,

@@ -140,7 +140,7 @@ def test_repository_rejects_corrupted_persisted_result(tmp_path) -> None:
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             "UPDATE research_experiment_results SET result_json = ? WHERE experiment_result_id = ?",
-            ("{\"tampered\":true}", result.experiment_result_id),
+            ('{"tampered":true}', result.experiment_result_id),
         )
 
     with pytest.raises(ExperimentResultPersistenceError, match="integrity|canonical"):

@@ -154,11 +154,13 @@ def test_condition_to_rule_to_signal_to_backtest_full_chain() -> None:
     assert result.signal_records[0].signal.matched_rule_id is None
     assert result.signal_records[0].target_allocation.as_mapping() == {"SGOV": 1.0}
     assert result.signal_records[1].signal.allocation_source is AllocationSource.RULE_MATCH
-    assert result.signal_records[1].target_allocation.as_mapping() == pytest.approx({
-        "QQQ": 0.6,
-        "TQQQ": 0.3,
-        "SGOV": 0.1,
-    })
+    assert result.signal_records[1].target_allocation.as_mapping() == pytest.approx(
+        {
+            "QQQ": 0.6,
+            "TQQQ": 0.3,
+            "SGOV": 0.1,
+        }
+    )
     assert {order.signal_date for order in result.backtest_result.orders} == {
         START + timedelta(days=1),
         START + timedelta(days=2),
@@ -193,8 +195,7 @@ def test_on_signal_change_is_delegated_to_phase3() -> None:
     )
     version = replace(version, configuration=definition, content_hash=None)
     data = {
-        symbol: _dataset(symbol, (10.0, 10.0, 10.0, 10.0))
-        for symbol in ("QQQ", "TQQQ", "SGOV")
+        symbol: _dataset(symbol, (10.0, 10.0, 10.0, 10.0)) for symbol in ("QQQ", "TQQQ", "SGOV")
     }
     context = EvaluationContext.from_components(
         data,

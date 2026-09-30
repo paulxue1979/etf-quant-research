@@ -76,8 +76,7 @@ def _evaluate_group(
 
     passed = _combine(rule_group.operator, results)
     child_text = "; ".join(
-        f"{_child_identity(result)}={'TRUE' if result.passed else 'FALSE'}"
-        for result in results
+        f"{_child_identity(result)}={'TRUE' if result.passed else 'FALSE'}" for result in results
     )
     explanation = (
         f"RuleGroup({rule_group_id}) {rule_group.operator.value.upper()}: "

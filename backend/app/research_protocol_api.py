@@ -129,9 +129,7 @@ class CandidateSetCreateRequest(BaseModel):
 class ProtocolTransitionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal[
-        "frozen", "is_evaluated", "selection_recorded", "oos_evaluated", "closed"
-    ]
+    status: Literal["frozen", "is_evaluated", "selection_recorded", "oos_evaluated", "closed"]
 
 
 class SelectionCreateRequest(BaseModel):

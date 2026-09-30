@@ -143,9 +143,7 @@ def test_reference_selection_and_serialization_are_deterministic() -> None:
     second = ExperimentCompatibilityService().diagnose(_model(_candidate(0), _candidate(1)))
 
     assert first.canonical_json() == second.canonical_json()
-    assert first.to_dict()["checked_dimensions"] == list(
-        ExperimentCompatibilityService.DIMENSIONS
-    )
+    assert first.to_dict()["checked_dimensions"] == list(ExperimentCompatibilityService.DIMENSIONS)
     assert "rank" not in first.to_dict()
 
 

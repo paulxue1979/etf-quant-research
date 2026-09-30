@@ -131,9 +131,7 @@ def _config(
         rebalance_policy=BacktestRebalancePolicy(
             frequency=frequency
             or BacktestRebalanceFrequency(strategy.rebalance_policy.frequency.value),
-            threshold=(
-                strategy.rebalance_policy.threshold if threshold is None else threshold
-            ),
+            threshold=(strategy.rebalance_policy.threshold if threshold is None else threshold),
         ),
     )
 
@@ -172,8 +170,7 @@ def test_multi_asset_remaining_and_cash_buffer_reach_phase3() -> None:
         weights=(("QQQ", 0.6), ("TQQQ", 0.3)),
     )
     data = {
-        symbol: _dataset(symbol, (10.0, 10.0, 10.0, 10.0))
-        for symbol in ("QQQ", "TQQQ", "SGOV")
+        symbol: _dataset(symbol, (10.0, 10.0, 10.0, 10.0)) for symbol in ("QQQ", "TQQQ", "SGOV")
     }
     timeline = _timeline(version, data)
     result = run_strategy_backtest(
@@ -343,9 +340,7 @@ def test_strategy_version_and_rebalance_policy_mismatches_are_rejected() -> None
 def test_empty_evaluation_timeline_runs_cash_only_without_inventing_allocations() -> None:
     version = _version()
     data = {"QQQ": _dataset("QQQ", (10.0, 20.0, 30.0, 40.0))}
-    timeline = StrategyEvaluationTimeline(
-        version.version_id, START, START + timedelta(days=3), ()
-    )
+    timeline = StrategyEvaluationTimeline(version.version_id, START, START + timedelta(days=3), ())
 
     result = run_strategy_backtest(
         version, timeline, data, _config(version, end=START + timedelta(days=3))
@@ -367,7 +362,6 @@ def test_adapter_calls_the_real_phase3_engine() -> None:
 
     assert result.backtest_result.engine_version == "phase-3.0"
     assert (
-        result.backtest_result.configuration_snapshot["execution_rule"]
-        == "next_trading_day_open"
+        result.backtest_result.configuration_snapshot["execution_rule"] == "next_trading_day_open"
     )
     assert result.backtest_result.strategy_version_id == version.version_id

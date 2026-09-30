@@ -196,8 +196,7 @@ def test_materializes_whitelisted_targets(
     assert derived.materialization_provenance.base_strategy_version_id == "materialization-test-v1"
     assert derived.materialization_provenance.parameter_set_hash == parameter_set.content_hash
     assert (
-        derived.materialization_provenance.derived_strategy_version_hash
-        != _version().content_hash
+        derived.materialization_provenance.derived_strategy_version_hash != _version().content_hash
     )
 
 
@@ -224,8 +223,10 @@ def test_period_binding_rejects_invalid_values(value: object) -> None:
         with pytest.raises(ValueError):
             ParameterSet({"period": value}, _space())
         return
-    if not isinstance(value, int) and not value == value or (
-        isinstance(value, float) and not abs(value) < inf
+    if (
+        not isinstance(value, int)
+        and not value == value
+        or (isinstance(value, float) and not abs(value) < inf)
     ):
         with pytest.raises(ValueError):
             ParameterSet({"period": value}, _space())
@@ -298,7 +299,8 @@ def test_binding_type_mismatch_and_non_relative_threshold_are_rejected() -> None
     parameter_set = ParameterSet({"value": 0.05}, space)
     with pytest.raises(ParameterBindingTypeMismatchError):
         materialize_strategy_version(
-            _version(), parameter_set,
+            _version(),
+            parameter_set,
             (
                 _binding(
                     "value",
@@ -345,7 +347,8 @@ def test_materialization_failure_has_no_partial_mutation() -> None:
 
     with pytest.raises(StrategyMaterializationError):
         materialize_strategy_version(
-            base, parameter_set,
+            base,
+            parameter_set,
             (
                 _binding(
                     "weight",

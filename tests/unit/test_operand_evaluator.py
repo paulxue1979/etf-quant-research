@@ -72,9 +72,7 @@ def _context(*datasets: HistoricalDataSet) -> EvaluationContext:
                 ),
                 (
                     dataset.request.symbol,
-                    exponential_moving_average(
-                        dataset, period=3, price_field=PriceField.RAW_CLOSE
-                    ),
+                    exponential_moving_average(dataset, period=3, price_field=PriceField.RAW_CLOSE),
                 ),
             )
         )
@@ -171,9 +169,7 @@ def test_missing_market_data_date_indicator_and_early_indicator_value_are_explic
             START + timedelta(days=10),
         )
     with pytest.raises(MissingOperandValueError):
-        evaluate_operand(
-            Operand("QQQ", OperandType.MA, 3, PriceField.RAW_CLOSE), context, START
-        )
+        evaluate_operand(Operand("QQQ", OperandType.MA, 3, PriceField.RAW_CLOSE), context, START)
     with pytest.raises(MissingIndicatorError):
         evaluate_operand(
             Operand("QQQ", OperandType.MA, 5, PriceField.RAW_CLOSE),

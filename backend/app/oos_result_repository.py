@@ -37,9 +37,7 @@ class OosResultRepository:
         except OosFinalizationPersistenceError:
             raise
         except (OSError, sqlite3.Error) as exc:
-            raise OosFinalizationPersistenceError(
-                "could not prepare OOS result database"
-            ) from exc
+            raise OosFinalizationPersistenceError("could not prepare OOS result database") from exc
 
     def _connect(self) -> sqlite3.Connection:
         try:

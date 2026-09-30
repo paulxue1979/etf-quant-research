@@ -197,8 +197,7 @@ def test_error_and_missing_inputs_propagate_without_fallback() -> None:
 def test_signal_is_immutable_deterministic_and_prefix_consistent() -> None:
     version, group, target = _version(), _group(), _target()
     signals = [
-        build_signal(version, group, target, source_data_reference="batch-1")
-        for _ in range(3)
+        build_signal(version, group, target, source_data_reference="batch-1") for _ in range(3)
     ]
 
     assert signals[0] == signals[1] == signals[2]

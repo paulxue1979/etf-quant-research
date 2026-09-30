@@ -49,9 +49,7 @@ def evaluate_condition(
                 "relative threshold is not supported with the equal operator"
             )
         if right.value == 0:
-            raise ZeroReferenceValueError(
-                "relative threshold reference value must not be zero"
-            )
+            raise ZeroReferenceValueError("relative threshold reference value must not be zero")
         effective_right = right.value * (1.0 + threshold.value)
 
     if not math.isfinite(effective_right):
@@ -88,15 +86,9 @@ def evaluate_condition(
 
 
 def _validate_price_field_consistency(left: OperandValue, right: OperandValue) -> None:
-    fields = {
-        item.price_field_used
-        for item in (left, right)
-        if item.price_field_used is not None
-    }
+    fields = {item.price_field_used for item in (left, right) if item.price_field_used is not None}
     if len(fields) > 1:
-        raise InvalidConditionConfigurationError(
-            "condition operands must use the same price_field"
-        )
+        raise InvalidConditionConfigurationError("condition operands must use the same price_field")
 
 
 def _compare(left: float, right: float, operator: ComparisonOperator) -> bool:

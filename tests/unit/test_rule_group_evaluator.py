@@ -75,9 +75,7 @@ def _context(*datasets: HistoricalDataSet) -> EvaluationContext:
                 ),
                 (
                     symbol,
-                    exponential_moving_average(
-                        dataset, period=2, price_field=PriceField.RAW_CLOSE
-                    ),
+                    exponential_moving_average(dataset, period=2, price_field=PriceField.RAW_CLOSE),
                 ),
             )
         )
@@ -222,9 +220,7 @@ def test_multi_asset_children_use_their_own_values() -> None:
 def test_full_evaluation_propagates_error_after_evaluating_later_children() -> None:
     context = _context(_data("QQQ", [10, 20, 30]))
     valid = _condition(_constant(2), _constant(1))
-    missing_indicator = Condition(
-        _ma(99), ComparisonOperator.GREATER_THAN, _constant(0)
-    )
+    missing_indicator = Condition(_ma(99), ComparisonOperator.GREATER_THAN, _constant(0))
     later = _condition(_constant(3), _constant(1))
 
     with pytest.raises(RuleGroupEvaluationError) as exc:

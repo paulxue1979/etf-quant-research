@@ -375,9 +375,10 @@ def test_oos_accepts_exact_frozen_evaluation_config(tmp_path) -> None:
         created_at=datetime(2026, 9, 8, tzinfo=UTC),
     )
 
-    assert repository.create_oos_evaluation(
-        evaluation, freeze=freeze, run=_oos_run(version)
-    ) == evaluation
+    assert (
+        repository.create_oos_evaluation(evaluation, freeze=freeze, run=_oos_run(version))
+        == evaluation
+    )
 
 
 def test_candidate_hash_mismatch_is_rejected_before_selection(tmp_path) -> None:

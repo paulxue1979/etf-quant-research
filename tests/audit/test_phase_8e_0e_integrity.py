@@ -145,10 +145,7 @@ def test_materialized_version_and_result_identity_survive_restart(tmp_path) -> N
         derived.materialization_provenance.base_strategy_version_id
         == result.base_strategy_version_id
     )
-    assert (
-        derived.materialization_provenance.parameter_set_hash
-        == result.parameter_set_hash
-    )
+    assert derived.materialization_provenance.parameter_set_hash == result.parameter_set_hash
     assert experiments.get(result.experiment_id).status is ExperimentStatus.COMPLETED
 
 
@@ -200,8 +197,7 @@ def test_is_boundary_warmup_and_next_open_execution_are_preserved(tmp_path) -> N
     assert all(order.date <= IS_END for order in run.backtest_result.orders)
     assert all(order.date > order.signal_date for order in run.backtest_result.orders)
     assert not any(
-        order.signal_date == IS_END and order.date > IS_END
-        for order in run.backtest_result.orders
+        order.signal_date == IS_END and order.date > IS_END for order in run.backtest_result.orders
     )
     assert all(point.date <= IS_END for point in run.backtest_result.equity_curve)
 
@@ -304,10 +300,13 @@ def test_finalization_retry_does_not_duplicate_backtest_result_or_terminal_event
     assert second == first
     assert len(BacktestRepository(database).list()) == 1
     assert len(ExperimentResultRepository(database).list()) == 1
-    assert sum(
-        event.to_status is ExperimentStatus.COMPLETED
-        for event in experiments.list_events(outcome.experiment_id)
-    ) == 1
+    assert (
+        sum(
+            event.to_status is ExperimentStatus.COMPLETED
+            for event in experiments.list_events(outcome.experiment_id)
+        )
+        == 1
+    )
 
 
 def test_finalization_failure_rolls_back_result_and_terminal_lifecycle_state(
@@ -376,9 +375,7 @@ def test_selection_protocol_unique_index_and_concurrent_different_decisions(tmp_
 
     assert sorted(outcomes) == ["SELECTION_CONFLICT", "success"]
     with sqlite3.connect(database) as connection:
-        indexes = connection.execute(
-            "PRAGMA index_list('research_selection_decisions')"
-        ).fetchall()
+        indexes = connection.execute("PRAGMA index_list('research_selection_decisions')").fetchall()
         count = connection.execute(
             "SELECT COUNT(*) FROM research_selection_decisions WHERE protocol_id = ?",
             (protocol.protocol_id,),
