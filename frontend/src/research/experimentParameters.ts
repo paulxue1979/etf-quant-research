@@ -12,6 +12,10 @@ export function percentageType(type: string): boolean {
   return ["relative_threshold", "allocation_weight"].includes(type);
 }
 
+export function isTransitionTarget(targetKind: string): boolean {
+  return targetKind.includes("transition") || targetKind.includes("condition") || targetKind === "peak_drawdown_threshold";
+}
+
 export function parameterRow(target: SemanticTargetPreview): ParameterRow {
   return {
     id: crypto.randomUUID(),

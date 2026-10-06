@@ -10,14 +10,29 @@ from typing import Any
 from data.exceptions import DataEngineError
 from data.models import HistoricalDataSet, Timeframe
 from data.trading_calendar import TradingSessionCalendar, default_trading_calendar
+from indicators.models import IndicatorHistoryRequirement, IndicatorKind
 from indicators.preparation import prepare_strategy_inputs
 from research.canonical import sha256_hash
 from research.date_boundaries import validate_effective_range_within_requested
 from strategies.strategy_evaluation import required_indicators, required_weekly_assets
 
 
+def history_requirement_for_strategy(strategy_version: Any) -> IndicatorHistoryRequirement:
+    requirements = required_indicators(strategy_version)
+    if any(item.kind is IndicatorKind.PEAK_DRAWDOWN for item in requirements):
+        return IndicatorHistoryRequirement.ALL_TIME_TO_DATE
+    return IndicatorHistoryRequirement.FIXED_WARMUP
+
+
 def warmup_start_for_strategy(start_date: date, strategy_version: Any) -> date:
-    """Existing engine contract, shared without changing its formula."""
+    """Resolve the data-preparation boundary without changing evaluation dates."""
+    if (
+        history_requirement_for_strategy(strategy_version)
+        is IndicatorHistoryRequirement.ALL_TIME_TO_DATE
+    ):
+        # A request predating ETF history lets the provider return every real bar.
+        # It does not create observations before an asset's inception.
+        return date(1900, 1, 1)
     requirements = required_indicators(strategy_version)
     daily_period = max(
         (item.period for item in requirements if item.timeframe is Timeframe.DAILY), default=1
@@ -144,7 +159,19 @@ def project_data_availability(
                 indicator_rows.append(
                     {
                         **requirement.to_dict(),
-                        "required_bars": requirement.period,
+                        "required_bars": (
+                            None
+                            if requirement.kind is IndicatorKind.PEAK_DRAWDOWN
+                            else requirement.period
+                        ),
+                        **(
+                            {
+                                "peak_mode": "all_time_to_date",
+                                "history_source": "available_history_before_requested_range",
+                            }
+                            if requirement.kind is IndicatorKind.PEAK_DRAWDOWN
+                            else {}
+                        ),
                         "first_valid_date": first.isoformat() if first else None,
                     }
                 )

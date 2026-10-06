@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildParameters, parameterRow, type ParameterRow } from "./experimentParameters";
+import { buildParameters, isTransitionTarget, parameterRow, type ParameterRow } from "./experimentParameters";
 
 const targets = [
   {
@@ -22,6 +22,12 @@ const targets = [
 ];
 
 describe("experiment parameter builder", () => {
+  it("offers active peak drawdown thresholds in the transition parameter group", () => {
+    expect(isTransitionTarget("peak_drawdown_threshold")).toBe(true);
+    expect(isTransitionTarget("nested_condition_threshold")).toBe(true);
+    expect(isTransitionTarget("state_allocation_weight")).toBe(false);
+  });
+
   it("uses conservative threshold and full-risk allocation defaults", () => {
     expect(parameterRow(targets[0]).values).toBe("3, 5");
     expect(parameterRow(targets[1]).values).toBe("90, 100");

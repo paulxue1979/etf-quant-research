@@ -5,9 +5,10 @@ import type {
   PriceField,
   ValidationIssue,
 } from "./types";
-import { comparisonOptions, createCondition, createRuleGroup } from "./editor";
+import { comparisonOptions, createCondition, createPeakDrawdownCondition, createRuleGroup } from "./editor";
 
 export function operandLabel(operand: EditorOperand): string {
+  if (operand.type === "peak_drawdown") return `${operand.asset} 距前高回撤`;
   if (operand.type === "price") return `${operand.asset} ${operand.timeframe.toUpperCase()} Close`;
   if (operand.type === "constant") return `Constant ${operand.value || "0"}`;
   return `${operand.asset} ${operand.timeframe.toUpperCase()} ${operand.type.toUpperCase()}${operand.period || "?"}`;
@@ -102,6 +103,24 @@ function ConditionRow({
 }) {
   const set = (patch: Partial<EditorCondition>) => onChange({ ...condition, ...patch });
   const issue = issues.find((item) => item.path.includes(condition.id));
+  if (condition.left.type === "peak_drawdown") return (
+    <div className="condition-row regime-condition-row">
+      <div className="condition-operands">
+        <span>距前高回撤</span>
+        <select aria-label="Peak drawdown asset" value={condition.left.asset} onChange={(event) => set({ left: { ...condition.left, asset: event.target.value }, right: { ...condition.right, asset: event.target.value } })}>
+          {assets.map((asset) => <option key={asset} value={asset}>{asset}</option>)}
+        </select>
+        <select aria-label="Peak drawdown comparator" value={condition.operator} onChange={(event) => set({ operator: event.target.value as EditorCondition["operator"] })}>
+          {comparisonOptions.filter((option) => option.value !== "equal").map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <label>Threshold (%)<input aria-label="Peak drawdown threshold percent" inputMode="decimal" value={condition.right.value} onChange={(event) => set({ right: { ...condition.right, value: event.target.value } })} /></label>
+        <button className="button button-quiet" type="button" onClick={onRemove}>Remove</button>
+      </div>
+      <p className="muted">请输入负百分比。例如 -20 表示当前价格较历史最高收盘价回撤 20%。</p>
+      <div className="condition-summary">{operandLabel(condition.left)} {comparisonOptions.find((option) => option.value === condition.operator)?.label} {condition.right.value}%</div>
+      {issue && <span className="field-error">{issue.message}</span>}
+    </div>
+  );
   return (
     <div className="condition-row regime-condition-row">
       <div className="condition-operands">
@@ -127,12 +146,14 @@ export function ConditionTreeEditor({
   assets,
   priceField,
   issues,
+  allowPeak = false,
   onChange,
 }: {
   group: EditorRuleGroup;
   assets: string[];
   priceField: PriceField;
   issues: ValidationIssue[];
+  allowPeak?: boolean;
   onChange: (group: EditorRuleGroup) => void;
 }) {
   return (
@@ -144,6 +165,7 @@ export function ConditionTreeEditor({
           <option value="or">ANY / OR</option>
         </select>
         <button className="button button-quiet" type="button" onClick={() => onChange(updateGroup(group, group.id, (current) => ({ ...current, children: [...current.children, createCondition(assets)] })))}>+ Condition</button>
+        {allowPeak && <button className="button button-quiet" type="button" onClick={() => onChange(updateGroup(group, group.id, (current) => ({ ...current, operator: "or", children: [...current.children, createPeakDrawdownCondition(assets)] })))}>+ 距前高回撤</button>}
         <button className="button button-quiet" type="button" onClick={() => onChange(updateGroup(group, group.id, (current) => ({ ...current, children: [...current.children, createRuleGroup(assets, "or")] })))}>+ Group</button>
       </div>
       <div className="group-children">
@@ -151,7 +173,7 @@ export function ConditionTreeEditor({
           <ConditionRow key={child.id} condition={child} assets={assets} priceField={priceField} issues={issues} onChange={(condition) => onChange(updateCondition(group, child.id, () => condition))} onRemove={() => onChange(removeNode(group, group.id, child.id))} />
         ) : (
           <div className="nested-group" key={child.id}>
-            <ConditionTreeEditor group={child} assets={assets} priceField={priceField} issues={issues} onChange={(next) => onChange(updateGroup(group, child.id, () => next))} />
+            <ConditionTreeEditor group={child} assets={assets} priceField={priceField} issues={issues} allowPeak={allowPeak} onChange={(next) => onChange(updateGroup(group, child.id, () => next))} />
             <button className="button button-quiet nested-remove" type="button" onClick={() => onChange(removeNode(group, group.id, child.id))}>Remove group</button>
           </div>
         ))}
@@ -161,9 +183,15 @@ export function ConditionTreeEditor({
 }
 
 export function conditionSummary(group: EditorRuleGroup): string {
+  const peak = group.children.find((child): child is EditorCondition => child.type === "condition" && child.left.type === "peak_drawdown");
   const condition = group.children.find((child): child is EditorCondition => child.type === "condition");
   if (!condition) return `${group.operator.toUpperCase()} condition group`;
   const operator = comparisonOptions.find((item) => item.value === condition.operator)?.label ?? condition.operator;
   const threshold = condition.thresholdPercent && condition.operator !== "equal" ? ` ${Number(condition.thresholdPercent) >= 0 ? "+" : ""}${condition.thresholdPercent}%` : "";
-  return `${operandLabel(condition.left)} ${operator} ${operandLabel(condition.right)}${threshold}`;
+  const first = `${operandLabel(condition.left)} ${operator} ${operandLabel(condition.right)}${threshold}`;
+  if (peak && peak !== condition && group.operator === "or") {
+    const peakOperator = comparisonOptions.find((item) => item.value === peak.operator)?.label ?? peak.operator;
+    return `${first} OR ${operandLabel(peak.left)} ${peakOperator} ${peak.right.value}%`;
+  }
+  return first;
 }

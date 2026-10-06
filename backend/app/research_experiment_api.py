@@ -7,6 +7,7 @@ rank candidates, execute OOS, or select a candidate automatically.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -155,6 +156,15 @@ def _safe_error(exc: Exception, *, fallback_code: str, fallback_message: str) ->
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={"code": fallback_code, "message": fallback_message},
     )
+
+
+def _response_jsonable(value: Any) -> Any:
+    """Project immutable domain containers without changing their stored representation."""
+    if isinstance(value, Mapping):
+        return {key: _response_jsonable(child) for key, child in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_response_jsonable(child) for child in value]
+    return value
 
 
 def _read_service() -> ExperimentResultsReadService:
@@ -491,21 +501,23 @@ def handoff_selection(
     _load_model(protocol_id, experiment_id)
     try:
         decision, freeze = handoff_service.handoff_experiment_selection(experiment_id)
-        return {
-            "experiment_id": experiment_id,
-            "protocol_id": protocol_id,
-            "selection_decision": decision.to_dict(),
-            "strategy_freeze": freeze.to_dict(),
-            "identity": {
-                "strategy_version_id": decision.selected_strategy_version_id,
-                "strategy_version_content_hash": freeze.strategy_version_content_hash,
-            },
-            "provenance": {
-                "source": "persisted_experiment_selection",
-                "is_only": True,
-                "oos_started": False,
-            },
-        }
+        return _response_jsonable(
+            {
+                "experiment_id": experiment_id,
+                "protocol_id": protocol_id,
+                "selection_decision": decision.to_dict(),
+                "strategy_freeze": freeze.to_dict(),
+                "identity": {
+                    "strategy_version_id": decision.selected_strategy_version_id,
+                    "strategy_version_content_hash": freeze.strategy_version_content_hash,
+                },
+                "provenance": {
+                    "source": "persisted_experiment_selection",
+                    "is_only": True,
+                    "oos_started": False,
+                },
+            }
+        )
     except ExperimentSelectionHandoffError as exc:
         raise _safe_error(
             exc,
@@ -561,16 +573,18 @@ def get_handoff(protocol_id: str, experiment_id: str) -> dict[str, Any]:
             raise ResearchExperimentApiError(
                 409, "HANDOFF_INTEGRITY_ERROR", "handoff strategy identity is inconsistent"
             )
-        return {
-            "experiment_id": experiment_id,
-            "protocol_id": protocol_id,
-            "selection_decision": decision.to_dict(),
-            "strategy_freeze": freeze.to_dict(),
-            "identity": {
-                "strategy_version_id": decision.selected_strategy_version_id,
-                "strategy_version_content_hash": freeze.strategy_version_content_hash,
-            },
-        }
+        return _response_jsonable(
+            {
+                "experiment_id": experiment_id,
+                "protocol_id": protocol_id,
+                "selection_decision": decision.to_dict(),
+                "strategy_freeze": freeze.to_dict(),
+                "identity": {
+                    "strategy_version_id": decision.selected_strategy_version_id,
+                    "strategy_version_content_hash": freeze.strategy_version_content_hash,
+                },
+            }
+        )
     except ResearchExperimentApiError as exc:
         raise _raise_http(exc)
     except Exception as exc:

@@ -37,7 +37,7 @@ export interface DataAvailabilityProjection {
   effective_end_expected: string | null;
   warmup_start: string;
   assets: DataAvailabilityAsset[];
-  indicator_requirements: Array<{ asset: string; kind: string; period: number; price_field: string; timeframe: string }>;
+  indicator_requirements: Array<{ asset: string; kind: string; period: number; required_bars?: number | null; peak_mode?: string; history_source?: string; price_field: string; timeframe: string }>;
   info: DataAvailabilityIssue[];
   warnings: DataAvailabilityIssue[];
   blocking_issues: DataAvailabilityIssue[];

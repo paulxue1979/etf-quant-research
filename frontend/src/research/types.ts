@@ -202,6 +202,7 @@ export interface OfficialOosPreparation {
   evaluation_range: Record<string, string>;
   configuration: Record<string, unknown>;
   provenance: Record<string, unknown>;
+  history_requirement?: "FIXED_WARMUP" | "ALL_TIME_TO_DATE";
 }
 
 export interface OfficialOosExecutionResponse {

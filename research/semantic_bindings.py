@@ -23,6 +23,7 @@ class SemanticTargetKind(StrEnum):
     TRANSITION_INDICATOR_PERIOD = "transition_indicator_period"
     NESTED_CONDITION_THRESHOLD = "nested_condition_threshold"
     NESTED_CONDITION_PERIOD = "nested_condition_period"
+    PEAK_DRAWDOWN_THRESHOLD = "peak_drawdown_threshold"
     STATE_ALLOCATION_WEIGHT = "state_allocation_weight"
     VALUE_ZONE_ENTRY_THRESHOLD = "value_zone_entry_threshold"
     VALUE_ZONE_EXIT_THRESHOLD = "value_zone_exit_threshold"
@@ -203,6 +204,7 @@ def discover_semantic_bindings(base_strategy_version: StrategyVersion) -> Semant
             supported,
             unsupported,
             (),
+            transition.get("to_state") in {"VALUE", "DEEP_VALUE"},
         )
         unsupported.append(
             {
@@ -275,6 +277,7 @@ def _discover_condition_targets(
     supported: list[SemanticParameterBinding],
     unsupported: list[Mapping[str, str]],
     path: tuple[int, ...],
+    allow_peak: bool,
 ) -> None:
     if not isinstance(node, Mapping):
         return
@@ -294,11 +297,32 @@ def _discover_condition_targets(
                 supported,
                 unsupported,
                 path + (index,),
+                allow_peak,
             )
         return
     if node.get("type") != "condition":
         return
     kind_prefix = "transition" if not path else "nested"
+    if (
+        allow_peak
+        and node.get("left", {}).get("type") == "peak_drawdown"
+        and node.get("right", {}).get("type") == "constant"
+    ):
+        supported.append(
+            SemanticParameterBinding(
+                f"{kind_prefix}_{transition_id}_"
+                f"{'_'.join(map(str, path)) or 'root'}_peak_drawdown_threshold",
+                BindingValueType.RELATIVE_THRESHOLD,
+                "phase-13p-1-v1",
+                SemanticTargetDescriptor(
+                    SemanticTargetKind.PEAK_DRAWDOWN_THRESHOLD,
+                    version_id,
+                    version_hash,
+                    transition_id=transition_id,
+                    condition_path=path,
+                ),
+            )
+        )
     if isinstance(node.get("threshold"), Mapping) and node["threshold"].get("type") == "relative":
         kind = (
             SemanticTargetKind.TRANSITION_THRESHOLD
@@ -348,7 +372,15 @@ def _discover_condition_targets(
                     ),
                 )
             )
-        elif isinstance(operand, Mapping) and operand.get("type") == "constant":
+        elif (
+            isinstance(operand, Mapping)
+            and operand.get("type") == "constant"
+            and not (
+                allow_peak
+                and side is OperandSide.RIGHT
+                and node.get("left", {}).get("type") == "peak_drawdown"
+            )
+        ):
             unsupported.append(
                 {
                     "target": f"transition:{transition_id}:{side.value}",
@@ -426,6 +458,7 @@ def _resolve_path(payload: Mapping[str, Any], descriptor: SemanticTargetDescript
         SemanticTargetKind.TRANSITION_INDICATOR_PERIOD,
         SemanticTargetKind.NESTED_CONDITION_THRESHOLD,
         SemanticTargetKind.NESTED_CONDITION_PERIOD,
+        SemanticTargetKind.PEAK_DRAWDOWN_THRESHOLD,
     }:
         index, transition = _find_unique(
             payload.get("transitions", ()), "transition_id", descriptor.transition_id, "transition"
@@ -458,6 +491,16 @@ def _resolve_path(payload: Mapping[str, Any], descriptor: SemanticTargetDescript
             if node["threshold"].get("type") != "relative":
                 raise InvalidParameterBindingError("only relative thresholds are supported")
             return f"{prefix}.threshold.value"
+        if kind is SemanticTargetKind.PEAK_DRAWDOWN_THRESHOLD:
+            if (
+                not isinstance(node, Mapping)
+                or node.get("type") != "condition"
+                or node.get("left", {}).get("type") != "peak_drawdown"
+                or node.get("right", {}).get("type") != "constant"
+                or transition.get("to_state") not in {"VALUE", "DEEP_VALUE"}
+            ):
+                raise InvalidParameterBindingError("peak target is no longer an entry condition")
+            return f"{prefix}.right.value"
         side = descriptor.operand_side
         if side is None:
             raise InvalidParameterBindingError("period target requires operand_side")

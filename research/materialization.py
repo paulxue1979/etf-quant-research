@@ -51,6 +51,10 @@ _REGIME_TRANSITION_THRESHOLD_TARGET = re.compile(
     rf"^transitions\[({_ROOT_INDEX})\]\.condition"
     rf"(?P<children>(?:\.children\[{_ROOT_INDEX}\])*)\.threshold\.value$"
 )
+_REGIME_PEAK_TARGET = re.compile(
+    rf"^transitions\[({_ROOT_INDEX})\]\.condition"
+    rf"(?P<children>(?:\.children\[{_ROOT_INDEX}\])*)\.right\.value$"
+)
 _REGIME_ALLOCATION_TARGET = re.compile(
     rf"^regimes\[({_ROOT_INDEX})\]\.target_allocation\."
     rf"allocations\[({_ROOT_INDEX})\]\.target_weight$"
@@ -354,6 +358,7 @@ def _apply_binding(payload: dict[str, Any], binding: ParameterBinding, value: ob
     expected = {
         "period": (BindingValueType.POSITIVE_INTEGER, BindingValueType.INTEGER),
         "threshold": (BindingValueType.RELATIVE_THRESHOLD,),
+        "peak_threshold": (BindingValueType.RELATIVE_THRESHOLD,),
         "allocation": (BindingValueType.ALLOCATION_WEIGHT,),
         "zone_period": (BindingValueType.POSITIVE_INTEGER, BindingValueType.INTEGER),
         "zone_threshold": (
@@ -379,11 +384,17 @@ def _apply_binding(payload: dict[str, Any], binding: ParameterBinding, value: ob
         raise UnsupportedParameterBindingTargetError(
             "only relative threshold values are supported in PHASE 8D-1"
         )
+    if target_kind == "peak_threshold" and (
+        target.get("type") != "constant" or not -1.0 <= float(value) < 0.0
+    ):
+        raise ParameterBindingTypeMismatchError(
+            "peak drawdown threshold must be a negative fraction in [-1, 0)"
+        )
     field = (
         "period"
         if target_kind in {"period", "zone_period"}
         else "value"
-        if target_kind == "threshold"
+        if target_kind in {"threshold", "peak_threshold"}
         else "target_weight"
     )
     if target_kind == "zone_threshold":
@@ -392,6 +403,8 @@ def _apply_binding(payload: dict[str, Any], binding: ParameterBinding, value: ob
 
 
 def _target_kind(path: str) -> str:
+    if _REGIME_PEAK_TARGET.fullmatch(path):
+        return "peak_threshold"
     if _CONDITION_TARGET.fullmatch(path) or _REGIME_TRANSITION_CONDITION_TARGET.fullmatch(path):
         return "period"
     if _VALUE_ZONE_PERIOD_TARGET.fullmatch(path):
@@ -424,6 +437,7 @@ def _is_supported_path_syntax(path: str) -> bool:
             _FALLBACK_ALLOCATION_TARGET,
             _REGIME_TRANSITION_CONDITION_TARGET,
             _REGIME_TRANSITION_THRESHOLD_TARGET,
+            _REGIME_PEAK_TARGET,
             _REGIME_ALLOCATION_TARGET,
             _VALUE_ZONE_PERIOD_TARGET,
             _VALUE_ZONE_THRESHOLD_TARGET,
@@ -436,9 +450,11 @@ def _resolve_target(payload: dict[str, Any], path: str) -> dict[str, Any]:
     condition_root = "rules"
     condition_field = "condition"
     if condition_match is None:
-        condition_match = _REGIME_TRANSITION_CONDITION_TARGET.fullmatch(
-            path
-        ) or _REGIME_TRANSITION_THRESHOLD_TARGET.fullmatch(path)
+        condition_match = (
+            _REGIME_TRANSITION_CONDITION_TARGET.fullmatch(path)
+            or _REGIME_TRANSITION_THRESHOLD_TARGET.fullmatch(path)
+            or _REGIME_PEAK_TARGET.fullmatch(path)
+        )
         condition_root = "transitions"
         condition_field = "condition"
     if condition_match is not None:
@@ -452,6 +468,16 @@ def _resolve_target(payload: dict[str, Any], path: str) -> dict[str, Any]:
             groups = condition_match.groupdict()
             if groups.get("side"):
                 return node[groups["side"]]
+            if _REGIME_PEAK_TARGET.fullmatch(path):
+                if (
+                    node.get("type") != "condition"
+                    or node.get("left", {}).get("type") != "peak_drawdown"
+                    or node.get("right", {}).get("type") != "constant"
+                ):
+                    raise UnsupportedParameterBindingTargetError(
+                        "peak binding requires a peak drawdown condition"
+                    )
+                return node["right"]
             return node["threshold"]
         except (IndexError, KeyError, TypeError) as exc:
             raise UnsupportedParameterBindingTargetError(

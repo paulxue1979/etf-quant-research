@@ -49,6 +49,10 @@ def evaluate_operand(
             f"{operand.operand_type.value.upper()}({operand.symbol}) requires period "
             "and price_field"
         )
+    if operand.operand_type is OperandType.PEAK_DRAWDOWN and operand.price_field is None:
+        raise InvalidConditionConfigurationError(
+            f"PEAK_DRAWDOWN({operand.symbol}) requires an explicit price_field"
+        )
 
     if operand.operand_type is OperandType.PRICE:
         if operand.symbol not in context.market_data:
@@ -81,11 +85,11 @@ def evaluate_operand(
             point.available_on if operand.timeframe is Timeframe.WEEKLY else point.date,
         )
 
-    if operand.operand_type in (OperandType.MA, OperandType.EMA):
+    if operand.operand_type in (OperandType.MA, OperandType.EMA, OperandType.PEAK_DRAWDOWN):
         key = IndicatorKey(
             operand.symbol,
-            "ma" if operand.operand_type is OperandType.MA else "ema",
-            operand.period,
+            operand.operand_type.value,
+            1 if operand.operand_type is OperandType.PEAK_DRAWDOWN else operand.period,
             operand.price_field,
             operand.timeframe,
         )

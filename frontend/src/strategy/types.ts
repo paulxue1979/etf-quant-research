@@ -2,7 +2,7 @@ export type PriceField = "raw_close" | "adjusted_close";
 export type AssetRole = "signal_source" | "execution_asset" | "both";
 export type Timeframe = "daily" | "weekly";
 export type StrategySchemaVersion = "1.0" | "2.0";
-export type OperandType = "price" | "ma" | "ema" | "constant";
+export type OperandType = "price" | "ma" | "ema" | "peak_drawdown" | "constant";
 export type ComparisonOperator =
   | "greater_than"
   | "greater_or_equal"

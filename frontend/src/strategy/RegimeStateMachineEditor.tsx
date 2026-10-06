@@ -137,7 +137,7 @@ function TransitionEditor({
       </div>
       <label>Description<input aria-label="Transition description" value={transition.description} onChange={(event) => update({ description: event.target.value })} /></label>
       <div className="subsection-heading"><div><span className="eyebrow">TRANSITION CONDITION</span><h4>Reuse 12D Condition / Timeframe / Threshold</h4></div></div>
-      <ConditionTreeEditor group={transition.condition} assets={state.assets} priceField={state.priceField} issues={issues} onChange={(condition) => update({ condition })} />
+      <ConditionTreeEditor group={transition.condition} assets={state.assets} priceField={state.priceField} issues={issues} allowPeak={["VALUE", "DEEP_VALUE"].includes(transition.toState) && transition.fromState !== "DEEP_VALUE" && (transition.fromState !== "VALUE" || transition.toState === "DEEP_VALUE")} onChange={(condition) => update({ condition })} />
       <div className="inline-fields">
         <label>Value Zone reference<select aria-label="Transition value zone" value={transition.valueZoneId} onChange={(event) => update({ valueZoneId: event.target.value })}><option value="">No Value Zone trigger</option>{model.valueZones.map((zone) => <option key={zone.id} value={zone.zoneId}>{zone.displayName || zone.zoneId}</option>)}</select></label>
         <label>Value Zone trigger<select aria-label="Value Zone trigger" value={transition.valueZoneTrigger} disabled={!transition.valueZoneId} onChange={(event) => update({ valueZoneTrigger: event.target.value as EditorRegimeTransition["valueZoneTrigger"] })}><option value="match">Match</option><option value="enter">Enter</option><option value="exit">Exit</option></select></label>

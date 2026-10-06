@@ -47,7 +47,7 @@ function safeMessage(payload: unknown, status: number): { code: string; message:
       return { code, message };
     }
   }
-  return { code: `HTTP_${status}`, message: `Research request failed (${status}).` };
+  return { code: `HTTP_${status}`, message: status >= 500 ? `Server processing error (${status}).` : `Research request failed (${status}).` };
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,7 +65,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       payload = await response.json();
     } catch {
-      throw new ResearchApiError("server", `Research request failed (${response.status}).`, `HTTP_${response.status}`, response.status, path);
+      throw new ResearchApiError("server", response.status >= 500 ? `Server processing error (${response.status}).` : `Research request failed (${response.status}).`, `HTTP_${response.status}`, response.status, path);
     }
     const error = safeMessage(payload, response.status);
     throw new ResearchApiError("server", error.message, error.code, response.status, path);
@@ -178,7 +178,7 @@ export const researchApi = {
     return requestJson<OfficialOosPreparation>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/prepare`, { method: "POST" });
   },
   getOfficialOosExecution(protocolId: string) {
-    return requestJson<{ execution: OfficialOosExecutionResponse["execution"]; events: Array<Record<string, unknown>> }>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/execution`);
+    return requestJson<{ execution: OfficialOosExecutionResponse["execution"]; events: Array<Record<string, unknown>>; history_requirement?: OfficialOosPreparation["history_requirement"] | null }>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/execution`);
   },
   executeOfficialOos(protocolId: string) {
     return requestJson<OfficialOosExecutionResponse>(`/research/protocols/${encodeURIComponent(protocolId)}/oos/execute`, { method: "POST" });

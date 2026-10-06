@@ -6,7 +6,7 @@ import { BacktestApiError, backtestApi } from "../backtest/api";
 import { DataAvailabilityPanel } from "../backtest/DataAvailabilityPanel";
 import type { DataAvailabilityProjection } from "../backtest/types";
 import { researchApi, ResearchApiError } from "./api";
-import { buildParameters, parameterRow, percentageType, type ParameterRow } from "./experimentParameters";
+import { buildParameters, isTransitionTarget, parameterRow, percentageType, type ParameterRow } from "./experimentParameters";
 import { semanticTargetDisplay } from "./semanticTargetDisplay";
 import type { ExperimentWorkflowList, ExperimentWorkflowRecord, GridSearchPreflight, ResearchProtocolDetail } from "./types";
 
@@ -179,7 +179,7 @@ export function ExperimentWorkbench({ initialVersion, onBack, onOpenResults }: E
         const display = target ? semanticTargetDisplay(target, initialVersion.configuration) : null;
         const unit = display?.unit ?? (target && percentageType(target.value_type) ? "%" : "");
         const supported = catalog?.targets.filter((item) => item.supported) ?? [];
-        const transitions = supported.filter((item) => item.target_kind.includes("transition") || item.target_kind.includes("condition"));
+        const transitions = supported.filter((item) => isTransitionTarget(item.target_kind));
         const allocations = supported.filter((item) => item.target_kind === "state_allocation_weight");
         const zones = supported.filter((item) => item.target_kind.includes("value_zone"));
         const option = (item: typeof supported[number]) => <option key={item.parameter_name} value={item.parameter_name} disabled={rows.some((other) => other.id !== row.id && other.targetName === item.parameter_name)}>{semanticTargetDisplay(item, initialVersion.configuration).label}</option>;

@@ -15,6 +15,12 @@ class IndicatorKind(StrEnum):
 
     MOVING_AVERAGE = "ma"
     EXPONENTIAL_MOVING_AVERAGE = "ema"
+    PEAK_DRAWDOWN = "peak_drawdown"
+
+
+class IndicatorHistoryRequirement(StrEnum):
+    FIXED_WARMUP = "FIXED_WARMUP"
+    ALL_TIME_TO_DATE = "ALL_TIME_TO_DATE"
 
 
 @dataclass(frozen=True)

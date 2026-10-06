@@ -38,6 +38,9 @@ export function semanticTargetDisplay(target: SemanticTargetPreview, strategy: S
     return { label: `${name}｜${meaning}`, help: `${name}的${meaning}。`, unit };
   }
   const transition = strategy.transitions?.map(record).find((item) => item.transition_id === descriptor.transition_id || item.id === descriptor.transition_id);
+  if (target.target_kind === "peak_drawdown_threshold") {
+    return { label: `${stateDisplayName(transition?.to_state, strategy)}入场｜距前高回撤阈值`, help: "负百分比；基于该资产可用历史最高收盘价。", unit };
+  }
   const relationship = typeof transition?.from_state === "string" && typeof transition?.to_state === "string"
     ? `${stateDisplayName(transition.from_state, strategy)} → ${stateDisplayName(transition.to_state, strategy)}`
     : "未命名状态转换";

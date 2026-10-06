@@ -213,7 +213,40 @@ class StrategyValidator:
         else:
             self._validate_value_zones(strategy, assets, errors)
             self._validate_regime_graph(strategy, assets, errors)
-        return ValidationResult(errors=tuple(errors))
+        return ValidationResult(errors=tuple(errors), warnings=tuple(self._peak_warnings(strategy)))
+
+    def _peak_warnings(self, strategy: StrategyDefinition) -> list[ValidationIssue]:
+        if strategy.strategy_mode is not StrategyEvaluationMode.REGIME_STATE_MACHINE:
+            return []
+        values: dict[str, list[float]] = {"VALUE": [], "DEEP_VALUE": []}
+
+        def visit(node: Condition | RuleGroup, destination: str) -> None:
+            if isinstance(node, RuleGroup):
+                for child in node.children:
+                    visit(child, destination)
+            elif (
+                node.left.operand_type is OperandType.PEAK_DRAWDOWN
+                and node.right.operand_type is OperandType.CONSTANT
+                and destination in values
+            ):
+                values[destination].append(node.right.value)
+
+        for transition in strategy.transitions:
+            visit(transition.condition, transition.to_state)
+        if (
+            values["VALUE"]
+            and values["DEEP_VALUE"]
+            and max(values["DEEP_VALUE"]) > min(values["VALUE"])
+        ):
+            return [
+                self._issue(
+                    ValidationCode.INVALID_THRESHOLD,
+                    "transitions",
+                    "Deep Value peak drawdown threshold is shallower than Value; "
+                    "confirm this is intentional.",
+                )
+            ]
+        return []
 
     def _validate_regime_graph(
         self,
@@ -336,7 +369,18 @@ class StrategyValidator:
                         "value_zone_id must reference a declared value zone",
                     )
                 )
-            self._validate_node(transition.condition, f"{path}.condition", strategy, assets, errors)
+            self._validate_node(
+                transition.condition,
+                f"{path}.condition",
+                strategy,
+                assets,
+                errors,
+                allow_peak=(
+                    transition.to_state in {"VALUE", "DEEP_VALUE"}
+                    and transition.from_state != "DEEP_VALUE"
+                    and (transition.from_state != "VALUE" or transition.to_state == "DEEP_VALUE")
+                ),
+            )
 
     def _validate_value_zones(
         self,
@@ -749,9 +793,38 @@ class StrategyValidator:
         strategy: StrategyDefinition,
         assets: Mapping[str, AssetRole],
         errors: list[ValidationIssue],
+        *,
+        allow_peak: bool = False,
     ) -> None:
         if isinstance(node, Condition):
             self._validate_condition(node, path, strategy, assets, errors)
+            if OperandType.PEAK_DRAWDOWN in {node.left.operand_type, node.right.operand_type}:
+                if (
+                    not allow_peak
+                    or strategy.strategy_mode is not StrategyEvaluationMode.REGIME_STATE_MACHINE
+                ):
+                    errors.append(
+                        self._issue(
+                            ValidationCode.INVALID_CONDITION,
+                            path,
+                            "PEAK_DRAWDOWN is only allowed for entry into VALUE or DEEP_VALUE",
+                        )
+                    )
+                elif (
+                    node.left.operand_type is not OperandType.PEAK_DRAWDOWN
+                    or node.right.operand_type is not OperandType.CONSTANT
+                    or node.threshold is not None
+                    or node.operator is ComparisonOperator.EQUAL
+                    or not -1.0 <= node.right.value < 0.0
+                ):
+                    errors.append(
+                        self._issue(
+                            ValidationCode.INVALID_CONDITION,
+                            path,
+                            "PEAK_DRAWDOWN requires a negative constant fraction on the right "
+                            "and no relative threshold",
+                        )
+                    )
             return
         if isinstance(node, RuleGroup):
             if not isinstance(node.operator, LogicalOperator):
@@ -767,7 +840,14 @@ class StrategyValidator:
                     )
                 )
             for index, child in enumerate(node.children):
-                self._validate_node(child, f"{path}.children[{index}]", strategy, assets, errors)
+                self._validate_node(
+                    child,
+                    f"{path}.children[{index}]",
+                    strategy,
+                    assets,
+                    errors,
+                    allow_peak=allow_peak,
+                )
             return
         errors.append(
             self._issue(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sqlite3
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,9 +9,13 @@ from fastapi.testclient import TestClient
 from backend.app import research_experiment_api as api
 from backend.app.experiment_result_repository import ExperimentResultSummary
 from backend.app.experiment_results_read_service import ExperimentResultsReadModelError
+from backend.app.experiment_selection_handoff_service import ExperimentSelectionHandoffService
+from backend.app.experiment_selection_repository import ExperimentSelectionRepository
 from backend.app.main import app
+from backend.app.research_protocol import ResearchProtocolRepository
 from research.experiment_selection import ExperimentSelectionMethod
 from research.objective_evaluation import ObjectiveEvaluationState
+from tests.unit.test_experiment_selection_handoff import _prepared_fixture
 
 
 class _FakeModel:
@@ -376,6 +381,77 @@ def test_handoff_accepts_empty_body_and_rejects_identity_override(
     assert accepted.json()["provenance"]["oos_started"] is False
     assert rejected.status_code == 422
     assert rejected.json()["detail"]["code"] == "REQUEST_MUST_BE_EMPTY"
+
+
+def test_handoff_response_projects_deep_immutable_provenance_without_mutation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    descriptor = MappingProxyType({"symbol": "QQQ", "threshold": -0.2})
+    nested = MappingProxyType(
+        {"semantic_bindings": (MappingProxyType({"descriptor": descriptor}),)}
+    )
+    provenance = MappingProxyType({"ui_metadata": MappingProxyType({"grid_definition": nested})})
+    decision = SimpleNamespace(
+        to_dict=lambda: {
+            "decision_id": "protocol-selection-1",
+            "selection_hash": "a" * 64,
+            "data_provenance": MappingProxyType({"data_snapshot_reference": provenance}),
+        },
+        selected_strategy_version_id="derived-v1",
+    )
+    freeze = SimpleNamespace(
+        to_dict=lambda: {"freeze_id": "freeze-1"},
+        strategy_version_content_hash="f" * 64,
+    )
+    monkeypatch.setattr(
+        api,
+        "handoff_service",
+        SimpleNamespace(handoff_experiment_selection=lambda _: (decision, freeze)),
+    )
+
+    response = client.post("/research/protocols/protocol-1/experiments/experiment-1/handoff")
+
+    assert response.status_code == 200
+    bindings = response.json()["selection_decision"]["data_provenance"]["data_snapshot_reference"][
+        "ui_metadata"
+    ]["grid_definition"]["semantic_bindings"]
+    assert bindings == [{"descriptor": {"symbol": "QQQ", "threshold": -0.2}}]
+    assert response.json()["selection_decision"]["selection_hash"] == "a" * 64
+    assert response.json()["identity"]["strategy_version_content_hash"] == "f" * 64
+    assert isinstance(provenance["ui_metadata"]["grid_definition"], MappingProxyType)
+    with pytest.raises(TypeError):
+        descriptor["threshold"] = -0.3
+
+
+def test_handoff_http_commit_retry_and_reload_keep_one_frozen_identity(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    database, experiment_selection, protocols = _prepared_fixture(tmp_path)
+    monkeypatch.setattr(api, "handoff_service", ExperimentSelectionHandoffService(database))
+    monkeypatch.setattr(api, "selection_repository", ExperimentSelectionRepository(database))
+    monkeypatch.setattr(api, "research_protocol_repository", ResearchProtocolRepository(database))
+    path = (
+        f"/research/protocols/{experiment_selection.protocol_id}"
+        f"/experiments/{experiment_selection.experiment_id}/handoff"
+    )
+
+    first = client.post(path)
+    retry = client.post(path)
+    reloaded = client.get(path)
+
+    assert first.status_code == retry.status_code == reloaded.status_code == 200
+    assert first.json()["identity"] == retry.json()["identity"] == reloaded.json()["identity"]
+    assert first.json()["selection_decision"] == reloaded.json()["selection_decision"]
+    assert first.json()["strategy_freeze"] == reloaded.json()["strategy_freeze"]
+    assert len(protocols.list_selections(experiment_selection.protocol_id)) == 1
+    assert len(protocols.list_freezes(experiment_selection.protocol_id)) == 1
+    with sqlite3.connect(database) as connection:
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM research_protocol_events "
+            "WHERE protocol_id = ? AND event_type = 'selection_recorded'",
+            (experiment_selection.protocol_id,),
+        ).fetchone()[0]
+    assert event_count == 1
 
 
 def test_handoff_domain_errors_are_structured_and_do_not_leak_internals(

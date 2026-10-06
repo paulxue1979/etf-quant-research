@@ -149,6 +149,11 @@ class Operand:
             raise InvalidOperandError("CONSTANT operand timeframe must be DAILY")
         if operand_type is OperandType.PRICE and self.period is not None:
             raise InvalidOperandError("PRICE operand must not have a period")
+        if operand_type is OperandType.PEAK_DRAWDOWN:
+            if self.period is not None:
+                raise InvalidOperandError("PEAK_DRAWDOWN must not have a period")
+            if timeframe is not Timeframe.DAILY:
+                raise InvalidOperandError("PEAK_DRAWDOWN requires DAILY timeframe")
         if operand_type in (OperandType.MA, OperandType.EMA):
             if (
                 isinstance(self.period, bool)

@@ -4,6 +4,7 @@ import {
   createBlankRegimeEditor,
   createDefaultEditorState,
   createDefaultRegimeEditor,
+  createPeakDrawdownCondition,
   editorReducer,
   fromStrategyPayload,
   toStrategyPayload,
@@ -71,5 +72,42 @@ describe("regime state machine editor contract", () => {
     expect(restored.strategyMode).toBe("regime_state_machine");
     expect(restored.regime?.initialRegime).toBe("PROTECTIVE");
     expect(toStrategyPayload(restored)).toEqual(payload);
+  });
+
+  it("serializes configurable peak entry as a canonical fraction and preserves OR on reload", () => {
+    const base = createDefaultEditorState();
+    const regime = createDefaultRegimeEditor(base.assets);
+    const index = regime.transitions.findIndex((item) => item.toState === "VALUE");
+    const original = regime.transitions[index];
+    const peak = createPeakDrawdownCondition(base.assets);
+    peak.right.value = "-18";
+    const authored = editorReducer(base, {
+      type: "regime",
+      value: { ...regime, transitions: regime.transitions.map((item, position) => position === index
+        ? { ...item, condition: { ...original.condition, operator: "or", children: [...original.condition.children, peak] } }
+        : item) },
+    });
+    const payload = toStrategyPayload(authored);
+    const transition = (payload.transitions as Array<{ transition_id: string; condition: unknown }> | undefined)?.find((item) => item.transition_id === original.transitionId);
+    const condition = transition?.condition as { operator: string; children: Array<{ left: { type: string }; right: { value?: number }; threshold: unknown }> };
+    expect(condition.operator).toBe("or");
+    expect(condition.children[1].left.type).toBe("peak_drawdown");
+    expect(condition.children[1].right.value).toBe(-0.18);
+    expect(condition.children[1].threshold).toBeNull();
+    const restored = fromStrategyPayload(payload);
+    const restoredTransition = restored.regime?.transitions.find((item) => item.transitionId === original.transitionId);
+    const restoredPeak = restoredTransition?.condition.children[1];
+    expect(restoredPeak?.type).toBe("condition");
+    if (restoredPeak?.type === "condition") expect(restoredPeak.right.value).toBe("-18");
+    expect(validateRegimeEditor(restored.regime!, restored.assets)).toEqual([]);
+  });
+
+  it("blocks peak drawdown on exits while preserving normal transitions", () => {
+    const regime = createDefaultRegimeEditor(["QQQ", "TQQQ", "SGOV"]);
+    const exit = regime.transitions.find((item) => item.fromState === "DEEP_VALUE" && item.toState === "RECOVERY_HOLD")!;
+    const invalid = { ...regime, transitions: regime.transitions.map((item) => item.id === exit.id
+      ? { ...item, condition: { ...item.condition, children: [...item.condition.children, createPeakDrawdownCondition(["QQQ"]) ] } }
+      : item) };
+    expect(validateRegimeEditor(invalid, ["QQQ", "TQQQ", "SGOV"]).some((issue) => issue.code === "InvalidPeakDrawdown")).toBe(true);
   });
 });

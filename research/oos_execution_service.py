@@ -21,7 +21,9 @@ from data.exceptions import (
 )
 from data.models import HistoricalDataRequest, HistoricalDataSet, PriceField
 from data.validation import validate_historical_data
+from indicators.models import IndicatorHistoryRequirement
 from indicators.preparation import PreparedStrategyInputs, prepare_strategy_inputs
+from research.data_availability import history_requirement_for_strategy
 from research.date_boundaries import (
     EffectiveDateRangeError,
     validate_effective_range_within_requested,
@@ -299,6 +301,10 @@ class OosExecutionService:
         datasets: dict[str, HistoricalDataSet] = {}
         references: dict[str, object] = {}
         sources: set[str] = set()
+        all_time_history = (
+            history_requirement_for_strategy(strategy)
+            is IndicatorHistoryRequirement.ALL_TIME_TO_DATE
+        )
         for asset in strategy.configuration.assets:
             request = HistoricalDataRequest(
                 symbol=asset.symbol,
@@ -317,12 +323,25 @@ class OosExecutionService:
                 "requested_start": warmup_start.isoformat(),
                 "requested_end": oos_end.isoformat(),
                 "rows": len(dataset.points),
+                **(
+                    {"first_available_date": dataset.points[0].date.isoformat()}
+                    if all_time_history
+                    else {}
+                ),
             }
         if set(datasets) != {asset.symbol for asset in strategy.configuration.assets}:
             raise OosResultIntegrityError("market data assets do not match strategy")
         provenance = OosDataProvenance(
             source="HistoricalDataService",
-            data_reference={"assets": references, "sources": sorted(sources)},
+            data_reference={
+                "assets": references,
+                "sources": sorted(sources),
+                **(
+                    {"history_requirement": IndicatorHistoryRequirement.ALL_TIME_TO_DATE.value}
+                    if all_time_history
+                    else {}
+                ),
+            },
             requested_start=spec.evaluation_range.oos_start,
             requested_end=oos_end,
             warmup_start=warmup_start,

@@ -109,4 +109,26 @@ describe("OOS Research View", () => {
     expect(screen.queryByRole("button", { name: /rerun|select|recommend|winner/i })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("shows persisted all-time peak history and the observed first asset date", async () => {
+    const history = {
+      data_reference: {
+        history_requirement: "ALL_TIME_TO_DATE",
+        assets: { QQQ: { first_available_date: "1999-03-10" } },
+      },
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ...oosView,
+        provenance: { ...oosView.provenance, data_provenance: history },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<OosResearchView onBack={vi.fn()} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "OOS Protocol ID" }), {
+      target: { value: "protocol-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Load official OOS" }));
+    expect(await screen.findByText("Peak Drawdown · All-time to date")).toBeInTheDocument();
+    expect(screen.getByText("QQQ: 1999-03-10")).toBeInTheDocument();
+  });
 });

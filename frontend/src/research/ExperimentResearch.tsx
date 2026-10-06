@@ -241,6 +241,7 @@ function PersistedSelection({ selection, frozen }: { selection: SelectionDecisio
 function OfficialOosPanel({
   handoff,
   execution,
+  historyRequirement,
   busy,
   onPrepare,
   onExecute,
@@ -248,6 +249,7 @@ function OfficialOosPanel({
 }: {
   handoff: HandoffResponse;
   execution: OfficialOosExecutionResponse["execution"] | null;
+  historyRequirement: string | null;
   busy: boolean;
   onPrepare: () => void;
   onExecute: () => void;
@@ -258,6 +260,7 @@ function OfficialOosPanel({
     <div className="section-header compact"><div><span className="eyebrow">OFFICIAL OOS</span><h2>Frozen strategy validation</h2></div><span className={`status-pill ${status === "completed" ? "is-valid" : "is-warning"}`}>{statusLabel(status)}</span></div>
     <p className="muted">One official OOS execution is allowed for this exact frozen StrategyVersion. Parameters and dates are server-controlled.</p>
     <dl className="research-detail-list"><dt>Frozen StrategyVersion</dt><dd>{handoff.identity.strategy_version_id}</dd><dt>Content hash</dt><dd className="research-hash">{handoff.identity.strategy_version_content_hash}</dd><dt>Execution ID</dt><dd>{execution?.execution_id ?? "Created on prepare"}</dd></dl>
+    {historyRequirement === "ALL_TIME_TO_DATE" && <dl className="research-detail-list"><dt>Indicator</dt><dd>Peak Drawdown</dd><dt>History mode</dt><dd>All-time to date</dd><dt>Historical request start</dt><dd>{String(execution?.warmup_start ?? "Shown after prepare")}</dd></dl>}
     <div className="action-buttons">
       {!execution && <button className="button button-secondary" type="button" disabled={busy} onClick={onPrepare}>{busy ? "Preparing..." : "Prepare Official OOS"}</button>}
       {execution && status !== "completed" && <button className="button button-primary" type="button" disabled={busy || status === "running"} onClick={onExecute}>{busy ? "Executing..." : status === "failed" ? "Retry Official OOS" : "Run Official OOS"}</button>}
@@ -285,6 +288,7 @@ export function ExperimentResearch({ onBack, initialProtocolId = "", initialExpe
   const [protocolDetail, setProtocolDetail] = useState<ResearchProtocolDetail | null>(null);
   const [freezeReadError, setFreezeReadError] = useState<string | null>("FREEZE_STATE_UNAVAILABLE: Load persisted freeze state.");
   const [oosExecution, setOosExecution] = useState<OfficialOosExecutionResponse["execution"] | null>(null);
+  const [oosHistoryRequirement, setOosHistoryRequirement] = useState<string | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<CandidateResult | null>(null);
   const [busy, setBusy] = useState<"load" | "selection" | "handoff" | null>(null);
   const [error, setError] = useState<ResearchApiError | string | null>(null);
@@ -326,6 +330,7 @@ export function ExperimentResearch({ onBack, initialProtocolId = "", initialExpe
     setProtocolDetail(null);
     setFreezeReadError("FREEZE_STATE_UNAVAILABLE: Verifying persisted freeze state.");
     setOosExecution(null);
+    setOosHistoryRequirement(null);
     setSelectedCandidate(null);
     setCompatibility(null);
     setObjective(null);
@@ -356,7 +361,10 @@ export function ExperimentResearch({ onBack, initialProtocolId = "", initialExpe
       setFreezeReadError("FREEZE_STATE_UNAVAILABLE: Persisted freeze state could not be verified; reload research.");
     }
     if (protocolResponse.status === "fulfilled") setProtocolDetail(protocolResponse.value);
-    if (oosResponse.status === "fulfilled") setOosExecution(oosResponse.value.execution);
+    if (oosResponse.status === "fulfilled") {
+      setOosExecution(oosResponse.value.execution);
+      setOosHistoryRequirement(oosResponse.value.history_requirement ?? null);
+    }
     setBusy(null);
   }
 
@@ -366,6 +374,7 @@ export function ExperimentResearch({ onBack, initialProtocolId = "", initialExpe
     try {
       const prepared = await researchApi.prepareOfficialOos(protocolId.trim());
       setOosExecution(prepared.execution);
+      setOosHistoryRequirement(prepared.history_requirement ?? null);
     } catch (reason) {
       setError(reason instanceof ResearchApiError ? reason : "Official OOS could not be prepared.");
     } finally {
@@ -442,7 +451,7 @@ export function ExperimentResearch({ onBack, initialProtocolId = "", initialExpe
         <OptimizationResultsExplorer protocolId={results.protocol_id} experimentId={results.experiment_id} parameterLabels={parameterLabels} selectedCandidateId={selection?.selected_candidate_id} />
         <section className="panel"><div className="section-header compact"><div><span className="eyebrow">CANDIDATE RESULTS</span><h2>Persisted IS evidence</h2></div><span className="muted">Candidate index order</span></div><CandidateTable candidates={candidates} parameterLabels={parameterLabels} objective={objectiveByCandidate} selectedCandidateId={selectedCandidate?.candidate_id ?? ""} persistedSelection={selection} onSelect={setSelectedCandidate} allowChange={allowSelectionChange && busy === null} frozen={handoff !== null} /></section>
         {selectedCandidate && allowSelectionChange && (!selection || selectedCandidate.candidate_id !== selection.selected_candidate_id) && <SelectionPanel candidate={selectedCandidate} objectiveState={objectiveByCandidate.get(selectedCandidate.candidate_id)} onCancel={() => setSelectedCandidate(null)} onSubmit={(request) => void submitSelection(request)} busy={busy === "selection"} />}
-        {selection && <><PersistedSelection selection={selection} frozen={handoff !== null} /><FreezeSelectionPanel key={selection.selection_id} selection={selection} candidate={candidates.find((item) => item.candidate_id === selection.selected_candidate_id)} results={results} protocol={protocolDetail} labels={parameterLabels} frozen={handoff} blockReason={freezeBlockReason} onFreeze={() => void submitHandoff()} busy={busy !== null} />{handoff && <OfficialOosPanel handoff={handoff} execution={oosExecution} busy={busy === "handoff"} onPrepare={() => void prepareOos()} onExecute={() => void executeOos()} onOpen={() => onOpenOos?.(results.protocol_id)} />}</>}
+        {selection && <><PersistedSelection selection={selection} frozen={handoff !== null} /><FreezeSelectionPanel key={selection.selection_id} selection={selection} candidate={candidates.find((item) => item.candidate_id === selection.selected_candidate_id)} results={results} protocol={protocolDetail} labels={parameterLabels} frozen={handoff} blockReason={freezeBlockReason} onFreeze={() => void submitHandoff()} busy={busy !== null} />{handoff && <OfficialOosPanel handoff={handoff} execution={oosExecution} historyRequirement={oosHistoryRequirement} busy={busy === "handoff"} onPrepare={() => void prepareOos()} onExecute={() => void executeOos()} onOpen={() => onOpenOos?.(results.protocol_id)} />}</>}
       </>}
     </main>
   );

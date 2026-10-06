@@ -65,6 +65,17 @@ export function createCondition(assets: string[]): EditorCondition {
   };
 }
 
+export function createPeakDrawdownCondition(assets: string[]): EditorCondition {
+  return {
+    id: nextId("condition"),
+    type: "condition",
+    left: createOperand(assets, "peak_drawdown"),
+    operator: "less_or_equal",
+    right: { ...createOperand(assets, "constant"), value: "-20" },
+    thresholdPercent: "",
+  };
+}
+
 export function createRuleGroup(
   assets: string[],
   operator: LogicalOperator = "and",
@@ -556,6 +567,9 @@ function toOperandPayload(operand: EditorOperand, priceField: PriceField): Strat
       timeframe: operand.timeframe,
     };
   }
+  if (operand.type === "peak_drawdown") {
+    return { type: "peak_drawdown", asset: operand.asset, price_field: priceField, timeframe: "daily" };
+  }
   return {
     type: operand.type,
     asset: operand.asset,
@@ -569,6 +583,18 @@ function toConditionPayload(
   condition: EditorCondition,
   priceField: PriceField,
 ): StrategyConditionPayload {
+  if (condition.left.type === "peak_drawdown") {
+    return {
+      type: "condition",
+      left: toOperandPayload(condition.left, priceField),
+      operator: condition.operator,
+      right: {
+        ...toOperandPayload(condition.right, priceField),
+        value: toNumber(condition.right.value, "peak drawdown threshold") / 100,
+      },
+      threshold: null,
+    };
+  }
   const threshold =
     condition.operator === "equal" || condition.thresholdPercent.trim() === ""
       ? null
@@ -732,7 +758,11 @@ function fromRuleNode(
       type: "condition",
       left: fromOperandPayload(node.left),
       operator: node.operator,
-      right: fromOperandPayload(node.right),
+      right: {
+        ...fromOperandPayload(node.right),
+        value: node.left.type === "peak_drawdown" && node.right.value !== undefined
+          ? formatPercentValue(node.right.value) : node.right.value === undefined ? "" : String(node.right.value),
+      },
       thresholdPercent: node.threshold ? formatPercentValue(node.threshold.value) : "",
     };
   }
@@ -1225,6 +1255,7 @@ export function validateConditionGroup(
   group: EditorRuleGroup,
   assets: string[],
   path: string,
+  allowPeak = false,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const visit = (node: EditorRuleGroup, nodePath: string) => {
@@ -1234,6 +1265,13 @@ export function validateConditionGroup(
         return;
       }
       const conditionPath = `${nodePath}.children[${index}]`;
+      if (child.left.type === "peak_drawdown" || child.right.type === "peak_drawdown") {
+        if (!allowPeak || child.left.type !== "peak_drawdown" || child.right.type !== "constant" ||
+          child.left.timeframe !== "daily" || child.thresholdPercent.trim() !== "" || child.operator === "equal" ||
+          !Number.isFinite(Number(child.right.value)) || Number(child.right.value) < -100 || Number(child.right.value) >= 0) {
+          issues.push({ code: "InvalidPeakDrawdown", path: conditionPath, message: "距前高回撤仅可用于进入 VALUE/DEEP_VALUE，阈值须为负百分比。" });
+        }
+      }
       if (!assets.includes(child.left.asset) && child.left.type !== "constant") {
         issues.push({ code: "UnknownAsset", path: `${conditionPath}.left.asset`, message: `${child.left.asset} is not a declared asset.` });
       }
@@ -1303,7 +1341,7 @@ export function validateRegimeEditor(
     if (Number.isInteger(priority)) fromPriorities.add(priority);
     priorities.set(transition.fromState, fromPriorities);
     if (transition.valueZoneId && !regime.valueZones.some((zone) => zone.zoneId === transition.valueZoneId)) issues.push({ code: "UnknownValueZoneReference", path: `transitions[${index}].value_zone_id`, message: "Transition value zone reference is not declared." });
-    issues.push(...validateConditionGroup(transition.condition, assets, `transitions[${index}].condition`));
+    issues.push(...validateConditionGroup(transition.condition, assets, `transitions[${index}].condition`, ["VALUE", "DEEP_VALUE"].includes(transition.toState)));
   });
   const zoneIds = new Set<string>();
   const zonePriorities = new Set<number>();

@@ -13,6 +13,7 @@ from data.trading_calendar import TradingSessionCalendar
 from indicators.exponential_moving_average import exponential_moving_average
 from indicators.models import IndicatorKind, IndicatorSeries
 from indicators.moving_average import moving_average
+from indicators.peak_drawdown import peak_drawdown
 from strategies.strategy_evaluation import required_indicators, required_weekly_assets
 
 
@@ -60,6 +61,10 @@ def prepare_strategy_inputs(
             series = exponential_moving_average(
                 dataset, period=requirement.period, price_field=price_field
             )
+        elif requirement.kind is IndicatorKind.PEAK_DRAWDOWN:
+            if not isinstance(dataset, HistoricalDataSet):
+                raise ValueError("peak drawdown requires daily history")
+            series = peak_drawdown(dataset, price_field=price_field)
         else:  # pragma: no cover - guarded by strategy validation
             raise ValueError(f"unsupported indicator {requirement.kind.value}")
         prepared.append((requirement.asset.symbol, series))

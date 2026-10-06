@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { researchApi } from "./api";
+import { ResearchApiError, researchApi } from "./api";
 
 describe("research API error classification", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -16,7 +16,17 @@ describe("research API error classification", () => {
       kind: "server",
       code: "HTTP_500",
       status: 500,
+      message: "Server processing error (500).",
     });
+  });
+
+  it("keeps a real network failure distinct from an HTTP server failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("connection refused")));
+
+    await expect(researchApi.listExperiments()).rejects.toMatchObject({
+      kind: "network",
+      code: "NETWORK_OR_CORS_FAILURE",
+    } satisfies Partial<ResearchApiError>);
   });
 
   it("uses server-controlled official OOS workflow endpoints without overrides", async () => {

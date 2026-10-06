@@ -25,6 +25,7 @@ class OperandType(StrEnum):
     PRICE = "price"
     MA = "ma"
     EMA = "ema"
+    PEAK_DRAWDOWN = "peak_drawdown"
     CONSTANT = "constant"
 
 

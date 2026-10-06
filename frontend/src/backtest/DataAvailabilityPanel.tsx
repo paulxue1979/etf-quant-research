@@ -25,7 +25,7 @@ export function DataAvailabilityPanel({ projection, loading, error }: {
         <dt>Warm-up request start</dt><dd>{projection.warmup_start}</dd>
         <dt>Price field</dt><dd>{projection.price_field === "adjusted_close" ? "Adjusted Close" : "Raw Close"}</dd>
       </dl>
-      {projection.indicator_requirements.length > 0 && <div className="data-availability-requirements"><strong>Indicator requirements</strong>{projection.indicator_requirements.map((item) => <span key={`${item.asset}-${item.timeframe}-${item.period}`}>{item.asset} · {item.timeframe.toUpperCase()} · {item.period} completed bars</span>)}</div>}
+      {projection.indicator_requirements.length > 0 && <div className="data-availability-requirements"><strong>Indicator requirements</strong>{projection.indicator_requirements.map((item) => <span key={`${item.asset}-${item.timeframe}-${item.kind}-${item.period}`}>{item.kind === "peak_drawdown" ? `${item.asset} · 距前高回撤 · All-time to date · Available history before requested range` : `${item.asset} · ${item.timeframe.toUpperCase()} · ${item.period} completed bars`}</span>)}</div>}
       <div className="data-availability-assets"><strong>Asset availability</strong>{projection.assets.map((asset) => <div key={asset.symbol}><span>{asset.symbol}</span><span>{asset.first_available_date ?? "Unavailable"} → {asset.last_available_date ?? "Unavailable"}</span>{asset.warnings?.map((warning) => <small key={`${asset.symbol}-${warning.code}`}>{issueText(warning)}</small>)}</div>)}</div>
       {projection.info.map((info) => <p className="muted" key={`${info.code}-${info.message}`}>Info: {issueText(info)}</p>)}
       {projection.warnings.map((warning) => <p className="muted" key={`${warning.code}-${warning.message}`}>Warning: {issueText(warning)}</p>)}

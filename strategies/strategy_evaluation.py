@@ -349,6 +349,21 @@ def _indicator_requirements(strategy_version: StrategyVersion) -> tuple[Indicato
                         operand.timeframe,
                     )
                 )
+    if strategy.strategy_mode is StrategyEvaluationMode.REGIME_STATE_MACHINE:
+        for transition in strategy.transitions:
+            if transition.to_state not in {"VALUE", "DEEP_VALUE"}:
+                continue
+            for operand in _operands(transition.condition):
+                if operand.operand_type is OperandType.PEAK_DRAWDOWN:
+                    requirements.add(
+                        IndicatorKey(
+                            operand.asset,
+                            "peak_drawdown",
+                            1,
+                            operand.price_field,
+                            Timeframe.DAILY,
+                        )
+                    )
     for zone in strategy.value_zones:
         requirements.add(
             IndicatorKey(

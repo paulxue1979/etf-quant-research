@@ -17,6 +17,11 @@ from data.cache import DiskCache
 from data.config import TiingoSettings
 from data.service import HistoricalDataService
 from data.tiingo import TiingoClient
+from indicators.models import IndicatorHistoryRequirement
+from research.data_availability import (
+    history_requirement_for_strategy,
+    warmup_start_for_strategy,
+)
 from research.oos import (
     OosDataProvenance,
     OosEvaluationConfig,
@@ -76,9 +81,12 @@ def _governance(protocol_id: str) -> tuple[Any, Any, Any]:
 def _spec(protocol: Any, freeze: Any, strategy: Any) -> OosEvaluationSpec:
     if protocol.evaluation_config is None:
         raise _error("OOS_CONFIGURATION_MISSING", "frozen evaluation configuration is missing")
-    # The protocol IS start is the immutable warm-up boundary. It is before the
-    # OOS range and is never substituted for the OOS performance start.
-    warmup_start = protocol.is_start_date
+    history_requirement = history_requirement_for_strategy(strategy)
+    warmup_start = (
+        warmup_start_for_strategy(protocol.is_start_date, strategy)
+        if history_requirement is IndicatorHistoryRequirement.ALL_TIME_TO_DATE
+        else protocol.is_start_date
+    )
     validate_oos_range(
         protocol.is_start_date,
         protocol.is_end_date,
@@ -103,6 +111,11 @@ def _spec(protocol: Any, freeze: Any, strategy: Any) -> OosEvaluationSpec:
             "protocol_id": protocol.protocol_id,
             "strategy_version_id": strategy.version_id,
             "price_field": config.price_field_used.value,
+            **(
+                {"history_requirement": history_requirement.value}
+                if history_requirement is IndicatorHistoryRequirement.ALL_TIME_TO_DATE
+                else {}
+            ),
         },
         requested_start=protocol.oos_start_date,
         requested_end=protocol.oos_end_date,
@@ -173,6 +186,7 @@ def prepare_official_oos(
             "evaluation_range": spec.evaluation_range.to_dict(),
             "configuration": spec.configuration.to_dict(),
             "provenance": {"source": "frozen_research_protocol", "one_shot": True},
+            "history_requirement": history_requirement_for_strategy(strategy).value,
         }
     except HTTPException:
         raise
@@ -188,9 +202,13 @@ def get_official_oos_execution(protocol_id: str) -> dict[str, Any]:
     execution = _executions.get_execution_by_protocol(protocol_id)
     if execution is None:
         raise _error("OOS_EXECUTION_NOT_FOUND", "official OOS execution was not prepared", 404)
+    strategy = _strategies.get_any_version(execution.strategy_version_id)
     return {
         "execution": _execution_payload(execution),
         "events": [event.to_dict() for event in _executions.list_events(execution.execution_id)],
+        "history_requirement": (
+            history_requirement_for_strategy(strategy).value if strategy is not None else None
+        ),
     }
 
 

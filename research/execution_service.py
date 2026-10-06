@@ -34,6 +34,7 @@ from research.backtest_materialization import (
     materialize_backtest_config,
 )
 from research.canonical import sha256_hash
+from research.data_availability import warmup_start_for_strategy
 from research.date_boundaries import (
     EffectiveDateRangeError,
     validate_effective_range_within_requested,
@@ -53,7 +54,7 @@ from research.materialization import (
 from research.semantic_bindings import SemanticParameterBinding, resolve_semantic_bindings
 from strategies.enums import StrategyEvaluationStatus
 from strategies.evaluation import EvaluationContext
-from strategies.strategy_evaluation import evaluate_strategy, required_indicators
+from strategies.strategy_evaluation import evaluate_strategy
 
 ENGINE_SERVICE_VERSION = "phase-8d-3-v1"
 _EXECUTABLE_EXPERIMENT_STATES = {
@@ -917,14 +918,7 @@ class ExperimentExecutionService:
 
 
 def _warmup_start(is_start: date, strategy_version: Any) -> date:
-    requirements = required_indicators(strategy_version)
-    daily_period = max(
-        (item.period for item in requirements if item.timeframe.value == "daily"), default=1
-    )
-    weekly_period = max(
-        (item.period for item in requirements if item.timeframe.value == "weekly"), default=0
-    )
-    return is_start - timedelta(days=max(daily_period * 3 + 10, weekly_period * 7 + 21))
+    return warmup_start_for_strategy(is_start, strategy_version)
 
 
 def _failure_message(code: str) -> str:

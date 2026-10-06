@@ -57,6 +57,14 @@ function MetricGrid({ metrics }: { metrics: Record<string, MetricValue> }) {
 
 function Provenance({ view }: { view: OosResearchViewModel }) {
   const p = view.provenance;
+  const rawProvenance = p.data_provenance as Record<string, unknown> | undefined;
+  const dataReference = rawProvenance?.data_reference;
+  const reference = dataReference && typeof dataReference === "object" ? dataReference as Record<string, unknown> : {};
+  const assets = reference.assets && typeof reference.assets === "object" ? reference.assets as Record<string, Record<string, unknown>> : {};
+  const historicalStarts = Object.entries(assets)
+    .filter(([, asset]) => typeof asset?.first_available_date === "string")
+    .map(([symbol, asset]) => `${symbol}: ${asset.first_available_date}`)
+    .join(", ");
   const rows: Array<[string, unknown]> = [
     ["Protocol ID", p.protocol_id], ["OOS Result ID", p.oos_result_id], ["Backtest Run ID", p.backtest_run_id], ["Execution ID", p.execution_id],
     ["Strategy Version ID", p.strategy_version_id], ["Strategy Content Hash", p.strategy_content_hash], ["Selection Decision ID", p.selection_decision_id], ["Strategy Freeze ID", p.strategy_freeze_id],
@@ -66,6 +74,9 @@ function Provenance({ view }: { view: OosResearchViewModel }) {
     ["Asset universe", Array.isArray(p.asset_universe) ? p.asset_universe.join(", ") : undefined], ["Data provenance", JSON.stringify(p.data_provenance)],
     ["Frozen configuration", JSON.stringify(p.strategy_version_configuration)],
   ];
+  if (reference.history_requirement === "ALL_TIME_TO_DATE") {
+    rows.splice(11, 0, ["Indicator history mode", "Peak Drawdown · All-time to date"], ["Historical data start", historicalStarts || "Unavailable"]);
+  }
   return <dl className="research-detail-list oos-provenance-list">{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd className={label.includes("Hash") || label.includes("ID") ? "research-hash" : undefined}>{text(value)}</dd></div>)}</dl>;
 }
 

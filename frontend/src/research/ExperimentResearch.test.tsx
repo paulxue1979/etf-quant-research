@@ -70,7 +70,7 @@ function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function mockResearchApi({ selection = false, handoff = false, semanticHash, resultsValue = results, freezeReadFailure = false }: { selection?: boolean; handoff?: boolean; semanticHash?: string; resultsValue?: unknown; freezeReadFailure?: boolean } = {}) {
+function mockResearchApi({ selection = false, handoff = false, semanticHash, resultsValue = results, freezeReadFailure = false, peakOos = false }: { selection?: boolean; handoff?: boolean; semanticHash?: string; resultsValue?: unknown; freezeReadFailure?: boolean; peakOos?: boolean } = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.endsWith("/results")) return json(resultsValue);
@@ -87,6 +87,7 @@ function mockResearchApi({ selection = false, handoff = false, semanticHash, res
     if (url.endsWith("/selection")) return selection ? json(persistedSelection) : json({ detail: { code: "SELECTION_NOT_FOUND", message: "experiment selection was not found" } }, 404);
     if (url.endsWith("/handoff") && init?.method === "POST") return json(frozenResponse);
     if (url.endsWith("/handoff")) return freezeReadFailure ? json({ detail: { code: "HANDOFF_READ_UNAVAILABLE" } }, 503) : handoff ? json(frozenResponse) : json({ detail: { code: "HANDOFF_NOT_FOUND", message: "experiment selection has not been handed off" } }, 404);
+    if (peakOos && url.endsWith("/oos/prepare") && init?.method === "POST") return json({ execution: { execution_id: "oos-execution-1", status: "prepared", attempt_count: 0, warmup_start: "1900-01-01" }, history_requirement: "ALL_TIME_TO_DATE" });
     return json({}, 404);
   });
 }
@@ -97,6 +98,16 @@ afterEach(() => {
 });
 
 describe("Experiment Research", () => {
+  it("shows the frozen peak history mode after official OOS preparation", async () => {
+    mockResearchApi({ selection: true, handoff: true, peakOos: true });
+    render(<ExperimentResearch onBack={vi.fn()} initialProtocolId="protocol-1" initialExperimentId="experiment-1" />);
+    await screen.findByRole("button", { name: "Prepare Official OOS" });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare Official OOS" }));
+    expect(await screen.findByText("All-time to date")).toBeInTheDocument();
+    expect(screen.getByText("Peak Drawdown")).toBeInTheDocument();
+    expect(screen.getByText("1900-01-01")).toBeInTheDocument();
+  });
+
   it.each([true, false])("uses only matching frozen-version display metadata (matching=%s) and keeps all minimum metrics", async (matching) => {
     const parameters = { values: { "nested_transition-10_0_threshold": 0.03, state_FULL_RISK_ON_QQQ_weight: 0.9 } };
     const persisted = { ...results, candidates: [{ ...candidate(0), parameter_set: parameters, performance_summary: {
