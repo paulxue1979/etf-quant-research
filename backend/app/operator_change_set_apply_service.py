@@ -59,10 +59,10 @@ class OperatorChangeSetApplyService:
                 "can_approve": False,
                 "reason": "CHANGESET_STALE"
                 if proposal["status"] == "STALE"
+                else "CHANGESET_FAILED"
+                if proposal["status"] == "FAILED"
                 else proposal["status"],
             }
-        if proposal["validation_status"] != "PASS":
-            return {"can_approve": False, "reason": "CHANGESET_VALIDATION_FAILED"}
         try:
             strategy = self._strategies.get_strategy(proposal["strategy_id"])
             draft = self._strategies.get_draft(proposal["strategy_id"])
@@ -80,7 +80,7 @@ class OperatorChangeSetApplyService:
             ]
             _, details = self._preview.preview(draft, operations)
             if (
-                details["validation_status"] != "PASS"
+                details["validation_status"] != proposal["validation_status"]
                 or details["proposed_after_hash"] != proposal["proposed_after_hash"]
                 or details["human_readable_diff"] != proposal["human_readable_diff"]
             ):
@@ -99,6 +99,8 @@ class OperatorChangeSetApplyService:
         if not self._proposals.path.exists():
             raise ChangeSetDecisionError("CHANGESET_NOT_FOUND")
         connection = self._strategies._connect()
+        failure_stage: str | None = None
+        committed = False
         try:
             connection.execute("ATTACH DATABASE ? AS operator", (str(self._proposals.path),))
             if any(
@@ -127,6 +129,19 @@ class OperatorChangeSetApplyService:
                 "WHERE change_set_id = ?",
                 (change_set_id,),
             ).fetchone()
+            has_failure = connection.execute(
+                "SELECT 1 FROM operator.sqlite_master WHERE type = 'table' "
+                "AND name = 'operator_change_set_failures'"
+            ).fetchone()
+            failed = (
+                has_failure
+                and connection.execute(
+                    "SELECT 1 FROM operator.operator_change_set_failures WHERE change_set_id = ?",
+                    (change_set_id,),
+                ).fetchone()
+            )
+            if failed and prior is not None:
+                raise ChangeSetDecisionError("CHANGESET_INTEGRITY_ERROR")
             if prior is not None:
                 result = "ALREADY_APPLIED" if prior["result"] == "APPLIED" else "ALREADY_REJECTED"
                 connection.execute("ROLLBACK")
@@ -135,6 +150,8 @@ class OperatorChangeSetApplyService:
                 ):
                     raise ChangeSetDecisionError(result)
                 return {"result": result, "audit": json.loads(prior["audit_json"])}
+            if failed:
+                raise ChangeSetDecisionError("CHANGESET_FAILED")
             if proposal_row["status"] != "PROPOSED":
                 if approve:
                     raise ChangeSetDecisionError("ALREADY_REJECTED")
@@ -169,21 +186,23 @@ class OperatorChangeSetApplyService:
                 raise ChangeSetDecisionError("CHANGESET_STALE")
             when = datetime.now(UTC).isoformat()
             if approve:
-                if proposal["validation_status"] != "PASS":
-                    raise ChangeSetDecisionError("CHANGESET_VALIDATION_FAILED")
+                failure_stage = "OPERATION_RESOLUTION"
                 try:
                     operations = [
                         DraftChangeOperation.model_validate(item) for item in proposal["operations"]
                     ]
                     after_payload, details = self._preview.preview(draft, operations)
                 except (ChangeSetPreparationError, ValidationError, KeyError, TypeError) as exc:
-                    raise ChangeSetDecisionError("CHANGESET_VALIDATION_FAILED") from exc
+                    raise ChangeSetDecisionError("CHANGESET_OPERATION_RESOLUTION_FAILED") from exc
+                failure_stage = "VALIDATION"
                 if (
                     details["validation_status"] != "PASS"
+                    or proposal["validation_status"] != "PASS"
                     or details["proposed_after_hash"] != proposal["proposed_after_hash"]
                     or details["human_readable_diff"] != proposal["human_readable_diff"]
                 ):
                     raise ChangeSetDecisionError("CHANGESET_VALIDATION_FAILED")
+                failure_stage = "TRANSACTION"
                 updated = connection.execute(
                     "UPDATE strategy_drafts SET draft_revision = ?, "
                     "active_strategy_payload_json = ?, draft_hash = ?, updated_at = ? "
@@ -231,14 +250,37 @@ class OperatorChangeSetApplyService:
                 (change_set_id, result, "HUMAN_APPROVAL", canonical_json(audit), when),
             )
             connection.execute("COMMIT")
+            committed = True
             return {"result": result, "audit": audit}
-        except ChangeSetDecisionError:
+        except ChangeSetDecisionError as exc:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")
+            if (
+                approve
+                and failure_stage is not None
+                and not committed
+                and str(exc) != "CHANGESET_STALE"
+            ):
+                self._record_failure(change_set_id, str(exc), failure_stage)
             raise
         except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")
+            if approve and failure_stage is not None and not committed:
+                self._record_failure(change_set_id, "CHANGESET_STORAGE_ERROR", failure_stage)
             raise ChangeSetDecisionError("CHANGESET_STORAGE_ERROR") from exc
         finally:
             connection.close()
+
+    def _record_failure(self, change_set_id: str, code: str, stage: str) -> None:
+        message = (
+            "The proposal no longer passes validation. The Draft was not changed."
+            if stage == "VALIDATION"
+            else "A semantic operation could not be resolved. The Draft was not changed."
+            if stage == "OPERATION_RESOLUTION"
+            else "The application transaction failed. The Draft was not changed."
+        )
+        try:
+            self._proposals.record_failure(change_set_id, code, stage, message)
+        except Exception as exc:
+            raise ChangeSetDecisionError("CHANGESET_FAILURE_RECORD_UNAVAILABLE") from exc

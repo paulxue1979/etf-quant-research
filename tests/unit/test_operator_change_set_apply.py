@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from mcp import Client
 
 from backend.app.operator_change_set_apply_service import (
     ChangeSetDecisionError,
     OperatorChangeSetApplyService,
 )
-from backend.app.operator_change_set_repository import OperatorChangeSetRepository
+from backend.app.operator_change_set_repository import (
+    ChangeSetStorageError,
+    OperatorChangeSetRepository,
+)
 from backend.app.operator_change_set_service import (
     DraftChangeOperation,
     OperationKind,
@@ -21,6 +26,7 @@ from backend.app.operator_change_set_service import (
 )
 from backend.app.operator_read_service import OperatorReadService
 from backend.app.strategy_repository import StrategyRepository
+from backend.operator_mcp import create_server
 from data.cache import DiskCache
 from tests.unit.test_peak_drawdown import _entry_version
 
@@ -186,11 +192,20 @@ def test_invalid_second_operation_rolls_back_first(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
     before = store.db_path.read_bytes()
-    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_VALIDATION_FAILED"):
+    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_OPERATION_RESOLUTION_FAILED"):
         apply.approve(draft.strategy_id, proposal["change_set_id"])
     assert store.db_path.read_bytes() == before
-    assert proposals.get(proposal["change_set_id"])["status"] == "PROPOSED"
-    assert apply.list_for_strategy(draft.strategy_id)
+    failure = proposals.get(proposal["change_set_id"])
+    assert failure["status"] == "FAILED"
+    assert failure["failure_stage"] == "OPERATION_RESOLUTION"
+    assert prepare.get_change_set(proposal["change_set_id"])["status"] == "FAILED"
+    assert not proposals.reject(proposal["change_set_id"])
+    assert (
+        apply.get(draft.strategy_id, proposal["change_set_id"])["approval_gate"]["can_approve"]
+        is False
+    )
+    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_FAILED"):
+        apply.approve(draft.strategy_id, proposal["change_set_id"])
 
 
 def test_displayed_diff_cannot_diverge_from_approved_operations(tmp_path: Path) -> None:
@@ -212,7 +227,7 @@ def test_displayed_diff_cannot_diverge_from_approved_operations(tmp_path: Path) 
     with pytest.raises(ChangeSetDecisionError, match="CHANGESET_VALIDATION_FAILED"):
         apply.approve(draft.strategy_id, proposal["change_set_id"])
     assert store.get_draft(draft.strategy_id).draft_revision == 1
-    assert proposals.get(proposal["change_set_id"])["status"] == "PROPOSED"
+    assert proposals.get(proposal["change_set_id"])["status"] == "FAILED"
 
 
 def test_concurrent_approval_increments_revision_once(tmp_path: Path) -> None:
@@ -251,6 +266,34 @@ def test_validation_is_rechecked_and_wrong_strategy_is_hidden(tmp_path: Path) ->
     with pytest.raises(ChangeSetDecisionError, match="CHANGESET_VALIDATION_FAILED"):
         apply.approve(draft.strategy_id, proposal["change_set_id"])
     assert store.get_draft(draft.strategy_id).draft_revision == 1
+    assert proposals.get(proposal["change_set_id"])["status"] == "FAILED"
+    assert proposals.get(proposal["change_set_id"])["failure_stage"] == "VALIDATION"
+    reloaded = OperatorChangeSetApplyService(
+        StrategyRepository(store.db_path), OperatorChangeSetRepository(proposals.path)
+    ).get(draft.strategy_id, proposal["change_set_id"])
+    assert reloaded["status"] == "FAILED"
+    assert reloaded["failure_code"] == "CHANGESET_VALIDATION_FAILED"
+    assert reloaded["failure_audit"]["result"] == "FAILED"
+    assert reloaded["failure_audit"]["change_set_id"] == proposal["change_set_id"]
+    assert reloaded["approval_gate"] == {"can_approve": False, "reason": "CHANGESET_FAILED"}
+    assert store.get_draft(draft.strategy_id).draft_hash == draft.draft_hash
+    assert (
+        len(
+            [
+                item
+                for item in apply.list_for_strategy(draft.strategy_id)
+                if item["status"] == "PROPOSED"
+            ]
+        )
+        == 0
+    )
+    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_FAILED"):
+        apply.approve(draft.strategy_id, proposal["change_set_id"])
+    connection = sqlite3.connect(proposals.path)
+    assert (
+        connection.execute("SELECT count(*) FROM operator_change_set_failures").fetchone()[0] == 1
+    )
+    connection.close()
     with pytest.raises(ChangeSetDecisionError, match="CHANGESET_NOT_FOUND"):
         apply.get("other-strategy", proposal["change_set_id"])
 
@@ -264,3 +307,82 @@ def test_wal_mode_fails_closed_for_cross_database_atomicity(tmp_path: Path) -> N
     with pytest.raises(ChangeSetDecisionError, match="ATOMICITY_UNAVAILABLE"):
         apply.approve(draft.strategy_id, proposal["change_set_id"])
     assert store.get_draft(draft.strategy_id).draft_revision == 1
+
+
+def test_transaction_failure_rolls_back_draft_then_persists_failure(tmp_path: Path) -> None:
+    store, draft, proposals, prepare, apply = _fixture(tmp_path)
+    proposal = _proposal(prepare, draft)
+    connection = sqlite3.connect(proposals.path)
+    connection.execute(
+        "CREATE TABLE operator_change_set_decisions (change_set_id TEXT PRIMARY KEY, "
+        "result TEXT NOT NULL, actor_type TEXT NOT NULL, audit_json TEXT NOT NULL, "
+        "decided_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TRIGGER fail_approval BEFORE INSERT ON operator_change_set_decisions "
+        "BEGIN SELECT RAISE(ABORT, 'test transaction failure'); END"
+    )
+    connection.commit()
+    connection.close()
+    before = store.db_path.read_bytes()
+    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_STORAGE_ERROR"):
+        apply.approve(draft.strategy_id, proposal["change_set_id"])
+    assert store.db_path.read_bytes() == before
+    assert store.get_draft(draft.strategy_id).draft_revision == draft.draft_revision
+    assert store.get_draft(draft.strategy_id).draft_hash == draft.draft_hash
+    failure = OperatorChangeSetRepository(proposals.path).get(proposal["change_set_id"])
+    assert failure["status"] == "FAILED"
+    assert failure["failure_stage"] == "TRANSACTION"
+    connection = sqlite3.connect(proposals.path)
+    assert (
+        connection.execute("SELECT count(*) FROM operator_change_set_decisions").fetchone()[0] == 0
+    )
+    connection.close()
+
+
+def test_failure_and_success_evidence_conflict_is_not_guessed(tmp_path: Path) -> None:
+    store, draft, proposals, prepare, apply = _fixture(tmp_path)
+    proposal = _proposal(prepare, draft)
+    assert apply.approve(draft.strategy_id, proposal["change_set_id"])["result"] == "APPLIED"
+    connection = sqlite3.connect(proposals.path)
+    connection.execute(
+        "CREATE TABLE operator_change_set_failures (change_set_id TEXT PRIMARY KEY, "
+        "failure_code TEXT, failure_stage TEXT, safe_message TEXT, failed_at TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO operator_change_set_failures VALUES (?, 'X', 'VALIDATION', 'safe', 'now')",
+        (proposal["change_set_id"],),
+    )
+    connection.commit()
+    connection.close()
+    with pytest.raises(ChangeSetStorageError, match="CHANGE_SET_INTEGRITY_ERROR"):
+        proposals.get(proposal["change_set_id"])
+    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_INTEGRITY_ERROR"):
+        apply.approve(draft.strategy_id, proposal["change_set_id"])
+
+
+def test_failed_state_is_readable_over_mcp_without_write_tools(tmp_path: Path) -> None:
+    store, draft, proposals, prepare, apply = _fixture(tmp_path)
+    proposal = _proposal(prepare, draft)
+    apply._preview._validator.validate = lambda _payload: type(
+        "InvalidResult",
+        (),
+        {"to_dict": lambda self: {"is_valid": False, "errors": [], "warnings": []}},
+    )()
+    with pytest.raises(ChangeSetDecisionError, match="CHANGESET_VALIDATION_FAILED"):
+        apply.approve(draft.strategy_id, proposal["change_set_id"])
+
+    async def exercise() -> None:
+        async with Client(create_server(prepare._read, prepare)) as client:
+            tools = {tool.name for tool in (await client.list_tools()).tools}
+            assert not any("apply" in name or "approve" in name for name in tools)
+            result = await client.call_tool(
+                "quant_get_change_set", {"change_set_id": proposal["change_set_id"]}
+            )
+            assert not result.is_error
+            assert result.structured_content["status"] == "FAILED"
+            assert result.structured_content["failure_stage"] == "VALIDATION"
+            assert "Draft was not changed" in result.structured_content["safe_message"]
+
+    asyncio.run(exercise())
+    assert store.get_draft(draft.strategy_id).draft_hash == draft.draft_hash

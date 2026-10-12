@@ -182,6 +182,17 @@ export interface OperatorChangeSet {
     draft_revision_after: number;
     hash_after: string;
   };
+  failure_code?: string;
+  failure_stage?: string;
+  safe_message?: string;
+  failed_at?: string;
+  failure_audit?: {
+    change_set_id: string;
+    attempted_at: string;
+    failure_code: string;
+    failure_stage: string;
+    result: "FAILED";
+  };
 }
 
 export interface OperatorChangeSetDecision {

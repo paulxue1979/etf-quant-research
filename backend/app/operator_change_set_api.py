@@ -21,6 +21,7 @@ _CONFLICTS = {
     "ALREADY_APPLIED",
     "ALREADY_REJECTED",
     "DRAFT_NOT_EDITABLE",
+    "CHANGESET_FAILED",
 }
 
 
@@ -41,7 +42,7 @@ def _failure(exc: Exception) -> HTTPException:
         status = 404
     elif code in _CONFLICTS:
         status = 409
-    elif code == "CHANGESET_VALIDATION_FAILED":
+    elif code in {"CHANGESET_VALIDATION_FAILED", "CHANGESET_OPERATION_RESOLUTION_FAILED"}:
         status = 422
     else:
         status = 503

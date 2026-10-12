@@ -8,6 +8,7 @@ const reasonText: Record<string, string> = {
   APPLIED: "Already applied.",
   REJECTED: "Rejected.",
   STALE: "Draft has changed since this proposal was prepared.",
+  CHANGESET_FAILED: "This proposal failed during application. Ask Codex to prepare a new proposal.",
 };
 
 interface Props {
@@ -51,8 +52,10 @@ export function OperatorProposals({ proposals, draftRevision, isDirty, busy, err
               </ul>
               <p className="operator-unchanged"><strong>Unchanged:</strong> {proposal.human_readable_diff.unchanged.join(", ")}</p>
               {proposal.decision_audit && <p className="operator-meta">{proposal.status === "APPLIED" ? "Applied" : "Rejected"} {new Date(proposal.decision_audit.decided_at).toLocaleString()} · Draft r{proposal.decision_audit.draft_revision_before} → r{proposal.decision_audit.draft_revision_after}</p>}
+              {proposal.status === "FAILED" && <p role="status" className="operator-error"><strong>Application failed.</strong> Draft was not changed. Reason: {proposal.safe_message ?? "The application could not be completed."} Ask Codex to prepare a new proposal.</p>}
               {proposal.status === "PROPOSED" && (
                 <div className="operator-actions">
+                  {proposal.validation_status === "FAIL" && <p role="status">This proposal currently fails validation. Approval will re-check it and record a failed attempt without changing the Draft.</p>}
                   <button className="button button-primary" type="button" disabled={!canApprove} onClick={() => onApprove(proposal.change_set_id)}>Approve Changes</button>
                   <button className="button button-secondary" type="button" disabled={busy} onClick={() => onReject(proposal.change_set_id)}>Reject</button>
                   {!canApprove && reason && <span role="status">{reason}</span>}

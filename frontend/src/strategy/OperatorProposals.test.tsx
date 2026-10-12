@@ -45,10 +45,9 @@ describe("Codex proposals", () => {
     view.unmount();
   });
 
-  it("blocks stale, failed validation, dirty editor and server-ineligible proposals", () => {
+  it("blocks stale, dirty editor and server-ineligible proposals", () => {
     const cases: [OperatorChangeSet, number, boolean][] = [
       [{ ...proposal, approval_gate: { can_approve: false, reason: "CHANGESET_STALE" } }, 2, false],
-      [{ ...proposal, validation_status: "FAIL", approval_gate: { can_approve: false, reason: "CHANGESET_VALIDATION_FAILED" } }, 2, false],
       [proposal, 2, true],
       [proposal, 3, false],
     ];
@@ -57,6 +56,13 @@ describe("Codex proposals", () => {
       expect(screen.getByRole("button", { name: "Approve Changes" })).toBeDisabled();
       view.unmount();
     }
+  });
+
+  it("permits a deliberate validation-failure attempt with a no-mutation warning", () => {
+    const view = show({ ...proposal, validation_status: "FAIL" });
+    expect(screen.getByRole("button", { name: "Approve Changes" })).toBeEnabled();
+    expect(screen.getByText(/record a failed attempt without changing the Draft/)).toBeInTheDocument();
+    view.unmount();
   });
 
   it("shows persisted applied/rejected status and useful errors", () => {
@@ -72,5 +78,23 @@ describe("Codex proposals", () => {
     rejected.unmount();
     expect(proposalErrorText("CHANGESET_NOT_FOUND")).toMatch(/no longer exists/);
     expect(proposalErrorText("ALREADY_APPLIED")).toMatch(/already been applied/);
+  });
+
+  it("shows terminal application failure outside pending approvals", () => {
+    const view = show({
+      ...proposal,
+      status: "FAILED",
+      failure_code: "CHANGESET_VALIDATION_FAILED",
+      failure_stage: "VALIDATION",
+      safe_message: "The proposal no longer passes validation. The Draft was not changed.",
+      failed_at: "2026-10-12T01:00:00Z",
+      approval_gate: { can_approve: false, reason: "CHANGESET_FAILED" },
+    });
+    expect(screen.getByText("(0 pending)")).toBeInTheDocument();
+    expect(screen.getByText(/Application failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Ask Codex to prepare a new proposal/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve Changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
+    view.unmount();
   });
 });

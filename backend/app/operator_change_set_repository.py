@@ -128,7 +128,82 @@ class OperatorChangeSetRepository:
                 proposal["status"] = decision["result"]
                 proposal["updated_at"] = decision["decided_at"]
                 proposal["decision_audit"] = json.loads(decision["audit_json"])
+        has_failures = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'operator_change_set_failures'"
+        ).fetchone()
+        if has_failures:
+            failure = connection.execute(
+                "SELECT failure_code, failure_stage, safe_message, failed_at "
+                "FROM operator_change_set_failures WHERE change_set_id = ?",
+                (row["change_set_id"],),
+            ).fetchone()
+            if failure is not None:
+                if proposal["status"] in {"APPLIED", "REJECTED"}:
+                    raise ChangeSetStorageError("CHANGE_SET_INTEGRITY_ERROR")
+                proposal["status"] = "FAILED"
+                proposal["updated_at"] = failure["failed_at"]
+                proposal["failure_code"] = failure["failure_code"]
+                proposal["failure_stage"] = failure["failure_stage"]
+                proposal["safe_message"] = failure["safe_message"]
+                proposal["failed_at"] = failure["failed_at"]
+                proposal["failure_audit"] = {
+                    "change_set_id": row["change_set_id"],
+                    "attempted_at": failure["failed_at"],
+                    "failure_code": failure["failure_code"],
+                    "failure_stage": failure["failure_stage"],
+                    "result": "FAILED",
+                }
         return proposal
+
+    def record_failure(
+        self, change_set_id: str, failure_code: str, failure_stage: str, safe_message: str
+    ) -> None:
+        """Persist one terminal failure only after the Draft transaction has rolled back."""
+        connection = self._connect(write=True)
+        assert connection is not None
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM operator_draft_change_sets WHERE change_set_id = ?",
+                (change_set_id,),
+            ).fetchone()
+            if row is None or row["status"] != "PROPOSED":
+                raise ChangeSetStorageError("CHANGE_SET_INTEGRITY_ERROR")
+            has_decisions = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'operator_change_set_decisions'"
+            ).fetchone()
+            if (
+                has_decisions
+                and connection.execute(
+                    "SELECT 1 FROM operator_change_set_decisions WHERE change_set_id = ?",
+                    (change_set_id,),
+                ).fetchone()
+            ):
+                raise ChangeSetStorageError("CHANGE_SET_INTEGRITY_ERROR")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS operator_change_set_failures ("
+                "change_set_id TEXT PRIMARY KEY, failure_code TEXT NOT NULL, "
+                "failure_stage TEXT NOT NULL, safe_message TEXT NOT NULL, failed_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO operator_change_set_failures VALUES (?, ?, ?, ?, ?)",
+                (
+                    change_set_id,
+                    failure_code,
+                    failure_stage,
+                    safe_message,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            connection.execute("COMMIT")
+        except (sqlite3.Error, ChangeSetStorageError) as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise ChangeSetStorageError("CHANGE_SET_FAILURE_RECORD_UNAVAILABLE") from exc
+        finally:
+            connection.close()
 
     def reject(self, change_set_id: str) -> bool:
         """Backend-only lifecycle operation; deliberately not exposed via MCP."""
@@ -136,6 +211,19 @@ class OperatorChangeSetRepository:
         assert connection is not None
         try:
             connection.execute("BEGIN IMMEDIATE")
+            for table in ("operator_change_set_decisions", "operator_change_set_failures"):
+                exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,),
+                ).fetchone()
+                if (
+                    exists
+                    and connection.execute(
+                        f"SELECT 1 FROM {table} WHERE change_set_id = ?", (change_set_id,)
+                    ).fetchone()
+                ):
+                    connection.execute("ROLLBACK")
+                    return False
             updated = connection.execute(
                 "UPDATE operator_draft_change_sets SET status = 'REJECTED', updated_at = ? "
                 "WHERE change_set_id = ? AND status = 'PROPOSED'",
