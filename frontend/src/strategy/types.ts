@@ -158,6 +158,37 @@ export interface StrategyDraftResponse extends Omit<StrategyDraftPayload, "expec
   draft_hash: string;
 }
 
+export interface OperatorChangeSet {
+  change_set_id: string;
+  strategy_id: string;
+  status: "PROPOSED" | "REJECTED" | "APPLIED" | "STALE" | "FAILED";
+  created_at: string;
+  updated_at: string;
+  expected_draft_revision: number;
+  before_hash: string;
+  proposed_after_hash: string;
+  validation_status: "PASS" | "FAIL";
+  operations: Record<string, unknown>[];
+  human_readable_diff: {
+    summary: string;
+    changes: { label: string; before: string; after: string }[];
+    unchanged: string[];
+  };
+  approval_gate: { can_approve: boolean; reason: string | null };
+  decision_audit?: {
+    result: "APPLIED" | "REJECTED";
+    decided_at: string;
+    draft_revision_before: number;
+    draft_revision_after: number;
+    hash_after: string;
+  };
+}
+
+export interface OperatorChangeSetDecision {
+  result: "APPLIED" | "REJECTED" | "ALREADY_APPLIED" | "ALREADY_REJECTED";
+  audit?: OperatorChangeSet["decision_audit"];
+}
+
 export interface StrategyRecord {
   strategy_id: string;
   name: string;

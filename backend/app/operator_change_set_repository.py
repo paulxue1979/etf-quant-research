@@ -79,20 +79,56 @@ class OperatorChangeSetRepository:
             return None
         try:
             row = connection.execute(
-                "SELECT proposal_json, status, updated_at FROM operator_draft_change_sets "
+                "SELECT change_set_id, proposal_json, status, updated_at "
+                "FROM operator_draft_change_sets "
                 "WHERE change_set_id = ?",
                 (change_set_id,),
             ).fetchone()
             if row is None:
                 return None
-            proposal = json.loads(row["proposal_json"])
-            proposal["status"] = row["status"]
-            proposal["updated_at"] = row["updated_at"]
-            return proposal
+            return self._project(connection, row)
         except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
             raise ChangeSetStorageError("CHANGE_SET_READ_FAILED") from exc
         finally:
             connection.close()
+
+    def list_for_strategy(self, strategy_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        connection = self._connect(write=False)
+        if connection is None:
+            return []
+        try:
+            rows = connection.execute(
+                "SELECT change_set_id, proposal_json, status, updated_at "
+                "FROM operator_draft_change_sets WHERE strategy_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (strategy_id, min(limit, 50)),
+            ).fetchall()
+            return [self._project(connection, row) for row in rows]
+        except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+            raise ChangeSetStorageError("CHANGE_SET_READ_FAILED") from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _project(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        proposal = json.loads(row["proposal_json"])
+        proposal["status"] = row["status"]
+        proposal["updated_at"] = row["updated_at"]
+        has_decisions = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'operator_change_set_decisions'"
+        ).fetchone()
+        if has_decisions:
+            decision = connection.execute(
+                "SELECT result, audit_json, decided_at FROM operator_change_set_decisions "
+                "WHERE change_set_id = ?",
+                (row["change_set_id"],),
+            ).fetchone()
+            if decision is not None:
+                proposal["status"] = decision["result"]
+                proposal["updated_at"] = decision["decided_at"]
+                proposal["decision_audit"] = json.loads(decision["audit_json"])
+        return proposal
 
     def reject(self, change_set_id: str) -> bool:
         """Backend-only lifecycle operation; deliberately not exposed via MCP."""

@@ -6,6 +6,7 @@ import { ExperimentWorkbench } from "./research/ExperimentWorkbench";
 import { OosResearchView } from "./research/OosResearchView";
 import { strategyApi, StrategyApiError } from "./strategy/api";
 import { RegimeStateMachineEditor } from "./strategy/RegimeStateMachineEditor";
+import { OperatorProposals, proposalErrorText } from "./strategy/OperatorProposals";
 import { StrategyLibrary } from "./strategy/StrategyLibrary";
 import { StrategyVersionView } from "./strategy/StrategyVersionView";
 import {
@@ -39,9 +40,17 @@ import type {
   ValidationIssue,
   ValidationResult,
   StrategyDiagnostics,
+  OperatorChangeSet,
+  StrategyDraftResponse,
 } from "./strategy/types";
 
 const emptyValidation: ValidationResult = { is_valid: false, errors: [], warnings: [] };
+
+function approvedPayloadIsCurrent(draft: StrategyDraftResponse, proposals: OperatorChangeSet[]): boolean {
+  return proposals.some((proposal) => proposal.status === "APPLIED"
+    && proposal.decision_audit?.hash_after === draft.draft_hash
+    && proposal.decision_audit.draft_revision_after === draft.draft_revision);
+}
 
 function percent(value: number): string {
   if (!Number.isFinite(value)) return "Invalid";
@@ -543,6 +552,9 @@ export function App() {
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const [assetRemovalConflict, setAssetRemovalConflict] = useState<{ asset: string; references: AssetReferenceDescriptor[] } | null>(null);
   const [locateReference, setLocateReference] = useState<AssetReferenceDescriptor | null>(null);
+  const [proposals, setProposals] = useState<OperatorChangeSet[]>([]);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [proposalBusy, setProposalBusy] = useState(false);
 
   useEffect(() => {
     void loadVersions(state.strategyId);
@@ -641,13 +653,46 @@ export function App() {
     if (!strategyId.trim()) return;
     try {
       const draft = await strategyApi.getDraft(strategyId);
+      const currentProposals = await loadProposals(strategyId);
       if (draft) {
-        dispatch({ type: "replace", state: fromDraftResponse(draft) });
+        dispatch({ type: "replace", state: fromDraftResponse(draft, approvedPayloadIsCurrent(draft, currentProposals)) });
         setValidation(emptyValidation);
         setNotice({ tone: "success", text: `Draft loaded (revision ${draft.draft_revision}).` });
       }
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft load failed." });
+    }
+  }
+
+  async function loadProposals(strategyId: string): Promise<OperatorChangeSet[]> {
+    try {
+      const items = await strategyApi.listChangeSets(strategyId);
+      setProposals(items);
+      setProposalError(null);
+      return items;
+    } catch {
+      setProposals([]);
+      setProposalError("Unable to load Codex proposals. Draft editing remains available.");
+      return [];
+    }
+  }
+
+  async function decideProposal(changeSetId: string, approve: boolean) {
+    setProposalBusy(true);
+    setProposalError(null);
+    try {
+      const decision = approve
+        ? await strategyApi.approveChangeSet(state.strategyId, changeSetId)
+        : await strategyApi.rejectChangeSet(state.strategyId, changeSetId);
+      await loadDraft(state.strategyId);
+      setNotice({ tone: "success", text: decision.result === "APPLIED"
+        ? "Draft updated. No immutable version was created."
+        : decision.result === "REJECTED" ? "Proposal rejected. Draft unchanged." : proposalErrorText(decision.result) });
+    } catch (error) {
+      setProposalError(proposalErrorText(error instanceof StrategyApiError ? error.code : undefined));
+      await loadProposals(state.strategyId);
+    } finally {
+      setProposalBusy(false);
     }
   }
 
@@ -772,10 +817,11 @@ export function App() {
     try {
       const strategy = await strategyApi.getStrategy(strategyId);
       const draft = await strategyApi.getDraft(strategyId);
+      const currentProposals = await loadProposals(strategyId);
       dispatch({
         type: "replace",
         state: draft
-          ? fromDraftResponse(draft)
+          ? fromDraftResponse(draft, approvedPayloadIsCurrent(draft, currentProposals))
           : createNewStrategyEditorState(strategy.strategy_id, strategy.name, strategy.description, strategy.draft_active_mode ?? "rule_based"),
       });
       setSelectedVersion(null);
@@ -1102,6 +1148,17 @@ export function App() {
           </section>
 
           <Preview state={state} />
+
+          {state.draftRevision > 0 && <OperatorProposals
+            proposals={proposals}
+            draftRevision={state.draftRevision}
+            isDirty={Boolean(state.isDirty)}
+            busy={proposalBusy || busy !== null}
+            error={proposalError}
+            onRefresh={() => void loadProposals(state.strategyId)}
+            onApprove={(id) => void decideProposal(id, true)}
+            onReject={(id) => void decideProposal(id, false)}
+          />}
 
           <section className="action-panel">
             <div>

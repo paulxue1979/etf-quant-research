@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import { createDefaultEditorState, toStrategyPayload } from "./strategy/editor";
+import { createDefaultEditorState, toDraftPayload, toStrategyPayload } from "./strategy/editor";
 import type { StrategyPayload, StrategyVersionSummary } from "./strategy/types";
 
 afterEach(() => {
@@ -77,6 +77,52 @@ function mockApi() {
 }
 
 describe("Strategy Lab", () => {
+  it("refreshes the canonical Draft after approving a persisted proposal", async () => {
+    const original = toDraftPayload(createDefaultEditorState());
+    const changed = structuredClone(original.active_strategy_payload);
+    if (!changed) throw new Error("expected active payload");
+    changed.rules[0].allocations[0].target_weight = 0.5;
+    let applied = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/draft")) return new Response(JSON.stringify({
+        ...original,
+        active_strategy_payload: applied ? changed : original.active_strategy_payload,
+        draft_revision: applied ? 3 : 2,
+        draft_hash: applied ? "after-hash" : "before-hash",
+      }), { status: 200 });
+      if (url.endsWith("/change-sets")) return new Response(JSON.stringify([{
+        change_set_id: "change-set-test",
+        strategy_id: original.strategy_id,
+        status: applied ? "APPLIED" : "PROPOSED",
+        created_at: "2026-10-12T00:00:00Z",
+        expected_draft_revision: 2,
+        before_hash: "before-hash",
+        proposed_after_hash: "after-hash",
+        validation_status: "PASS",
+        operations: [],
+        human_readable_diff: { summary: "Codex proposes 1 change", changes: [{ label: "QQQ", before: "60%", after: "50%" }], unchanged: [] },
+        approval_gate: { can_approve: !applied, reason: applied ? "APPLIED" : null },
+        decision_audit: applied ? { result: "APPLIED", decided_at: "2026-10-12T01:00:00Z", draft_revision_before: 2, draft_revision_after: 3, hash_after: "after-hash" } : undefined,
+      }]), { status: 200 });
+      if (url.endsWith("/change-set-test/approve") && init?.method === "POST") {
+        applied = true;
+        return new Response(JSON.stringify({ result: "APPLIED" }), { status: 200 });
+      }
+      if (url.endsWith("/versions")) return new Response("[]", { status: 200 });
+      if (url.includes("/strategies?")) return new Response("[]", { status: 200 });
+      if (url.endsWith("/diagnostics")) return new Response("{}", { status: 200 });
+      return new Response("{}", { status: 404 });
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve Changes" })).toBeEnabled());
+    expect(screen.getByText(/QQQ 60%/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Approve Changes" }));
+    await waitFor(() => expect(screen.getByText(/QQQ 50%/)).toBeInTheDocument());
+    expect(screen.getByText("Draft updated. No immutable version was created.")).toBeInTheDocument();
+    expect(screen.getByText("Saved Draft r3")).toBeInTheDocument();
+  });
+
   it("switches between fallback and hold-previous allocation controls", async () => {
     mockApi();
     render(<App />);

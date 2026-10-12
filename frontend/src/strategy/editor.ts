@@ -961,7 +961,7 @@ export function toDraftPayload(state: EditorState): StrategyDraftPayload {
   };
 }
 
-export function fromDraftResponse(response: StrategyDraftResponse): EditorState {
+export function fromDraftResponse(response: StrategyDraftResponse, preferActivePayload = false): EditorState {
   const sourcePayload = response.active_strategy_payload;
   const hasEditorShape = Object.keys(response.rule_based_draft.editor_state).some((key) =>
     ["rules", "regime", "fallbackAllocations", "initialAllocations"].includes(key),
@@ -987,7 +987,7 @@ export function fromDraftResponse(response: StrategyDraftResponse): EditorState 
   const ruleBasedAssets = [...response.rule_based_draft.assets];
   const regimeAssets = [...response.regime_draft.assets];
   const activeAssets = response.active_mode === "regime_state_machine" ? regimeAssets : ruleBasedAssets;
-  return {
+  const restored: EditorState = {
     strategyId: response.strategy_id,
     name: response.name,
     description: response.description,
@@ -1010,6 +1010,24 @@ export function fromDraftResponse(response: StrategyDraftResponse): EditorState 
       ? cloneValue(response.active_strategy_payload)
       : undefined,
   };
+  if (!preferActivePayload || !sourcePayload) return restored;
+  const active = fromStrategyPayload(sourcePayload);
+  return response.active_mode === "regime_state_machine"
+    ? {
+      ...restored,
+      assets: active.assets,
+      regimeAssets: active.regimeAssets,
+      regime: active.regime,
+    }
+    : {
+      ...restored,
+      assets: active.assets,
+      ruleBasedAssets: active.ruleBasedAssets,
+      rules: active.rules,
+      noMatchBehavior: active.noMatchBehavior,
+      fallbackAllocations: active.fallbackAllocations,
+      initialAllocations: active.initialAllocations,
+    };
 }
 
 function clonePayload(payload: StrategyPayload): StrategyPayload {

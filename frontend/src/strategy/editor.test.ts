@@ -523,4 +523,28 @@ describe("strategy editor serialization", () => {
     expect(restored.ruleBasedAssets).toEqual(initial.ruleBasedAssets);
     expect(restored.regimeAssets).toEqual(initial.regimeAssets);
   });
+
+  it("restores an approved active payload without replacing the inactive editor draft", () => {
+    const initial = createDefaultEditorState();
+    const draft = toDraftPayload(initial);
+    const changed = structuredClone(draft.active_strategy_payload);
+    if (!changed) throw new Error("expected active payload");
+    changed.rules[0].allocations[0].target_weight = 0.5;
+    const response = {
+      ...draft,
+      active_strategy_payload: changed,
+      draft_revision: 3,
+      created_at: "2026-10-12T00:00:00Z",
+      updated_at: "2026-10-12T00:00:00Z",
+      draft_hash: "approved-hash",
+    } as StrategyDraftResponse;
+
+    const ordinary = fromDraftResponse(response);
+    const approved = fromDraftResponse(response, true);
+    expect(ordinary.rules[0].allocations[0].targetWeightPercent).toBe("60");
+    expect(approved.rules[0].allocations[0].targetWeightPercent).toBe("50");
+    expect(approved.regime).toEqual(ordinary.regime);
+    expect(approved.draftRevision).toBe(3);
+    expect(approved.isDirty).toBe(false);
+  });
 });

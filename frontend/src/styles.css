@@ -134,6 +134,23 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
 
 .action-panel { display: flex; justify-content: space-between; gap: 18px; align-items: center; border: 1px solid #3f6264; border-radius: 7px; background: #102124; padding: 16px 18px; }
 .action-panel p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.operator-proposals { border-top: 1px solid var(--line); padding: 18px 0; }
+.operator-proposals h2 span { color: var(--muted); font-size: 14px; }
+.operator-proposal-list { display: grid; gap: 18px; }
+.operator-proposal { border-top: 1px solid var(--line); padding-top: 14px; }
+.operator-proposal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.operator-proposal-heading small { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; }
+.operator-meta, .operator-unchanged { color: var(--muted); font-size: 12px; }
+.operator-changes { padding: 0; list-style: none; display: grid; gap: 7px; }
+.operator-changes li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 6px 0; }
+.operator-changes li span { white-space: nowrap; }
+.operator-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 14px 0; }
+.operator-actions [role="status"] { color: var(--yellow); font-size: 12px; }
+.operator-error { color: var(--red); }
+.operator-proposal details { margin-top: 12px; }
+.operator-proposal details dd { overflow-wrap: anywhere; }
+.operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .operator-changes li { flex-direction: column; } .operator-changes li span { white-space: normal; } }
 .action-buttons { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .version-list { display: grid; gap: 8px; }
 .version-item { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; color: var(--text); background: #10191e; border: 1px solid var(--line); border-radius: 5px; padding: 10px; }

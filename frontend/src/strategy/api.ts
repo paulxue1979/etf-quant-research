@@ -12,6 +12,8 @@ import type {
   StrategyDependency,
   StrategyLifecycleResponse,
   StrategyDiagnostics,
+  OperatorChangeSet,
+  OperatorChangeSetDecision,
 } from "./types";
 
 import { apiBaseUrl } from "../apiConfig";
@@ -134,6 +136,26 @@ export const strategyApi = {
       }
       throw error;
     }
+  },
+
+  listChangeSets(strategyId: string): Promise<OperatorChangeSet[]> {
+    return requestJson<OperatorChangeSet[]>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/change-sets`,
+    );
+  },
+
+  approveChangeSet(strategyId: string, changeSetId: string): Promise<OperatorChangeSetDecision> {
+    return requestJson<OperatorChangeSetDecision>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/change-sets/${encodeURIComponent(changeSetId)}/approve`,
+      { method: "POST" },
+    );
+  },
+
+  rejectChangeSet(strategyId: string, changeSetId: string): Promise<OperatorChangeSetDecision> {
+    return requestJson<OperatorChangeSetDecision>(
+      `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/change-sets/${encodeURIComponent(changeSetId)}/reject`,
+      { method: "POST" },
+    );
   },
 
   saveDraft(strategyId: string, draft: StrategyDraftPayload): Promise<StrategyDraftResponse> {

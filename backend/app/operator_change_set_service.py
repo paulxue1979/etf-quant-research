@@ -181,6 +181,29 @@ class OperatorChangeSetService:
             raise ChangeSetPreparationError("ACTIVE_DRAFT_NOT_FOUND")
         if draft.draft_revision != expected_draft_revision:
             raise ChangeSetPreparationError("DRAFT_REVISION_CONFLICT")
+        after_payload, details = self.preview(draft, operations)
+        proposal = {
+            "change_set_id": f"change-set-{uuid4().hex}",
+            "source": "CODEX_MCP",
+            "strategy_id": strategy_id,
+            "expected_draft_revision": draft.draft_revision,
+            "operations": [item.model_dump(mode="json", exclude_none=True) for item in operations],
+            "before_hash": draft.draft_hash,
+            **details,
+            "status": "PROPOSED",
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        self._repository.insert(proposal)
+        return self.get_change_set(proposal["change_set_id"])
+
+    def preview(
+        self, draft: StrategyDraft, operations: list[DraftChangeOperation]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Replay typed operations on a clone for prepare and locked approval."""
+        if not 1 <= len(operations) <= _MAX_OPERATIONS:
+            raise ChangeSetPreparationError("INVALID_OPERATION_COUNT")
+        if draft.active_strategy_payload is None:
+            raise ChangeSetPreparationError("ACTIVE_DRAFT_NOT_FOUND")
         before_payload = dict(draft.active_strategy_payload)
         if (
             StrategyRepository._hash_json(_draft_envelope(draft, before_payload))
@@ -190,7 +213,7 @@ class OperatorChangeSetService:
         try:
             definition = StrategyDefinition.from_dict(before_payload)
             base = StrategyVersion(
-                strategy_id=strategy_id,
+                strategy_id=draft.strategy_id,
                 version_id=f"draft-revision-{draft.draft_revision}",
                 version_number=1,
                 created_at=draft.created_at,
@@ -214,7 +237,6 @@ class OperatorChangeSetService:
             changes.append(change)
         validation = self._validator.validate(after_payload).to_dict()
         proposed_hash = StrategyRepository._hash_json(_draft_envelope(draft, after_payload))
-        now = datetime.now(UTC).isoformat()
         unchanged = ["Price field", "Execution timing"]
         if all(op.operation_type is OperationKind.SET_PEAK_DRAWDOWN_THRESHOLD for op in operations):
             unchanged = [
@@ -224,13 +246,7 @@ class OperatorChangeSetService:
                 "State allocations",
                 *unchanged,
             ]
-        proposal = {
-            "change_set_id": f"change-set-{uuid4().hex}",
-            "source": "CODEX_MCP",
-            "strategy_id": strategy_id,
-            "expected_draft_revision": draft.draft_revision,
-            "operations": [item.model_dump(mode="json", exclude_none=True) for item in operations],
-            "before_hash": draft.draft_hash,
+        details = {
             "proposed_after_hash": proposed_hash,
             "validation_status": "PASS" if validation["is_valid"] else "FAIL",
             "validation_issues": validation["errors"],
@@ -247,11 +263,8 @@ class OperatorChangeSetService:
                 ],
                 "unchanged": unchanged,
             },
-            "status": "PROPOSED",
-            "created_at": now,
         }
-        self._repository.insert(proposal)
-        return self.get_change_set(proposal["change_set_id"])
+        return after_payload, details
 
     def _apply_one(
         self,
