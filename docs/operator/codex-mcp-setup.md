@@ -1,11 +1,13 @@
-# Local Codex MCP bridge (read-only)
+# Local Codex MCP bridge (Draft proposals)
 
-This bridge exposes eight read-only tools over local stdio. It does not use the
+This bridge exposes eight read-only inspection tools, one ChangeSet read tool,
+and one proposal creation tool over local stdio. It does not use the
 public API, start a web listener, contact OpenAI, or fetch market data. The
 Strategy Lab API server may be started separately for the browser UI, but is
 not required for MCP. The strategy database must already exist and be at the
 current schema. The bridge opens it in SQLite read-only mode and never runs
-repository initialization or migrations.
+repository initialization or migrations. Proposal records use a separate
+`data/operator_change_sets.db`; the strategy database remains read-only.
 
 ## Install and configure
 
@@ -36,7 +38,7 @@ use Codex `-c` overrides for these three values instead of changing global
 
 Restart Codex after adding the configuration, then check `codex mcp list`.
 Ask Codex to call `quant_health` and `quant_list_strategies`. The tool list must
-contain only these eight names:
+contain only these ten names:
 
 - `quant_health`
 - `quant_list_strategies`
@@ -46,6 +48,8 @@ contain only these eight names:
 - `quant_get_semantic_targets`
 - `quant_validate_draft`
 - `quant_get_data_availability`
+- `quant_prepare_draft_changes`
+- `quant_get_change_set`
 
 `quant_get_draft` reports `draft_id: null` because the current durable Draft
 model has no separate Draft ID; its `strategy_id`, revision and hash identify
@@ -57,10 +61,21 @@ availability projection with `cache_miss_symbols`; this is missing local
 evidence, not proof that an asset has no market history. The tool never
 triggers Tiingo or any other network call.
 
-The tool outputs are for inspection, not approval, strategy changes, trading,
-or execution. All tools advertise MCP read-only annotations; no write tool is
-registered. The local Codex process must still be trusted because it can
-read the same local strategy data as the user.
+`quant_prepare_draft_changes` accepts a Draft revision and one to sixteen
+typed, semantic-ID operations. It clones the active Draft, runs canonical
+validation, and persists the hypothetical diff and hashes as a `PROPOSED`
+ChangeSet. It **does not save the Draft**, create a StrategyVersion, or run a
+backtest. Validation failures can be recorded as non-approvable proposals.
+Invalid targets or forbidden Peak Drawdown exits are rejected without a
+proposal. A later Draft revision makes a proposal appear `STALE` on reads;
+the read does not mutate either database. Reconnecting the MCP server can
+read the same proposal by ID.
+
+`quant_prepare_draft_changes` is annotated as non-read-only because it writes
+an isolated proposal record. `quant_get_change_set` is read-only. No approve,
+apply, reject, Draft save, version creation, experiment, or execution tool is
+registered. The local Codex process must still be trusted because it can read
+the same local strategy data as the user.
 
 ## Disable
 

@@ -1,4 +1,4 @@
-"""Local stdio MCP surface for read-only ETF Quant strategy inspection."""
+"""Local stdio MCP surface for inspection and isolated Draft proposals."""
 
 from __future__ import annotations
 
@@ -9,6 +9,11 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from backend.app.operator_change_set_service import (
+    ChangeSetPreparationError,
+    DraftChangeOperation,
+    OperatorChangeSetService,
+)
 from backend.app.operator_read_service import (
     BRIDGE_VERSION,
     OperatorReadError,
@@ -18,6 +23,9 @@ from backend.app.operator_read_service import (
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _READ_ONLY = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+)
+_PROPOSAL = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
 )
 
 
@@ -34,13 +42,20 @@ def _date(value: str) -> date:
         raise OperatorReadError("INVALID_DATE") from exc
 
 
-def create_server(service: OperatorReadService | None = None) -> MCPServer:
-    """Expose exactly eight bounded read tools; no resources or write handlers."""
+def create_server(
+    service: OperatorReadService | None = None,
+    change_set_service: OperatorChangeSetService | None = None,
+) -> MCPServer:
+    """Expose bounded reads and proposal persistence, never Draft mutation."""
     read = service or OperatorReadService()
+    proposals = change_set_service or OperatorChangeSetService(read_service=read)
     server = MCPServer(
-        "etf-quant-read-only",
+        "etf-quant-draft-proposals",
         version=BRIDGE_VERSION,
-        instructions="Local ETF Quant inspection only. Never infer missing data or attempt writes.",
+        instructions=(
+            "Inspect strategy data and prepare isolated Draft ChangeSet proposals only. "
+            "A proposal does not modify the Draft. No approval or apply capability is available."
+        ),
     )
 
     @server.tool(annotations=_READ_ONLY)
@@ -86,6 +101,23 @@ def create_server(service: OperatorReadService | None = None) -> MCPServer:
         return read.get_data_availability(
             _id(strategy_id), _id(version_id), _date(requested_start), _date(requested_end)
         )
+
+    @server.tool(annotations=_PROPOSAL)
+    def quant_prepare_draft_changes(
+        strategy_id: str,
+        expected_draft_revision: int,
+        operations: list[DraftChangeOperation],
+    ) -> dict[str, Any]:
+        """Persist a validated hypothetical ChangeSet; never save or alter the Draft."""
+        try:
+            return proposals.prepare(_id(strategy_id), expected_draft_revision, operations)
+        except ChangeSetPreparationError as exc:
+            return {"status": "REJECTED", "reason": str(exc), "change_set_id": None}
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_change_set(change_set_id: str) -> dict[str, Any]:
+        """Read a persisted proposal and its effective stale status; no writes."""
+        return proposals.get_change_set(_id(change_set_id))
 
     return server
 

@@ -23,6 +23,8 @@ TOOL_NAMES = {
     "quant_get_semantic_targets",
     "quant_validate_draft",
     "quant_get_data_availability",
+    "quant_prepare_draft_changes",
+    "quant_get_change_set",
 }
 
 
@@ -61,7 +63,10 @@ def test_operator_mcp_read_only_contract_and_isolation(tmp_path: Path) -> None:
         async with Client(create_server(service)) as client:
             catalog = await client.list_tools()
             assert {item.name for item in catalog.tools} == TOOL_NAMES
-            assert all(item.annotations.read_only_hint for item in catalog.tools)
+            assert all(
+                item.annotations.read_only_hint == (item.name != "quant_prepare_draft_changes")
+                for item in catalog.tools
+            )
             assert all(not item.annotations.destructive_hint for item in catalog.tools)
 
             async def call(name: str, arguments: dict | None = None) -> dict:

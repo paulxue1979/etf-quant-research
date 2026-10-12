@@ -18,7 +18,7 @@ from strategies.models import Condition, Operand, RuleGroup, StrategyVersion
 from strategies.strategy_evaluation import required_indicators
 
 BACKEND_VERSION = "1.4.1"
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.2.0"
 
 
 class OperatorReadError(ValueError):
