@@ -17,7 +17,7 @@ from strategies import StrategyDefinition, StrategyValidator
 from strategies.models import Condition, Operand, RuleGroup, StrategyVersion
 from strategies.strategy_evaluation import required_indicators
 
-BACKEND_VERSION = "1.4.1"
+BACKEND_VERSION = "1.4.3"
 BRIDGE_VERSION = "0.2.0"
 
 
