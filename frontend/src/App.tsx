@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 
 import { BacktestLab } from "./backtest/BacktestLab";
 import { ExperimentResearch } from "./research/ExperimentResearch";
@@ -45,6 +45,40 @@ import type {
 } from "./strategy/types";
 
 const emptyValidation: ValidationResult = { is_valid: false, errors: [], warnings: [] };
+
+type DraftLoadState = {
+  strategyId: string;
+  name: string;
+  description?: string;
+  status: "loading" | "missing" | "error";
+  reason: string;
+  httpStatus?: number;
+};
+
+function draftIdFromUrl(): string | null {
+  return new URL(window.location.href).searchParams.get("draft");
+}
+
+function navigateToDraft(strategyId: string): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("view");
+  url.searchParams.set("draft", strategyId);
+  window.history.pushState(null, "", url);
+}
+
+function navigateToLibrary(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("draft");
+  url.searchParams.set("view", "library");
+  window.history.pushState(null, "", url);
+}
+
+function navigateToNewEditor(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("draft");
+  url.searchParams.delete("view");
+  window.history.pushState(null, "", url);
+}
 
 function approvedPayloadIsCurrent(draft: StrategyDraftResponse, proposals: OperatorChangeSet[]): boolean {
   return proposals.some((proposal) => proposal.status === "APPLIED"
@@ -534,7 +568,9 @@ function Preview({ state }: { state: EditorState }) {
 }
 
 export function App() {
-  const [view, setView] = useState<"strategy" | "library" | "version" | "backtest" | "research" | "workbench" | "oos">("strategy");
+  const [view, setView] = useState<"strategy" | "library" | "version" | "backtest" | "research" | "workbench" | "oos">(
+    () => new URL(window.location.href).searchParams.get("view") === "library" ? "library" : "strategy",
+  );
   const [state, dispatch] = useReducer(editorReducer, undefined, () => {
     return createDefaultEditorState();
   });
@@ -555,12 +591,37 @@ export function App() {
   const [proposals, setProposals] = useState<OperatorChangeSet[]>([]);
   const [proposalError, setProposalError] = useState<string | null>(null);
   const [proposalBusy, setProposalBusy] = useState(false);
+  const [draftLoad, setDraftLoad] = useState<DraftLoadState | null>(() => {
+    const strategyId = draftIdFromUrl();
+    return strategyId === null ? null : { strategyId, name: strategyId, status: "loading", reason: "" };
+  });
+  const draftLoadSequence = useRef(0);
 
   useEffect(() => {
-    void loadVersions(state.strategyId);
-    void loadDraft(state.strategyId);
-    // Load persisted state when the strategy identity changes, not on every keystroke.
-  }, [state.strategyId]);
+    const restoreRoute = () => {
+      const strategyId = draftIdFromUrl();
+      if (strategyId !== null) {
+        void openDraft(strategyId, false);
+      } else if (new URL(window.location.href).searchParams.get("view") === "library") {
+        draftLoadSequence.current += 1;
+        setDraftLoad(null);
+        setView("library");
+      } else {
+        draftLoadSequence.current += 1;
+        setDraftLoad(null);
+        dispatch({ type: "replace", state: createDefaultEditorState() });
+        setView("strategy");
+      }
+    };
+    window.addEventListener("popstate", restoreRoute);
+    if (draftIdFromUrl() !== null) restoreRoute();
+    else if (new URL(window.location.href).searchParams.get("view") !== "library") {
+      void loadVersions(state.strategyId);
+      void loadDraft(state.strategyId, true);
+    }
+    return () => window.removeEventListener("popstate", restoreRoute);
+    // Route restoration must not depend on unsaved editor keystrokes.
+  }, []);
 
   useEffect(() => {
     void loadLibrary();
@@ -649,30 +710,41 @@ export function App() {
     else action();
   }
 
-  async function loadDraft(strategyId: string) {
+  async function loadDraft(strategyId: string, initialDefault = false) {
     if (!strategyId.trim()) return;
+    const sequence = draftLoadSequence.current;
     try {
       const draft = await strategyApi.getDraft(strategyId);
+      if (initialDefault && sequence !== draftLoadSequence.current) return;
+      if (!draft && initialDefault) return;
       const currentProposals = await loadProposals(strategyId);
+      if (initialDefault && sequence !== draftLoadSequence.current) return;
       if (draft) {
         dispatch({ type: "replace", state: fromDraftResponse(draft, approvedPayloadIsCurrent(draft, currentProposals)) });
         setValidation(emptyValidation);
         setNotice({ tone: "success", text: `Draft loaded (revision ${draft.draft_revision}).` });
       }
     } catch (error) {
+      if (initialDefault && sequence !== draftLoadSequence.current) return;
+      if (initialDefault && error instanceof StrategyApiError && error.code === "STRATEGY_NOT_FOUND") return;
       setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft load failed." });
     }
   }
 
   async function loadProposals(strategyId: string): Promise<OperatorChangeSet[]> {
+    const sequence = draftLoadSequence.current;
     try {
       const items = await strategyApi.listChangeSets(strategyId);
-      setProposals(items);
-      setProposalError(null);
+      if (sequence === draftLoadSequence.current) {
+        setProposals(items);
+        setProposalError(null);
+      }
       return items;
     } catch {
-      setProposals([]);
-      setProposalError("Unable to load Codex proposals. Draft editing remains available.");
+      if (sequence === draftLoadSequence.current) {
+        setProposals([]);
+        setProposalError("Unable to load Codex proposals. Draft editing remains available.");
+      }
       return [];
     }
   }
@@ -698,13 +770,15 @@ export function App() {
 
   async function loadVersions(strategyId: string) {
     if (!strategyId.trim()) return;
+    const sequence = draftLoadSequence.current;
     setBusy("history");
     try {
-      setVersions(await strategyApi.listVersions(strategyId));
+      const items = await strategyApi.listVersions(strategyId);
+      if (sequence === draftLoadSequence.current) setVersions(items);
     } catch {
-      setVersions([]);
+      if (sequence === draftLoadSequence.current) setVersions([]);
     } finally {
-      setBusy(null);
+      if (sequence === draftLoadSequence.current) setBusy(null);
     }
   }
 
@@ -778,6 +852,7 @@ export function App() {
       }
       const saved = await strategyApi.saveDraft(state.strategyId, toDraftPayload(state));
       dispatch({ type: "replace", state: fromDraftResponse(saved) });
+      navigateToDraft(saved.strategy_id);
       setValidation(emptyValidation);
       setNotice({ tone: "success", text: `Draft saved (revision ${saved.draft_revision}).` });
       return true;
@@ -812,25 +887,45 @@ export function App() {
     }
   }
 
-  async function openDraft(strategyId: string) {
+  async function openDraft(strategyId: string, updateUrl = true) {
+    const sequence = ++draftLoadSequence.current;
+    setDraftLoad({ strategyId, name: strategyId, status: "loading", reason: "" });
+    setNotice(null);
+    setView("strategy");
+    if (updateUrl) navigateToDraft(strategyId);
     setBusy("load");
     try {
+      if (!strategyId.trim()) throw new StrategyApiError("server", "Invalid strategy identity.", 400, "INVALID_STRATEGY_ID");
       const strategy = await strategyApi.getStrategy(strategyId);
+      if (sequence !== draftLoadSequence.current) return;
+      if (strategy.lifecycle_status === "TRASHED") {
+        setDraftLoad({ strategyId, name: strategy.name, status: "error", reason: "STRATEGY_TRASHED" });
+        return;
+      }
       const draft = await strategyApi.getDraft(strategyId);
+      if (sequence !== draftLoadSequence.current) return;
+      if (!draft) {
+        setDraftLoad({ strategyId, name: strategy.name, description: strategy.description, status: "missing", reason: "NO_DRAFT_FOR_STRATEGY", httpStatus: 404 });
+        return;
+      }
       const currentProposals = await loadProposals(strategyId);
+      if (sequence !== draftLoadSequence.current) return;
       dispatch({
         type: "replace",
-        state: draft
-          ? fromDraftResponse(draft, approvedPayloadIsCurrent(draft, currentProposals))
-          : createNewStrategyEditorState(strategy.strategy_id, strategy.name, strategy.description, strategy.draft_active_mode ?? "rule_based"),
+        state: fromDraftResponse(draft, approvedPayloadIsCurrent(draft, currentProposals)),
       });
+      setDraftLoad(null);
       setSelectedVersion(null);
       setView("strategy");
       setValidation(emptyValidation);
+      setNotice({ tone: "success", text: `Draft loaded (revision ${draft.draft_revision}).` });
+      await loadVersions(strategyId);
     } catch (error) {
-      setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft load failed." });
+      if (sequence !== draftLoadSequence.current) return;
+      const code = error instanceof StrategyApiError ? error.code : undefined;
+      setDraftLoad({ strategyId, name: strategyId, status: "error", reason: code ?? "DRAFT_LOAD_FAILED", httpStatus: error instanceof StrategyApiError ? error.status : undefined });
     } finally {
-      setBusy(null);
+      if (sequence === draftLoadSequence.current) setBusy(null);
     }
   }
 
@@ -841,6 +936,7 @@ export function App() {
       const saved = await strategyApi.saveDraft(next.strategyId, toDraftPayload(next));
       dispatch({ type: "replace", state: fromDraftResponse(saved) });
       setView("strategy");
+      navigateToDraft(saved.strategy_id);
       await loadLibrary();
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "New strategy creation failed." });
@@ -861,6 +957,7 @@ export function App() {
       dispatch({ type: "replace", state: fromDraftResponse(draft) });
       setSelectedVersion(null);
       setView("strategy");
+      navigateToDraft(draft.strategy_id);
       await loadLibrary();
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof StrategyApiError ? error.message : "Draft creation from version failed." });
@@ -923,12 +1020,30 @@ export function App() {
   };
 
   return (
-    view === "library" ? <StrategyLibrary strategies={strategies} diagnostics={strategyDiagnostics} loading={libraryLoading} onNew={(request) => void createNewStrategy(request)} onOpenDraft={(id) => navigateWithDraftGuard(() => void openDraft(id))} onOpenLatest={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onOpenHistory={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onClone={(id, versionId) => navigateWithDraftGuard(() => void loadVersion(versionId, id))} onTrash={(id) => void trashStrategy(id)} onRestore={(id) => void restoreStrategy(id)} onProtect={(id, value) => void protectStrategy(id, value)} onPermanentDelete={(id) => void permanentlyDeleteStrategy(id)} onBulkTrash={(ids) => void bulkTrashStrategies(ids)} onBack={() => navigateWithDraftGuard(() => setView("strategy"))} /> :
+    view === "library" ? <StrategyLibrary strategies={strategies} diagnostics={strategyDiagnostics} loading={libraryLoading} onNew={(request) => void createNewStrategy(request)} onOpenDraft={(id) => navigateWithDraftGuard(() => void openDraft(id))} onOpenLatest={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onOpenHistory={(id, versionId) => navigateWithDraftGuard(() => void openVersionHistory(id, versionId))} onClone={(id, versionId) => navigateWithDraftGuard(() => void loadVersion(versionId, id))} onTrash={(id) => void trashStrategy(id)} onRestore={(id) => void restoreStrategy(id)} onProtect={(id, value) => void protectStrategy(id, value)} onPermanentDelete={(id) => void permanentlyDeleteStrategy(id)} onBulkTrash={(ids) => void bulkTrashStrategies(ids)} onBack={() => navigateWithDraftGuard(() => { if (state.draftRevision > 0) navigateToDraft(state.strategyId); else navigateToNewEditor(); setView("strategy"); })} /> :
     view === "version" && selectedVersion ? <StrategyVersionView version={selectedVersion} versions={versions} diff={versionDiff} onBack={() => navigateWithDraftGuard(() => setView("library"))} onCreateDraft={() => void createDraftFromVersion()} onClone={(request) => void cloneFromVersion(request)} onCompare={(id) => void compareVersion(id)} onRunBacktest={() => setView("backtest")} onCreateExperiment={() => setView("workbench")} /> :
     view === "backtest" ? <BacktestLab initialStrategyId={selectedVersion?.strategy_id} initialVersionId={selectedVersion?.version_id} onOpenStrategyVersion={(strategyId, versionId) => void loadVersion(versionId, strategyId)} onBack={() => setView("strategy")} /> :
     view === "research" ? <ExperimentResearch initialProtocolId={researchIds.protocolId} initialExperimentId={researchIds.experimentId} onBack={() => setView("strategy")} onOpenOos={(protocolId) => { setResearchIds((current) => ({ ...current, protocolId })); setView("oos"); }} /> :
     view === "workbench" ? <ExperimentWorkbench initialVersion={selectedVersion} onBack={() => setView("version")} onOpenResults={(protocolId, experimentId) => { setResearchIds({ protocolId, experimentId }); setView("research"); }} /> :
     view === "oos" ? <OosResearchView onBack={() => setView("strategy")} /> :
+    draftLoad ? <main className="app-shell">
+      <header className="topbar"><div><span className="eyebrow">ETF QUANT RESEARCH SYSTEM · STRATEGY LAB</span><h1>Strategy Draft</h1></div></header>
+      <section className="panel">
+        <h2>{draftLoad.name}</h2>
+        <p>Strategy ID: <code>{draftLoad.strategyId}</code></p>
+        {draftLoad.status === "loading" ? <p>Loading Draft...</p> : <>
+          <p>Requested Draft could not be loaded.</p>
+          <p>{draftLoad.status === "missing" ? "This strategy has no saved Draft." : draftLoad.reason === "STRATEGY_TRASHED" ? "This strategy is in Trash. Restore it in Strategy Library before editing." : "The requested Strategy Draft is unavailable."}</p>
+          {draftLoad.httpStatus && <p>HTTP {draftLoad.httpStatus}</p>}
+          <p>Reason: <code>{draftLoad.reason}</code></p>
+          {draftLoad.status === "missing" && <button className="button button-secondary" type="button" onClick={() => {
+            dispatch({ type: "replace", state: createNewStrategyEditorState(draftLoad.strategyId, draftLoad.name, draftLoad.description ?? "") });
+            setDraftLoad(null);
+          }}>Create Draft</button>}
+        </>}
+        <button className="button button-secondary" type="button" onClick={() => { navigateToLibrary(); setView("library"); }}>Strategy Library</button>
+      </section>
+    </main> :
     <main className="app-shell">
       <header className="topbar">
         <div>
@@ -937,7 +1052,7 @@ export function App() {
           <p>Configure, validate and version research strategies.</p>
         </div>
         <div className="topbar-status">
-          <button className="button button-secondary" type="button" onClick={() => navigateWithDraftGuard(() => setView("library"))}>Strategy Library</button>
+          <button className="button button-secondary" type="button" onClick={() => navigateWithDraftGuard(() => { navigateToLibrary(); setView("library"); })}>Strategy Library</button>
           <button className="button button-secondary" type="button" onClick={() => navigateWithDraftGuard(() => setView("backtest"))}>Open Backtest Lab</button>
           <button className="button button-secondary" type="button" onClick={() => setView("research")}>Open Experiment Research</button>
           <button className="button button-secondary" type="button" onClick={() => setView("oos")}>Open OOS Research View</button>

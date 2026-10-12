@@ -2,13 +2,51 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import { createDefaultEditorState, toDraftPayload, toStrategyPayload } from "./strategy/editor";
+import { createDefaultEditorState, createNewStrategyEditorState, toDraftPayload, toStrategyPayload } from "./strategy/editor";
 import type { StrategyPayload, StrategyVersionSummary } from "./strategy/types";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  window.history.replaceState(null, "", "/");
 });
+
+function mockPersistedDraft(missing: "none" | "draft" | "strategy" | "trashed" = "none") {
+  const strategyId = "peak-drawdown-uat";
+  const draft = {
+    ...toDraftPayload(createNewStrategyEditorState(strategyId, "Peak Drawdown UAT", "Persisted")),
+    draft_revision: 3,
+    draft_hash: "peak-draft-hash",
+    created_at: "2026-10-13T00:00:00Z",
+    updated_at: "2026-10-13T00:00:00Z",
+  };
+  const calls = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith(`/strategies/${strategyId}`)) {
+      return new Response(JSON.stringify(missing === "strategy" ? { detail: "STRATEGY_NOT_FOUND" } : {
+        strategy_id: strategyId, name: "Peak Drawdown UAT", description: "Persisted",
+        lifecycle_status: missing === "trashed" ? "TRASHED" : "ACTIVE", draft_revision: 3, draft_status: "saved",
+      }), { status: missing === "strategy" ? 404 : 200 });
+    }
+    if (url.endsWith(`/strategies/${strategyId}/draft`)) {
+      return new Response(JSON.stringify(missing === "draft" ? { detail: "DRAFT_NOT_FOUND" } : draft), {
+        status: missing === "draft" ? 404 : 200,
+      });
+    }
+    if (url.endsWith(`/strategies/${strategyId}/change-sets`) || url.endsWith(`/strategies/${strategyId}/versions`)) {
+      return new Response("[]", { status: 200 });
+    }
+    if (url.includes("/strategies?")) {
+      return new Response(JSON.stringify([{
+        strategy_id: strategyId, name: "Peak Drawdown UAT", description: "Persisted",
+        draft_revision: 3, draft_status: "saved", lifecycle_status: "ACTIVE",
+      }]), { status: 200 });
+    }
+    if (url.endsWith("/diagnostics")) return new Response("{}", { status: 200 });
+    return new Response(JSON.stringify({ detail: "STRATEGY_NOT_FOUND" }), { status: 404 });
+  });
+  return { strategyId, calls };
+}
 
 function mockApi() {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -77,6 +115,69 @@ function mockApi() {
 }
 
 describe("Strategy Lab", () => {
+  it("opens a library row by strategy_id and restores the exact Draft on a cold route load", async () => {
+    const { strategyId, calls } = mockPersistedDraft();
+    const first = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Strategy Library" }));
+    await screen.findByText("Peak Drawdown UAT");
+    fireEvent.click(screen.getByRole("button", { name: "Open Draft" }));
+    await screen.findByText("Saved Draft r3");
+    expect(screen.getByRole("textbox", { name: "Strategy ID" })).toHaveValue(strategyId);
+    expect(window.location.search).toBe(`?draft=${strategyId}`);
+    expect(calls.mock.calls.some(([input]) => String(input).endsWith(`/strategies/${strategyId}/draft`))).toBe(true);
+    expect(calls.mock.calls.some(([input]) => String(input).includes("/strategies/null/"))).toBe(false);
+
+    first.unmount();
+    render(<App />);
+    await screen.findByText("Saved Draft r3");
+    expect(screen.getByRole("textbox", { name: "Strategy ID" })).toHaveValue(strategyId);
+  });
+
+  it("restores the same Draft when browser history returns to its URL", async () => {
+    const { strategyId } = mockPersistedDraft();
+    render(<App />);
+    window.history.pushState(null, "", `/?draft=${strategyId}`);
+    fireEvent(window, new PopStateEvent("popstate"));
+    await screen.findByText("Saved Draft r3");
+    window.history.pushState(null, "", "/?view=library");
+    fireEvent(window, new PopStateEvent("popstate"));
+    await screen.findByRole("heading", { name: "Strategy Library" });
+    window.history.pushState(null, "", `/?draft=${strategyId}`);
+    fireEvent(window, new PopStateEvent("popstate"));
+    await screen.findByText("Saved Draft r3");
+    expect(screen.getByRole("textbox", { name: "Strategy ID" })).toHaveValue(strategyId);
+  });
+
+  it("keeps the requested identity visible when the Draft or Strategy is missing", async () => {
+    const { strategyId } = mockPersistedDraft("draft");
+    window.history.replaceState(null, "", `/?draft=${strategyId}`);
+    const first = render(<App />);
+    await screen.findByText("NO_DRAFT_FOR_STRATEGY");
+    expect(screen.getByText("Requested Draft could not be loaded.")).toBeInTheDocument();
+    expect(screen.getByText(strategyId)).toBeInTheDocument();
+    expect(screen.queryByText("Draft not saved")).not.toBeInTheDocument();
+    first.unmount();
+    vi.restoreAllMocks();
+    mockPersistedDraft("strategy");
+    render(<App />);
+    await screen.findByText("STRATEGY_NOT_FOUND");
+    expect(screen.queryByText("Draft not saved")).not.toBeInTheDocument();
+  });
+
+  it("does not edit a trashed strategy or turn an empty route identity into a default Draft", async () => {
+    const { strategyId, calls } = mockPersistedDraft("trashed");
+    window.history.replaceState(null, "", `/?draft=${strategyId}`);
+    const first = render(<App />);
+    await screen.findByText("STRATEGY_TRASHED");
+    expect(calls.mock.calls.some(([input]) => String(input).endsWith(`/strategies/${strategyId}/draft`))).toBe(false);
+    expect(screen.queryByText("Draft not saved")).not.toBeInTheDocument();
+    first.unmount();
+    window.history.replaceState(null, "", "/?draft=");
+    render(<App />);
+    await screen.findByText("INVALID_STRATEGY_ID");
+    expect(screen.queryByText("Draft not saved")).not.toBeInTheDocument();
+  });
+
   it("refreshes the canonical Draft after approving a persisted proposal", async () => {
     const original = toDraftPayload(createDefaultEditorState());
     const changed = structuredClone(original.active_strategy_payload);
@@ -266,8 +367,15 @@ describe("Strategy Lab", () => {
     const versions: StrategyVersionSummary[] = [];
     let saveCount = 0;
     let draftRevision = 0;
+    let persistedDraft: Record<string, unknown> | null = null;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
+      if (url.endsWith(`/strategies/${savedConfiguration.strategy_id}`) && init?.method !== "POST") {
+        return new Response(JSON.stringify({
+          strategy_id: savedConfiguration.strategy_id, name: savedConfiguration.name,
+          description: savedConfiguration.description, lifecycle_status: "ACTIVE",
+        }), { status: 200 });
+      }
       if (url.endsWith("/strategies") && init?.method === "POST") {
         const body = JSON.parse(String(init.body));
         return new Response(JSON.stringify({
@@ -276,16 +384,19 @@ describe("Strategy Lab", () => {
           status: "active", metadata: {},
         }), { status: 201 });
       }
-      if (url.endsWith("/draft") && init?.method === "GET") {
-        return new Response(JSON.stringify({ detail: "DRAFT_NOT_FOUND" }), { status: 404 });
+      if (url.endsWith("/draft") && init?.method !== "PUT") {
+        return persistedDraft
+          ? new Response(JSON.stringify(persistedDraft), { status: 200 })
+          : new Response(JSON.stringify({ detail: "DRAFT_NOT_FOUND" }), { status: 404 });
       }
       if (url.endsWith("/draft") && init?.method === "PUT") {
         const body = JSON.parse(String(init.body));
         draftRevision = body.expected_revision + 1;
-        return new Response(JSON.stringify({
+        persistedDraft = {
           ...body, draft_revision: draftRevision, created_at: "2026-09-07T00:00:00Z",
           updated_at: "2026-09-07T00:00:00Z", draft_hash: `draft-${draftRevision}`,
-        }), { status: 200 });
+        };
+        return new Response(JSON.stringify(persistedDraft), { status: 200 });
       }
       if (url.includes("/drafts/from-version/")) {
         return new Response(JSON.stringify({

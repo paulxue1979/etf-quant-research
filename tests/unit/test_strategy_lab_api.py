@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from backend.app import backtest_lab, strategy_lab
 from backend.app.main import app
+from backend.app.operator_read_service import OperatorReadService
 from backend.app.strategy_repository import StrategyRepository
+from data.cache import DiskCache
 from tests.unit.test_backtest_repository import _run
 
 
@@ -89,6 +91,63 @@ def test_strategy_lab_validation_delegates_to_the_domain_validator() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"is_valid": True, "errors": [], "warnings": []}
+
+
+def test_library_api_repository_and_operator_share_strategy_id_draft_identity(tmp_path) -> None:
+    client = TestClient(app)
+    payload = _strategy_payload()
+    strategy_id = str(payload["strategy_id"])
+    created = client.post(
+        "/strategy-lab/strategies",
+        json={"strategy_id": strategy_id, "name": payload["name"]},
+    )
+    assert created.status_code == 201
+
+    for expected_revision in range(3):
+        saved = client.put(
+            f"/strategy-lab/strategies/{strategy_id}/draft",
+            json=_draft_request(payload, expected_revision=expected_revision),
+        )
+        assert saved.status_code == 200
+
+    library = client.get("/strategy-lab/strategies").json()
+    row = next(item for item in library if item["strategy_id"] == strategy_id)
+    browser = client.get(f"/strategy-lab/strategies/{strategy_id}/draft")
+    canonical = strategy_lab.strategy_version_store.get_draft(strategy_id)
+    operator = OperatorReadService(
+        db_path=strategy_lab.strategy_version_store.db_path,
+        cache=DiskCache(tmp_path / "cache"),
+    ).get_draft(strategy_id)
+
+    assert browser.status_code == 200
+    assert canonical is not None
+    assert (
+        row["draft_revision"]
+        == browser.json()["draft_revision"]
+        == canonical.draft_revision
+        == operator["revision"]
+        == 3
+    )
+    assert browser.json()["draft_hash"] == canonical.draft_hash == operator["draft_hash"]
+    assert operator["draft_id"] is None
+    assert strategy_lab.strategy_version_store.list_version_records(strategy_id) == ()
+    assert strategy_lab.strategy_version_store.get_draft(strategy_id).draft_revision == 3
+
+
+def test_draft_get_distinguishes_missing_strategy_and_missing_draft() -> None:
+    client = TestClient(app)
+    assert client.get("/strategy-lab/strategies/null/draft").json() == {
+        "detail": "STRATEGY_NOT_FOUND"
+    }
+    assert client.get("/strategy-lab/strategies/null/draft").status_code == 404
+    client.post(
+        "/strategy-lab/strategies",
+        json={"strategy_id": "no-draft", "name": "No Draft"},
+    )
+    missing = client.get("/strategy-lab/strategies/no-draft/draft")
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "DRAFT_NOT_FOUND"}
+    assert strategy_lab.strategy_version_store.get_draft("no-draft") is None
 
 
 def test_strategy_lifecycle_api_supports_trash_restore_protect_and_diagnostics() -> None:
