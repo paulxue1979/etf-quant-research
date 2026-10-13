@@ -92,7 +92,7 @@ def test_operator_mcp_read_only_contract_and_isolation(tmp_path: Path) -> None:
             health = await call("quant_health")
             assert health == {
                 "status": "READY",
-                "backend_version": "1.4.5",
+                "backend_version": "1.4.6",
                 "bridge_version": "0.2.0",
             }
             listing = await call("quant_list_strategies")

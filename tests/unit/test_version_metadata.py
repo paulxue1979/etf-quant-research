@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_RELEASE_VERSION = "1.4.6"
 
 
 def _fastapi_version() -> str:
@@ -38,3 +39,15 @@ def test_release_version_metadata_matches() -> None:
         "FastAPI application": _fastapi_version(),
     }
     assert len(set(versions.values())) == 1, f"VERSION_METADATA_MISMATCH: {versions}"
+    assert set(versions.values()) == {EXPECTED_RELEASE_VERSION}, (
+        f"VERSION_METADATA_MISMATCH: expected {EXPECTED_RELEASE_VERSION}, got {versions}"
+    )
+
+
+def test_loaded_application_and_operator_versions_match_release() -> None:
+    from backend.app.main import app
+    from backend.app.operator_read_service import BACKEND_VERSION, BRIDGE_VERSION
+
+    assert app.version == EXPECTED_RELEASE_VERSION
+    assert BACKEND_VERSION == EXPECTED_RELEASE_VERSION
+    assert BRIDGE_VERSION == "0.2.0"
