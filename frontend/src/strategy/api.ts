@@ -14,6 +14,7 @@ import type {
   StrategyDiagnostics,
   OperatorChangeSet,
   OperatorChangeSetDecision,
+  ControlledVersionRequest,
 } from "./types";
 
 import { apiBaseUrl } from "../apiConfig";
@@ -56,7 +57,9 @@ async function requestJson<T>(path: string, init?: RequestInit, acceptedStatuses
       "server",
       `Strategy Lab request failed (${response.status}).`,
       response.status,
-      typeof detail === "string" ? detail : undefined,
+      typeof detail === "string" ? detail
+        : typeof detail === "object" && detail !== null && "code" in detail && typeof detail.code === "string"
+          ? detail.code : undefined,
     );
   }
   return payload as T;
@@ -154,6 +157,30 @@ export const strategyApi = {
   rejectChangeSet(strategyId: string, changeSetId: string): Promise<OperatorChangeSetDecision> {
     return requestJson<OperatorChangeSetDecision>(
       `/strategy-lab/strategies/${encodeURIComponent(strategyId)}/change-sets/${encodeURIComponent(changeSetId)}/reject`,
+      { method: "POST" },
+    );
+  },
+
+  async listVersionRequests(strategyId: string): Promise<ControlledVersionRequest[]> {
+    const payload = await requestJson<unknown>(
+      `/strategy-operator/version-requests/strategies/${encodeURIComponent(strategyId)}`,
+    );
+    if (!Array.isArray(payload)) {
+      throw new StrategyApiError("malformed", "Version requests returned an invalid response.");
+    }
+    return payload as ControlledVersionRequest[];
+  },
+
+  approveVersionRequest(strategyId: string, requestId: string): Promise<ControlledVersionRequest> {
+    return requestJson<ControlledVersionRequest>(
+      `/strategy-operator/version-requests/strategies/${encodeURIComponent(strategyId)}/${encodeURIComponent(requestId)}/approve`,
+      { method: "POST" },
+    );
+  },
+
+  rejectVersionRequest(strategyId: string, requestId: string): Promise<ControlledVersionRequest> {
+    return requestJson<ControlledVersionRequest>(
+      `/strategy-operator/version-requests/strategies/${encodeURIComponent(strategyId)}/${encodeURIComponent(requestId)}/reject`,
       { method: "POST" },
     );
   },

@@ -200,6 +200,28 @@ export interface OperatorChangeSetDecision {
   audit?: OperatorChangeSet["decision_audit"];
 }
 
+export interface ControlledVersionRequest {
+  request_id: string;
+  source: "CODEX_MCP";
+  strategy_id: string;
+  strategy_name: string;
+  expected_draft_revision: number;
+  expected_draft_hash: string;
+  base_latest_version_id: string | null;
+  base_latest_version_hash: string | null;
+  active_mode: string;
+  draft_snapshot: StrategyPayload;
+  prepared_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  rejected_at: string | null;
+  status: "PROPOSED" | "REJECTED" | "CREATED" | "STALE" | "FAILED";
+  created_version_id: string | null;
+  created_version_hash: string | null;
+  error_code: string | null;
+  approval_gate: { can_approve: boolean; reason: string | null };
+}
+
 export interface StrategyRecord {
   strategy_id: string;
   name: string;

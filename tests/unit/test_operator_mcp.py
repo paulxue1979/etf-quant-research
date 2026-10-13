@@ -30,6 +30,8 @@ TOOL_NAMES = {
     "quant_get_backtest_configuration",
     "quant_list_pending_backtest_configurations",
     "quant_get_backtest_result",
+    "quant_prepare_strategy_version_creation",
+    "quant_get_strategy_version_creation_request",
 }
 
 
@@ -72,7 +74,11 @@ def test_operator_mcp_read_only_contract_and_isolation(tmp_path: Path) -> None:
                 item.annotations.read_only_hint
                 == (
                     item.name
-                    not in {"quant_prepare_draft_changes", "quant_prepare_backtest_configuration"}
+                    not in {
+                        "quant_prepare_draft_changes",
+                        "quant_prepare_backtest_configuration",
+                        "quant_prepare_strategy_version_creation",
+                    }
                 )
                 for item in catalog.tools
             )

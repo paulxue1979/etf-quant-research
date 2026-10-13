@@ -6,6 +6,7 @@ import { ExperimentWorkbench } from "./research/ExperimentWorkbench";
 import { OosResearchView } from "./research/OosResearchView";
 import { strategyApi, StrategyApiError } from "./strategy/api";
 import { RegimeStateMachineEditor } from "./strategy/RegimeStateMachineEditor";
+import { ControlledVersionRequests } from "./strategy/ControlledVersionRequests";
 import { OperatorProposals, proposalErrorText } from "./strategy/OperatorProposals";
 import { StrategyLibrary } from "./strategy/StrategyLibrary";
 import { StrategyVersionView } from "./strategy/StrategyVersionView";
@@ -1273,6 +1274,13 @@ export function App() {
             onRefresh={() => void loadProposals(state.strategyId)}
             onApprove={(id) => void decideProposal(id, true)}
             onReject={(id) => void decideProposal(id, false)}
+          />}
+
+          {state.draftRevision > 0 && <ControlledVersionRequests
+            strategyId={state.strategyId}
+            draftRevision={state.draftRevision}
+            isDirty={Boolean(state.isDirty)}
+            onCreated={() => void loadVersions(state.strategyId)}
           />}
 
           <section className="action-panel">

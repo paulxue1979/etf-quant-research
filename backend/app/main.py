@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.backtest_lab import router as backtest_lab_router
 from backend.app.backtest_report_api import router as backtest_report_router
 from backend.app.controlled_backtest_api import router as controlled_backtest_router
+from backend.app.controlled_version_api import router as controlled_version_router
 from backend.app.data_availability_api import router as data_availability_router
 from backend.app.experiment_workflow_api import router as experiment_workflow_router
 from backend.app.grid_search_api import router as grid_search_router
@@ -35,6 +36,7 @@ app.include_router(strategy_lab_router)
 app.include_router(operator_change_set_router)
 app.include_router(backtest_lab_router)
 app.include_router(controlled_backtest_router)
+app.include_router(controlled_version_router)
 app.include_router(backtest_report_router)
 app.include_router(data_availability_router)
 app.include_router(research_protocol_router)

@@ -911,96 +911,105 @@ class StrategyRepository:
         definition: StrategyDefinition,
     ) -> StrategyVersion:
         """Atomically snapshot the saved active draft into a new immutable version."""
-        if definition.strategy_id != strategy_id:
-            raise StrategyPersistenceError(
-                "strategy identity does not match draft", code="DRAFT_INVALID"
-            )
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT draft_revision, active_strategy_payload_json, active_mode, draft_hash "
-                "FROM strategy_drafts WHERE strategy_id = ?",
-                (strategy_id,),
-            ).fetchone()
-            if row is None:
-                self._rollback(connection)
-                raise StrategyPersistenceError(
-                    "strategy draft was not found", code="DRAFT_NOT_FOUND"
-                )
-            if int(row["draft_revision"]) != expected_revision:
-                self._rollback(connection)
-                raise StrategyPersistenceError(
-                    "draft revision is stale", code="DRAFT_REVISION_CONFLICT"
-                )
-            if row["active_strategy_payload_json"] is None:
-                self._rollback(connection)
-                raise StrategyPersistenceError(
-                    "active draft has not passed serialization and validation",
-                    code="DRAFT_INVALID",
-                )
-            stored = json.loads(row["active_strategy_payload_json"])
-            if StrategyDefinition.from_dict(stored).to_json() != definition.to_json():
-                self._rollback(connection)
-                raise StrategyPersistenceError(
-                    "draft payload changed before version creation", code="DRAFT_REVISION_CONFLICT"
-                )
-            latest = connection.execute(
-                "SELECT COALESCE(MAX(version_number), 0) AS latest_version_number "
-                "FROM strategy_versions WHERE strategy_id = ?",
-                (strategy_id,),
-            ).fetchone()
-            version_number = int(latest["latest_version_number"]) + 1
-            now = datetime.now(UTC)
-            version = StrategyVersion(
+            version = self._create_version_from_draft_in_transaction(
+                connection,
                 strategy_id=strategy_id,
-                version_id=f"{strategy_id}-v{version_number}-{uuid4().hex[:12]}",
-                version_number=version_number,
-                created_at=now,
-                configuration=definition,
-                status=StrategyStatus.DRAFT,
-            )
-            provenance = self._safe_json(
-                {
-                    "source": "strategy_draft",
-                    "draft_revision": expected_revision,
-                    "draft_hash": row["draft_hash"],
-                    "active_mode": row["active_mode"],
-                }
-            )
-            connection.execute(
-                "INSERT INTO strategy_versions(strategy_id, version_id, version_number, "
-                "created_at, "
-                "configuration_json, content_hash, status, source_draft_revision, "
-                "source_draft_hash, "
-                "source_provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    strategy_id,
-                    version.version_id,
-                    version_number,
-                    now.isoformat(),
-                    definition.to_json(),
-                    version.content_hash,
-                    version.status.value,
-                    expected_revision,
-                    row["draft_hash"],
-                    provenance,
-                ),
-            )
-            connection.execute(
-                "UPDATE strategies SET latest_version_number = ?, updated_at = ? "
-                "WHERE strategy_id = ?",
-                (version_number, now.isoformat(), strategy_id),
+                expected_revision=expected_revision,
+                definition=definition,
             )
             connection.execute("COMMIT")
             return version
         except StrategyPersistenceError:
+            self._rollback(connection)
             raise
         except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as exc:
             self._rollback(connection)
             raise StrategyPersistenceError("could not create version from draft") from exc
         finally:
             connection.close()
+
+    @classmethod
+    def _create_version_from_draft_in_transaction(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        strategy_id: str,
+        expected_revision: int,
+        definition: StrategyDefinition,
+    ) -> StrategyVersion:
+        """Share canonical version allocation with an enclosing approval transaction."""
+        if definition.strategy_id != strategy_id:
+            raise StrategyPersistenceError(
+                "strategy identity does not match draft", code="DRAFT_INVALID"
+            )
+        row = connection.execute(
+            "SELECT draft_revision, active_strategy_payload_json, active_mode, draft_hash "
+            "FROM strategy_drafts WHERE strategy_id = ?",
+            (strategy_id,),
+        ).fetchone()
+        if row is None:
+            raise StrategyPersistenceError("strategy draft was not found", code="DRAFT_NOT_FOUND")
+        if int(row["draft_revision"]) != expected_revision:
+            raise StrategyPersistenceError(
+                "draft revision is stale", code="DRAFT_REVISION_CONFLICT"
+            )
+        if row["active_strategy_payload_json"] is None:
+            raise StrategyPersistenceError(
+                "active draft has not passed serialization and validation", code="DRAFT_INVALID"
+            )
+        stored = json.loads(row["active_strategy_payload_json"])
+        if StrategyDefinition.from_dict(stored).to_json() != definition.to_json():
+            raise StrategyPersistenceError(
+                "draft payload changed before version creation", code="DRAFT_REVISION_CONFLICT"
+            )
+        latest = connection.execute(
+            "SELECT COALESCE(MAX(version_number), 0) AS latest_version_number "
+            "FROM strategy_versions WHERE strategy_id = ?",
+            (strategy_id,),
+        ).fetchone()
+        version_number = int(latest["latest_version_number"]) + 1
+        now = datetime.now(UTC)
+        version = StrategyVersion(
+            strategy_id=strategy_id,
+            version_id=f"{strategy_id}-v{version_number}-{uuid4().hex[:12]}",
+            version_number=version_number,
+            created_at=now,
+            configuration=definition,
+            status=StrategyStatus.DRAFT,
+        )
+        provenance = cls._safe_json(
+            {
+                "source": "strategy_draft",
+                "draft_revision": expected_revision,
+                "draft_hash": row["draft_hash"],
+                "active_mode": row["active_mode"],
+            }
+        )
+        connection.execute(
+            "INSERT INTO strategy_versions(strategy_id, version_id, version_number, "
+            "created_at, configuration_json, content_hash, status, source_draft_revision, "
+            "source_draft_hash, source_provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                strategy_id,
+                version.version_id,
+                version_number,
+                now.isoformat(),
+                definition.to_json(),
+                version.content_hash,
+                version.status.value,
+                expected_revision,
+                row["draft_hash"],
+                provenance,
+            ),
+        )
+        connection.execute(
+            "UPDATE strategies SET latest_version_number = ?, updated_at = ? WHERE strategy_id = ?",
+            (version_number, now.isoformat(), strategy_id),
+        )
+        return version
 
     def persist_exact_strategy_version(self, version: StrategyVersion) -> StrategyVersion:
         """Persist one already-materialized version without changing its identity.

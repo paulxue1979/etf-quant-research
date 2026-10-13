@@ -13,6 +13,7 @@ from backend.app.controlled_backtest_service import (
     ControlledBacktestError,
     ControlledBacktestService,
 )
+from backend.app.controlled_version_service import ControlledVersionService, VersionRequestError
 from backend.app.operator_change_set_service import (
     ChangeSetPreparationError,
     DraftChangeOperation,
@@ -50,6 +51,7 @@ def create_server(
     service: OperatorReadService | None = None,
     change_set_service: OperatorChangeSetService | None = None,
     backtest_service: ControlledBacktestService | None = None,
+    version_service: ControlledVersionService | None = None,
 ) -> MCPServer:
     """Expose bounded reads and proposal persistence, never Draft mutation."""
     read = service or OperatorReadService()
@@ -57,6 +59,9 @@ def create_server(
 
     def controlled_backtests() -> ControlledBacktestService:
         return backtest_service or ControlledBacktestService(read=read)
+
+    def controlled_versions() -> ControlledVersionService:
+        return version_service or ControlledVersionService()
 
     server = MCPServer(
         "etf-quant-draft-proposals",
@@ -188,6 +193,33 @@ def create_server(
     def quant_get_backtest_result(config_id: str) -> dict[str, Any]:
         """Read production analytics for an approved completed backtest only."""
         return controlled_backtests().get_result(_id(config_id))
+
+    @server.tool(annotations=_PROPOSAL)
+    def quant_prepare_strategy_version_creation(
+        strategy_id: str,
+        expected_draft_revision: int,
+        expected_draft_hash: str,
+        base_latest_version_id: str = "",
+        base_latest_version_hash: str = "",
+        client_request_key: str = "",
+    ) -> dict[str, Any]:
+        """Prepare only. Reuse a key for retries; a fresh key means an explicit new intent."""
+        try:
+            return controlled_versions().prepare(
+                strategy_id=_id(strategy_id),
+                expected_draft_revision=expected_draft_revision,
+                expected_draft_hash=expected_draft_hash,
+                base_latest_version_id=base_latest_version_id or None,
+                base_latest_version_hash=base_latest_version_hash or None,
+                client_request_key=client_request_key or None,
+            )
+        except VersionRequestError as exc:
+            return {"status": "REJECTED", "reason": str(exc), "request_id": None}
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_strategy_version_creation_request(request_id: str) -> dict[str, Any]:
+        """Read a persisted request and current approval gate without any write."""
+        return controlled_versions().get(_id(request_id))
 
     return server
 
