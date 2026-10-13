@@ -1,7 +1,7 @@
 {
   "name": "etf-quant-research-frontend",
   "private": true,
-  "version": "1.4.3",
+  "version": "1.4.5",
   "type": "module",
   "packageManager": "pnpm@11.19.0",
   "scripts": {

@@ -4,6 +4,7 @@ from backend.app.main import app
 
 
 def test_health_check_returns_service_status() -> None:
+    assert app.version == "1.4.5"
     client = TestClient(app)
 
     response = client.get("/health")

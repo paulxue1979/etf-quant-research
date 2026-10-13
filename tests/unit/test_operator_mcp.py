@@ -83,7 +83,12 @@ def test_operator_mcp_read_only_contract_and_isolation(tmp_path: Path) -> None:
                 assert not result.is_error, (name, result.content)
                 return result.structured_content
 
-            assert (await call("quant_health"))["status"] == "READY"
+            health = await call("quant_health")
+            assert health == {
+                "status": "READY",
+                "backend_version": "1.4.5",
+                "bridge_version": "0.2.0",
+            }
             listing = await call("quant_list_strategies")
             assert listing["total"] == 1
             assert listing["strategies"][0]["strategy_id"] == strategy_id
