@@ -1,13 +1,16 @@
-# Local Codex MCP bridge (Draft proposals)
+# Local Codex MCP bridge (Draft and Backtest proposals)
 
-This bridge exposes eight read-only inspection tools, one ChangeSet read tool,
-and one proposal creation tool over local stdio. It does not use the
+This bridge exposes read-only inspection tools and two proposal creation tools
+over local stdio. It does not use the
 public API, start a web listener, contact OpenAI, or fetch market data. The
 Strategy Lab API server may be started separately for the browser UI, but is
 not required for MCP. The strategy database must already exist and be at the
-current schema. The bridge opens it in SQLite read-only mode and never runs
-repository initialization or migrations. Proposal records use a separate
-`data/operator_change_sets.db`; the strategy database remains read-only.
+current schema. Strategy inspection uses SQLite read-only mode and never runs
+repository initialization or migrations. Draft proposal records use a separate
+`data/operator_change_sets.db`; backtest configuration preparation creates an
+isolated `pending_backtest_configurations` table in the strategy/backtest SQLite
+database so that a later human-approved BacktestRun and its terminal plan state
+can be committed atomically. Strategy and Draft rows remain unchanged.
 
 ## Install and configure
 
@@ -38,7 +41,7 @@ use Codex `-c` overrides for these three values instead of changing global
 
 Restart Codex after adding the configuration, then check `codex mcp list`.
 Ask Codex to call `quant_health` and `quant_list_strategies`. The tool list must
-contain only these ten names:
+contain only these fifteen names:
 
 - `quant_health`
 - `quant_list_strategies`
@@ -50,6 +53,11 @@ contain only these ten names:
 - `quant_get_data_availability`
 - `quant_prepare_draft_changes`
 - `quant_get_change_set`
+- `quant_get_strategy_version`
+- `quant_prepare_backtest_configuration`
+- `quant_get_backtest_configuration`
+- `quant_list_pending_backtest_configurations`
+- `quant_get_backtest_result`
 
 `quant_get_draft` reports `draft_id: null` because the current durable Draft
 model has no separate Draft ID; its `strategy_id`, revision and hash identify
@@ -72,10 +80,25 @@ the read does not mutate either database. Reconnecting the MCP server can
 read the same proposal by ID.
 
 `quant_prepare_draft_changes` is annotated as non-read-only because it writes
-an isolated proposal record. `quant_get_change_set` is read-only. No approve,
-apply, reject, Draft save, version creation, experiment, or execution tool is
-registered. The local Codex process must still be trusted because it can read
-the same local strategy data as the user.
+an isolated proposal record. `quant_prepare_backtest_configuration` is also
+non-read-only because it writes a pending configuration, but it does not run a
+backtest. It requires exact ISO requested dates, positive initial capital, and
+an exact immutable StrategyVersion ID. To use the latest version, resolve it
+with `quant_get_strategy_version` first and pin the returned ID/hash. Dates or
+contribution instructions that cannot be uniquely resolved must be clarified
+before calling prepare. Supported contributions are one-time and monthly;
+monthly spans the whole backtest window. Weekly and independently bounded
+contribution windows are rejected, not approximated. A cache-only Data
+Availability miss leaves the plan blocked until verified data is present.
+
+Backtest Lab lists the durable proposals and preloads the newest pending plan
+into locked form fields on a fresh visit. Only its browser-origin-gated
+`Approve & Run Backtest` action may execute. The plan and BacktestRun remain
+readable after restart. `quant_get_backtest_result` returns stored production
+analytics and does not recalculate them. No MCP approve, run, reject, Draft
+save, version creation, experiment, Grid, Selection, Freeze, OOS, or delete
+tool is registered. The local Codex process must still be trusted because it
+can read the same local strategy data as the user.
 
 ## Disable
 

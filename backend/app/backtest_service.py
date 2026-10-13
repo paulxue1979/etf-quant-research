@@ -48,6 +48,10 @@ class BacktestService:
 
     def run(self, request: Any) -> BacktestRun:
         """Execute and persist one new run for an immutable strategy version."""
+        return self._runs.create(self.build_run(request))
+
+    def build_run(self, request: Any) -> BacktestRun:
+        """Compute a run without persisting it, for atomic operator finalization."""
         strategy_version = self._strategies.get(
             request.strategy_id,
             request.strategy_version_id,
@@ -165,7 +169,7 @@ class BacktestService:
             strategy_provenance=strategy_execution_provenance(integration.signal_records),
             benchmark_evaluation=benchmark_evaluation,
         )
-        return self._runs.create(run)
+        return run
 
 
 def create_default_backtest_service() -> BacktestService:

@@ -15,6 +15,7 @@ import type {
   BacktestReportSeries,
   BacktestRun,
   DataAvailabilityProjection,
+  PendingBacktestConfiguration,
   ContributionFrequency,
   DrawdownPoint,
   EquityPoint,
@@ -326,6 +327,81 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
   const [availability, setAvailability] = useState<DataAvailabilityProjection | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [preparedList, setPreparedList] = useState<PendingBacktestConfiguration[]>([]);
+  const [prepared, setPrepared] = useState<PendingBacktestConfiguration | null>(null);
+  const [preparedBusy, setPreparedBusy] = useState(false);
+  const [preparedError, setPreparedError] = useState<string | null>(null);
+  const manualDirty = useRef(false);
+  const manualSnapshot = useRef({ form: EMPTY_FORM, strategyId: "", versionId: "" });
+
+  function loadPrepared(plan: PendingBacktestConfiguration) {
+    if (!prepared) manualSnapshot.current = { form, strategyId, versionId };
+    setPrepared(plan);
+    setStrategyId(plan.strategy_id);
+    setVersionId(plan.strategy_version_id);
+    setForm({
+      startDate: plan.requested_start,
+      endDate: plan.requested_end,
+      initialCapital: String(plan.initial_capital),
+      commissionRatePercent: String(plan.fees.rate * 100),
+      commissionPerOrder: String(plan.fees.per_order),
+      slippagePercent: String(plan.slippage * 100),
+      priceField: plan.price_field,
+      benchmarkSymbol: plan.backtest_request.benchmark_symbol ?? "",
+      contributionsEnabled: plan.contribution_enabled,
+      contributionFrequency: plan.contribution_frequency ?? "monthly",
+      contributionAmount: plan.contribution_amount ?? "",
+      contributionDate: plan.backtest_request.contribution_schedule?.requested_date ?? "",
+    });
+  }
+
+  function leavePrepared() {
+    setPrepared(null);
+    setForm(manualSnapshot.current.form);
+    setStrategyId(manualSnapshot.current.strategyId);
+    setVersionId(manualSnapshot.current.versionId);
+  }
+
+  async function refreshPrepared(autoLoad = false) {
+    try {
+      const items = await backtestApi.listPrepared();
+      setPreparedList(items);
+      if (autoLoad && !manualDirty.current) {
+        const latest = items.find((item) => item.status === "PROPOSED");
+        if (latest) loadPrepared(latest);
+      }
+    } catch (reason) {
+      setPreparedError(reason instanceof BacktestApiError ? reason.message : "Unable to load prepared backtests.");
+    }
+  }
+
+  async function decidePrepared(action: "reject" | "approve") {
+    if (!prepared || prepared.status !== "PROPOSED") return;
+    if (action === "approve" && !preparedCanApprove) return;
+    setPreparedBusy(true);
+    setPreparedError(null);
+    try {
+      const updated = action === "reject"
+        ? await backtestApi.rejectPrepared(prepared.config_id)
+        : await backtestApi.approveAndRunPrepared(prepared.config_id);
+      setPrepared(updated);
+      await refreshPrepared();
+      if (updated.backtest_run_id) {
+        viewExistingRun(updated.backtest_run_id);
+        if (researchOffset === 0) await loadResearchRuns();
+        else setResearchOffset(0);
+      }
+    } catch (reason) {
+      setPreparedError(reason instanceof BacktestApiError ? reason.message : "Unable to process prepared backtest.");
+      try {
+        const recovered = await backtestApi.getPrepared(prepared.config_id);
+        setPrepared(recovered);
+        if (recovered.backtest_run_id) viewExistingRun(recovered.backtest_run_id);
+      } catch { /* keep visible error */ }
+    } finally {
+      setPreparedBusy(false);
+    }
+  }
 
   async function loadResearchRuns() {
     setResearchBusy(true);
@@ -366,8 +442,11 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
   useEffect(() => {
     void backtestApi.listStrategies().then((items) => {
       setCatalog(items);
-      setStrategyId(items.some((item) => item.strategy_id === initialStrategyId) ? initialStrategyId ?? "" : items[0]?.strategy_id ?? "");
+      const initial = items.some((item) => item.strategy_id === initialStrategyId) ? initialStrategyId ?? "" : items[0]?.strategy_id ?? "";
+      setStrategyId(initial);
+      manualSnapshot.current = { form: EMPTY_FORM, strategyId: initial, versionId: initialVersionId ?? "" };
       setBusy(null);
+      void refreshPrepared(true);
     }).catch((reason: unknown) => {
       setBusy(null);
       setError(reason instanceof BacktestApiError ? reason.message : "Unable to load strategies.");
@@ -388,7 +467,11 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
     setError(null);
     void backtestApi.listVersions(strategyId).then((items) => {
       setVersions(items);
-      setVersionId(items.some((item) => item.version_id === initialVersionId) ? initialVersionId ?? "" : items.at(-1)?.version_id ?? "");
+      setVersionId(items.some((item) => item.version_id === prepared?.strategy_version_id)
+        ? prepared?.strategy_version_id ?? ""
+        : items.some((item) => item.version_id === initialVersionId)
+          ? initialVersionId ?? ""
+          : items.at(-1)?.version_id ?? "");
       setBusy(null);
     }).catch((reason: unknown) => {
       setVersions([]);
@@ -396,10 +479,27 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
       setBusy(null);
       setError(reason instanceof BacktestApiError ? reason.message : "Unable to load strategy versions.");
     });
-  }, [strategyId]);
+  }, [strategyId, prepared?.strategy_version_id]);
 
-  const updateForm = <K extends keyof typeof EMPTY_FORM>(key: K, value: (typeof EMPTY_FORM)[K]) => setForm((current) => ({ ...current, [key]: value }));
+  const updateForm = <K extends keyof typeof EMPTY_FORM>(key: K, value: (typeof EMPTY_FORM)[K]) => {
+    manualDirty.current = true;
+    setForm((current) => ({ ...current, [key]: value }));
+  };
   const selectedStrategy = catalog.find((item) => item.strategy_id === strategyId);
+  const preparedIdentityReady = prepared !== null
+    && catalog.some((item) => item.strategy_id === prepared.strategy_id)
+    && strategyId === prepared.strategy_id
+    && versionId === prepared.strategy_version_id
+    && versions.some((item) => item.version_id === prepared.strategy_version_id && item.content_hash === prepared.strategy_version_hash);
+  const preparedPreflightStatus = prepared?.data_availability.status;
+  const preparedPreflightReady = (preparedPreflightStatus === "READY" || preparedPreflightStatus === "READY_WITH_WARNINGS")
+    && prepared?.validation_status === preparedPreflightStatus;
+  const preparedCanApprove = prepared?.status === "PROPOSED"
+    && !preparedBusy
+    && preparedIdentityReady
+    && preparedPreflightReady
+    && Boolean(prepared.expected_effective_start && prepared.expected_effective_end);
+  const preparedBlockingReasons = prepared?.data_availability.blocking_issues.map((issue) => `${issue.code}: ${issue.message}`) ?? [];
 
   useEffect(() => {
     if (!strategyId || !versionId || !form.startDate || !form.endDate) {
@@ -561,14 +661,48 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
         <div><span className="eyebrow">ETF QUANT RESEARCH SYSTEM · BACKTEST LAB</span><h1>Backtest Lab</h1><p>Run an immutable strategy version and inspect backend analytics.</p></div>
         <button className="button button-secondary" type="button" onClick={onBack}>Back to Strategy Lab</button>
       </header>
+      {(preparedList.length > 0 || prepared || preparedError) && <section className="prepared-backtest panel" aria-label="Codex prepared backtest">
+        <div className="section-header compact"><div><span className="eyebrow">CODEX PREPARED BACKTEST</span><h2>Pending configuration</h2></div><button className="button button-quiet" type="button" onClick={() => void refreshPrepared()}>Refresh</button></div>
+        <label>Prepared configurations<select aria-label="Prepared configuration" value={prepared?.config_id ?? ""} onChange={(event) => { const item = preparedList.find((candidate) => candidate.config_id === event.target.value); if (item) loadPrepared(item); }}><option value="">Select a configuration</option>{preparedList.map((item) => <option key={item.config_id} value={item.config_id}>{item.config_id} · {item.status}</option>)}</select></label>
+        {!prepared && preparedError && <p className="inline-error" role="alert">{preparedError}</p>}
+        {prepared && <>
+          <p className="muted">Prepared by: Codex MCP · {new Date(prepared.created_at).toLocaleString()} · {prepared.status}</p>
+          <dl className="prepared-backtest-summary">
+            <div><dt>Config ID</dt><dd>{prepared.config_id}</dd></div>
+            <div><dt>Strategy</dt><dd>{prepared.strategy_id}</dd></div>
+            <div><dt>Exact StrategyVersion</dt><dd>{prepared.strategy_version_id}</dd></div>
+            <div><dt>Content hash</dt><dd>{prepared.strategy_version_hash}</dd></div>
+            <div><dt>Requested range</dt><dd>{prepared.requested_start} to {prepared.requested_end}</dd></div>
+            <div><dt>Expected effective</dt><dd>{prepared.expected_effective_start ?? "N/A"} to {prepared.expected_effective_end ?? "N/A"}</dd></div>
+            <div><dt>Initial capital</dt><dd>{prepared.initial_capital} USD</dd></div>
+            <div><dt>Contribution</dt><dd>{prepared.contribution_enabled ? `${prepared.contribution_amount} USD ${prepared.contribution_frequency}; ${prepared.contribution_start_date} to ${prepared.contribution_end_date}` : "Disabled"}</dd></div>
+            <div><dt>Price / Execution</dt><dd>{prepared.price_field} · {prepared.execution_rule}</dd></div>
+            <div><dt>Rebalance / Assets</dt><dd>{JSON.stringify(prepared.rebalance_policy)} · {prepared.asset_universe.join(", ")}</dd></div>
+            <div><dt>Fees / Slippage</dt><dd>{prepared.fees.rate} rate · {prepared.fees.per_order} per order · {prepared.slippage} slippage</dd></div>
+            <div><dt>Data preflight</dt><dd>{prepared.validation_status}</dd></div>
+          </dl>
+          {prepared.validation_issues.map((issue) => <p className="inline-error" key={issue.code}>{issue.code}: {issue.message}</p>)}
+          {!preparedIdentityReady && <p className="inline-error" role="alert">Exact StrategyVersion ID/hash is not available in the current catalog.</p>}
+          {prepared.failure_code && <p className="inline-error" role="alert">{prepared.failure_code}: {prepared.failure_message}</p>}
+          {preparedError && <p className="inline-error" role="alert">{preparedError}</p>}
+          {prepared.status === "PROPOSED" && !preparedPreflightReady && <p className="prepared-approval-reason" role="alert">Approval blocked by data preflight: {preparedBlockingReasons.length ? preparedBlockingReasons.join(" ") : `status ${preparedPreflightStatus ?? "unavailable"}`}</p>}
+          <div className="prepared-backtest-actions">
+            {prepared.status === "PROPOSED" && <><button className="button button-secondary" type="button" disabled={preparedBusy} onClick={() => void decidePrepared("reject")}>Reject</button><button className="button button-primary prepared-approve-button" type="button" disabled={!preparedCanApprove} onClick={() => void decidePrepared("approve")}>{preparedBusy ? "Running backtest..." : "Approve & Run Backtest"}</button></>}
+            {prepared.backtest_run_id && <button className="button button-secondary" type="button" onClick={() => viewExistingRun(prepared.backtest_run_id!)}>View result</button>}
+            <button className="button button-quiet" type="button" onClick={leavePrepared}>Use manual form</button>
+          </div>
+        </>}
+      </section>}
       <div className="backtest-layout">
         <form className="panel backtest-form" onSubmit={(event) => void submit(event)}>
           <div className="section-header"><div><span className="eyebrow">RUN CONFIGURATION</span><h2>Research inputs</h2></div><span className="draft-label">New run every submit</span></div>
           {error && <div className="inline-error backtest-error" role="alert">{error}</div>}
-          <label>Strategy<select aria-label="Backtest strategy" value={strategyId} onChange={(event) => setStrategyId(event.target.value)} disabled={busy === "catalog"}><option value="">Select strategy</option>{catalog.map((item) => <option key={item.strategy_id} value={item.strategy_id}>{item.name} · {item.strategy_id}</option>)}</select></label>
+          <fieldset className="prepared-form-fields" disabled={prepared !== null}>
+          <label>Strategy<select aria-label="Backtest strategy" value={strategyId} onChange={(event) => { manualDirty.current = true; setStrategyId(event.target.value); }} disabled={busy === "catalog"}><option value="">Select strategy</option>{catalog.map((item) => <option key={item.strategy_id} value={item.strategy_id}>{item.name} · {item.strategy_id}</option>)}</select></label>
           <label>Strategy version<select aria-label="Backtest strategy version" value={versionId} onChange={(event) => setVersionId(event.target.value)} disabled={!strategyId || busy === "versions"}><option value="">Select immutable version</option>{versions.map((version) => <option key={version.version_id} value={version.version_id}>v{version.version_number} · {new Date(version.created_at).toLocaleString()}</option>)}</select></label>
           {selectedStrategy && <p className="muted">{selectedStrategy.version_count} saved version{selectedStrategy.version_count === 1 ? "" : "s"}; latest v{selectedStrategy.latest_version ?? "-"}.</p>}
           <div className="basic-grid"><label>Start date<input type="date" value={form.startDate} onChange={(event) => updateForm("startDate", event.target.value)} /></label><label>End date<input type="date" value={form.endDate} onChange={(event) => updateForm("endDate", event.target.value)} /></label><label>Initial capital<input type="number" min="0.01" step="0.01" value={form.initialCapital} onChange={(event) => updateForm("initialCapital", event.target.value)} /></label><label>Price field<select value={form.priceField} onChange={(event) => updateForm("priceField", event.target.value as PriceField)}><option value="adjusted_close">ADJUSTED_CLOSE</option><option value="raw_close">RAW_CLOSE</option></select></label><label>Benchmark symbol<input aria-label="Benchmark symbol" maxLength={16} placeholder="Optional, e.g. SPY" value={form.benchmarkSymbol} onChange={(event) => updateForm("benchmarkSymbol", event.target.value.toUpperCase())} /></label><label>Commission rate %<input type="number" min="0" step="0.01" value={form.commissionRatePercent} onChange={(event) => updateForm("commissionRatePercent", event.target.value)} /></label><label>Commission per order<input type="number" min="0" step="0.01" value={form.commissionPerOrder} onChange={(event) => updateForm("commissionPerOrder", event.target.value)} /></label><label>Slippage %<input type="number" min="0" max="99.99" step="0.01" value={form.slippagePercent} onChange={(event) => updateForm("slippagePercent", event.target.value)} /></label></div>
+          {prepared && <div className="basic-grid"><label>Version content hash<input aria-label="Version content hash" readOnly value={prepared.strategy_version_hash} /></label><label>Execution rule<input aria-label="Prepared execution rule" readOnly value={prepared.execution_rule} /></label><label>Rebalance policy<input aria-label="Prepared rebalance policy" readOnly value={JSON.stringify(prepared.rebalance_policy)} /></label><label>Contribution start<input aria-label="Prepared contribution start" readOnly value={prepared.contribution_start_date ?? "Disabled"} /></label><label>Contribution end<input aria-label="Prepared contribution end" readOnly value={prepared.contribution_end_date ?? "Disabled"} /></label></div>}
           <fieldset className={`contribution-config ${form.contributionsEnabled ? "is-enabled" : "is-disabled"}`}>
             <legend className="sr-only">Capital Contributions</legend>
             <div className="contribution-header">
@@ -597,7 +731,8 @@ export function BacktestLab({ onBack, initialStrategyId, initialVersionId, onOpe
               </p>
             </div>}
           </fieldset>
-          <button className="button button-primary run-button" type="submit" disabled={busy !== null || !strategyId || !versionId}>{busy === "run" ? "Running backtest..." : "Run backtest"}</button>
+          {!prepared && <button className="button button-primary run-button" type="submit" disabled={busy !== null || !strategyId || !versionId}>{busy === "run" ? "Running backtest..." : "Run backtest"}</button>}
+          </fieldset>
         </form>
         <section className="backtest-context panel"><span className="eyebrow">EXECUTION CONTRACT</span><h2>Immutable research run</h2><dl><dt>Signal execution</dt><dd>Next trading day open</dd><dt>Statistics window</dt><dd>Requested dates only</dd><dt>Warm-up</dt><dd>Resolved from strategy indicators</dd><dt>Analytics</dt><dd>Backend calculated</dd></dl></section>
       </div>

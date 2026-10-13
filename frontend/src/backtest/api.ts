@@ -22,6 +22,7 @@ import type {
   ResearchSortBy,
   StrategyCatalogItem,
   DataAvailabilityProjection,
+  PendingBacktestConfiguration,
 } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -69,6 +70,30 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const backtestApi = {
+  listPrepared(): Promise<PendingBacktestConfiguration[]> {
+    return requestJson<PendingBacktestConfiguration[]>("/backtest-operator/configurations");
+  },
+
+  getPrepared(configId: string): Promise<PendingBacktestConfiguration> {
+    return requestJson<PendingBacktestConfiguration>(
+      `/backtest-operator/configurations/${encodeURIComponent(configId)}`,
+    );
+  },
+
+  rejectPrepared(configId: string): Promise<PendingBacktestConfiguration> {
+    return requestJson<PendingBacktestConfiguration>(
+      `/backtest-operator/configurations/${encodeURIComponent(configId)}/reject`,
+      { method: "POST" },
+    );
+  },
+
+  approveAndRunPrepared(configId: string): Promise<PendingBacktestConfiguration> {
+    return requestJson<PendingBacktestConfiguration>(
+      `/backtest-operator/configurations/${encodeURIComponent(configId)}/approve-run`,
+      { method: "POST" },
+    );
+  },
+
   listStrategies(): Promise<StrategyCatalogItem[]> {
     return requestJson<StrategyCatalogItem[]>("/strategies");
   },

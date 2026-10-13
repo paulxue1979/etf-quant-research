@@ -72,6 +72,44 @@ export interface BacktestRequest {
   benchmark_symbol?: string;
 }
 
+export interface PendingBacktestConfiguration {
+  config_id: string;
+  source: "CODEX_MCP";
+  strategy_id: string;
+  strategy_version_id: string;
+  strategy_version_hash: string;
+  requested_start: string;
+  requested_end: string;
+  initial_capital: number;
+  contribution_enabled: boolean;
+  contribution_amount: string | null;
+  contribution_frequency: ContributionFrequency | null;
+  contribution_start_date: string | null;
+  contribution_end_date: string | null;
+  contribution_timing: string | null;
+  price_field: PriceField;
+  execution_rule: string;
+  rebalance_policy: Record<string, unknown>;
+  asset_universe: string[];
+  fees: CommissionRequest;
+  slippage: number;
+  data_availability: DataAvailabilityProjection;
+  expected_effective_start: string | null;
+  expected_effective_end: string | null;
+  history_requirement: string;
+  validation_status: DataAvailabilityProjection["status"];
+  validation_issues: DataAvailabilityIssue[];
+  backtest_request: BacktestRequest;
+  status: "PROPOSED" | "REJECTED" | "APPROVED" | "RUNNING" | "COMPLETED" | "FAILED" | "STALE";
+  created_at: string;
+  approved_at: string | null;
+  execution_id: string | null;
+  backtest_run_id: string | null;
+  failure_code: string | null;
+  failure_stage: string | null;
+  failure_message: string | null;
+}
+
 export interface MetricValue {
   value: number | null;
   status: "available" | "not_evaluable";

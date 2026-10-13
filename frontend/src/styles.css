@@ -238,6 +238,15 @@ label { display: grid; gap: 7px; color: #aab7bf; font-size: 12px; }
 .backtest-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.6fr); gap: 18px; align-items: start; padding-top: 22px; }
 .backtest-layout > * { min-width: 0; }
 .backtest-form { display: grid; gap: 14px; }
+.prepared-form-fields { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.prepared-backtest { margin-top: 20px; }
+.prepared-backtest-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
+.prepared-backtest-summary div { min-width: 0; }
+.prepared-backtest-summary dd { overflow-wrap: anywhere; margin: 3px 0 0; }
+.prepared-approval-reason { border-left: 3px solid var(--red); color: var(--red); padding-left: 10px; font-size: 12px; line-height: 1.5; }
+.prepared-backtest-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.prepared-approve-button:disabled { background: #26333b; border-color: #4b5d67; color: #aab8c1; cursor: not-allowed; opacity: 1; }
+@media (max-width: 600px) { .prepared-backtest-summary { grid-template-columns: minmax(0, 1fr); } }
 .backtest-form .basic-grid { margin-top: 2px; }
 .contribution-config { display: grid; gap: 14px; margin: 4px 0 0; padding: 16px; border: 1px solid #36515b; border-left: 4px solid #4d747b; border-radius: 6px; background: #10191e; }
 .contribution-config.is-enabled { border-left-color: var(--cyan); background: #102024; }

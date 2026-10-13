@@ -288,11 +288,58 @@ function protocolDetail(status = "draft", candidateStatus?: "open" | "locked") {
   };
 }
 
-function mockBacktestApi(options: { seriesFails?: boolean; paginatedHistory?: boolean } = {}) {
+function preparedPayload(status = "PROPOSED", preflightStatus: "READY" | "READY_WITH_WARNINGS" | "BLOCKED" = "READY") {
+  const blocked = preflightStatus === "BLOCKED";
+  const blockingIssues = blocked ? [{ code: "ACTIVE_ASSET_UNAVAILABLE", message: "TQQQ: no verified prices in the requested preparation window." }] : [];
+  return {
+    config_id: "backtest-config-demo", source: "CODEX_MCP", strategy_id: "demo",
+    strategy_version_id: "demo-v1", strategy_version_hash: "hash-demo",
+    requested_start: "2025-01-01", requested_end: "2025-01-03",
+    initial_capital: 100000, contribution_enabled: true, contribution_amount: "1000",
+    contribution_frequency: "monthly", contribution_start_date: "2025-01-01",
+    contribution_end_date: "2025-01-03", contribution_timing: "first_common_trading_date_on_or_after_month_start",
+    price_field: "adjusted_close", execution_rule: "next_trading_day_open",
+    rebalance_policy: { frequency: "daily" }, asset_universe: ["QQQ"],
+    fees: { rate: 0, per_order: 0 }, slippage: 0,
+    data_availability: { status: preflightStatus, requested_start: "2025-01-01", requested_end: "2025-01-03", effective_start_expected: blocked ? null : "2025-01-01", effective_end_expected: blocked ? null : "2025-01-03", warmup_start: "2024-01-01", assets: [], indicator_requirements: [], info: [], warnings: [], blocking_issues: blockingIssues },
+    expected_effective_start: blocked ? null : "2025-01-01", expected_effective_end: blocked ? null : "2025-01-03",
+    history_requirement: "2024-01-01", validation_status: preflightStatus, validation_issues: blockingIssues,
+    backtest_request: { strategy_id: "demo", strategy_version_id: "demo-v1", start_date: "2025-01-01", end_date: "2025-01-03", initial_capital: 100000, commission: { rate: 0, per_order: 0 }, slippage: 0, price_field_used: "adjusted_close", execution_rule: "next_trading_day_open", fractional_shares: false, contribution_schedule: { frequency: "monthly", amount: "1000" } },
+    status, created_at: "2026-09-07T00:00:00Z", approved_at: null,
+    execution_id: null, backtest_run_id: status === "COMPLETED" ? "backtest-demo-1" : null,
+    failure_code: null, failure_stage: null, failure_message: null,
+  };
+}
+
+function mockBacktestApi(options: { seriesFails?: boolean; paginatedHistory?: boolean; prepared?: boolean; crossStrategyPrepared?: boolean; completedInHistory?: boolean; preflightStatus?: "READY" | "READY_WITH_WARNINGS" | "BLOCKED" } = {}) {
+  let preparedStatus = "PROPOSED";
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(catalog), { status: 200 });
+    if (url.endsWith("/backtest-operator/configurations") && (!init || !init.method)) {
+      const plan = options.crossStrategyPrepared
+        ? { ...preparedPayload(preparedStatus, options.preflightStatus), strategy_id: "other", strategy_version_id: "other-v1", strategy_version_hash: "hash-other-v1" }
+        : preparedPayload(preparedStatus, options.preflightStatus);
+      return new Response(JSON.stringify(options.prepared ? [plan] : []), { status: 200 });
+    }
+    if (url.endsWith("/backtest-operator/configurations/backtest-config-demo")) {
+      return new Response(JSON.stringify(preparedPayload(preparedStatus, options.preflightStatus)), { status: 200 });
+    }
+    if (url.endsWith("/backtest-operator/configurations/backtest-config-demo/reject")) {
+      preparedStatus = "REJECTED";
+      return new Response(JSON.stringify(preparedPayload(preparedStatus, options.preflightStatus)), { status: 200 });
+    }
+    if (url.endsWith("/backtest-operator/configurations/backtest-config-demo/approve-run")) {
+      preparedStatus = "COMPLETED";
+      return new Response(JSON.stringify(preparedPayload(preparedStatus, options.preflightStatus)), { status: 200 });
+    }
+    if (url.endsWith("/strategies") && !url.includes("strategy-lab")) return new Response(JSON.stringify(options.crossStrategyPrepared
+      ? [...catalog, { strategy_id: "other", name: "Other strategy", version_count: 2, latest_version: 2 }]
+      : catalog), { status: 200 });
     if (url.includes("/strategy-lab/strategies/demo/versions")) return new Response(JSON.stringify(versions), { status: 200 });
+    if (url.includes("/strategy-lab/strategies/other/versions")) return new Response(JSON.stringify([
+      { ...versions[0], strategy_id: "other", version_id: "other-v1", version_number: 1, content_hash: "hash-other-v1" },
+      { ...versions[0], strategy_id: "other", version_id: "other-v2", version_number: 2, content_hash: "hash-other-v2" },
+    ]), { status: 200 });
     if (url.includes("/report/series?") && options.seriesFails) return new Response(JSON.stringify({ detail: { message: "report series unavailable" } }), { status: 503 });
     if (url.includes("/report/series?")) return new Response(JSON.stringify(reportSeriesPayload()), { status: 200 });
     if (url.includes("/report/markers")) return new Response(JSON.stringify({
@@ -323,6 +370,10 @@ function mockBacktestApi(options: { seriesFails?: boolean; paginatedHistory?: bo
     }), { status: 200 });
     if (url.includes("/research/backtests")) {
       const history = researchHistory();
+      if (options.completedInHistory && preparedStatus === "COMPLETED") {
+        const items = [researchRun("backtest-demo-1", "demo"), ...history.items];
+        return new Response(JSON.stringify({ ...history, items, total: items.length }), { status: 200 });
+      }
       if (options.paginatedHistory) {
         const offset = Number(new URL(url).searchParams.get("offset") ?? 0);
         const items = offset === 50 ? [researchRun("backtest-research-z", "allocation-z")] : history.items;
@@ -342,6 +393,77 @@ function mockBacktestApi(options: { seriesFails?: boolean; paginatedHistory?: bo
 }
 
 describe("Backtest Lab", () => {
+  it("loads a prepared configuration into actual form fields without executing", async () => {
+    const fetchMock = mockBacktestApi({ prepared: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve & Run Backtest" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("Backtest strategy version")).toHaveValue("demo-v1"));
+    expect(screen.getByLabelText("Start date")).toHaveValue("2025-01-01");
+    expect(screen.getByLabelText("Start date")).toBeDisabled();
+    expect(screen.getByDisplayValue("100000")).toBeDisabled();
+    expect(screen.getByLabelText("Contribution frequency")).toHaveValue("monthly");
+    expect(screen.getByLabelText("Contribution amount USD")).toHaveValue(1000);
+    expect(screen.getByText("hash-demo")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/backtests") && init?.method === "POST")).toBe(false);
+  });
+
+  it("keeps the exact prepared version when the plan switches strategies", async () => {
+    mockBacktestApi({ prepared: true, crossStrategyPrepared: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+    const approve = await screen.findByRole("button", { name: "Approve & Run Backtest" });
+    await waitFor(() => expect(screen.getByLabelText("Backtest strategy")).toHaveValue("other"));
+    await waitFor(() => expect(screen.getByLabelText("Backtest strategy version")).toHaveValue("other-v1"));
+    await waitFor(() => expect(approve).toBeEnabled());
+  });
+
+  it("blocks approval using the backend preflight status and shows its reason", async () => {
+    const fetchMock = mockBacktestApi({ prepared: true, preflightStatus: "BLOCKED" });
+    render(<BacktestLab onBack={vi.fn()} />);
+    const approve = await screen.findByRole("button", { name: "Approve & Run Backtest" });
+    await waitFor(() => expect(screen.getByLabelText("Backtest strategy version")).toHaveValue("demo-v1"));
+    expect(approve).toBeDisabled();
+    expect(screen.getByText(/Approval blocked by data preflight/)).toHaveTextContent("TQQQ: no verified prices");
+    fireEvent.click(approve);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/approve-run"))).toBe(false);
+  });
+
+  it.each(["READY", "READY_WITH_WARNINGS"] as const)("allows approval when preflight is %s", async (preflightStatus) => {
+    mockBacktestApi({ prepared: true, preflightStatus });
+    render(<BacktestLab onBack={vi.fn()} />);
+    const approve = await screen.findByRole("button", { name: "Approve & Run Backtest" });
+    await waitFor(() => expect(approve).toBeEnabled());
+  });
+
+  it("rejects without a run and approves a new proposal with one browser action", async () => {
+    const fetchMock = mockBacktestApi({ prepared: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    await waitFor(() => expect(screen.getByText(/Prepared by: Codex MCP/)).toHaveTextContent("REJECTED"));
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/backtests") && init?.method === "POST")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Approve & Run Backtest" })).not.toBeInTheDocument();
+  });
+
+  it("executes only through the browser approve-and-run endpoint", async () => {
+    const fetchMock = mockBacktestApi({ prepared: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+    const approve = await screen.findByRole("button", { name: "Approve & Run Backtest" });
+    await waitFor(() => expect(approve).toBeEnabled());
+    fireEvent.click(approve);
+    await waitFor(() => expect(screen.getByRole("button", { name: "View result" })).toBeInTheDocument());
+    expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith("/approve-run") && init?.method === "POST")).toHaveLength(1);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/backtests") && init?.method === "POST")).toBe(false);
+  });
+
+  it("refreshes saved research runs after a prepared backtest completes", async () => {
+    mockBacktestApi({ prepared: true, completedInHistory: true });
+    render(<BacktestLab onBack={vi.fn()} />);
+    const approve = await screen.findByRole("button", { name: "Approve & Run Backtest" });
+    await waitFor(() => expect(approve).toBeEnabled());
+    expect(screen.queryByLabelText("Select research run backtest-demo-1")).not.toBeInTheDocument();
+    fireEvent.click(approve);
+    await waitFor(() => expect(screen.getByLabelText("Select research run backtest-demo-1")).toBeInTheDocument());
+  });
+
   it("keeps capital contributions off and hides schedule inputs by default", async () => {
     mockBacktestApi();
     render(<BacktestLab onBack={vi.fn()} />);

@@ -25,6 +25,11 @@ TOOL_NAMES = {
     "quant_get_data_availability",
     "quant_prepare_draft_changes",
     "quant_get_change_set",
+    "quant_get_strategy_version",
+    "quant_prepare_backtest_configuration",
+    "quant_get_backtest_configuration",
+    "quant_list_pending_backtest_configurations",
+    "quant_get_backtest_result",
 }
 
 
@@ -64,7 +69,11 @@ def test_operator_mcp_read_only_contract_and_isolation(tmp_path: Path) -> None:
             catalog = await client.list_tools()
             assert {item.name for item in catalog.tools} == TOOL_NAMES
             assert all(
-                item.annotations.read_only_hint == (item.name != "quant_prepare_draft_changes")
+                item.annotations.read_only_hint
+                == (
+                    item.name
+                    not in {"quant_prepare_draft_changes", "quant_prepare_backtest_configuration"}
+                )
                 for item in catalog.tools
             )
             assert all(not item.annotations.destructive_hint for item in catalog.tools)

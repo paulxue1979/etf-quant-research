@@ -9,6 +9,10 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from backend.app.controlled_backtest_service import (
+    ControlledBacktestError,
+    ControlledBacktestService,
+)
 from backend.app.operator_change_set_service import (
     ChangeSetPreparationError,
     DraftChangeOperation,
@@ -45,16 +49,24 @@ def _date(value: str) -> date:
 def create_server(
     service: OperatorReadService | None = None,
     change_set_service: OperatorChangeSetService | None = None,
+    backtest_service: ControlledBacktestService | None = None,
 ) -> MCPServer:
     """Expose bounded reads and proposal persistence, never Draft mutation."""
     read = service or OperatorReadService()
     proposals = change_set_service or OperatorChangeSetService(read_service=read)
+
+    def controlled_backtests() -> ControlledBacktestService:
+        return backtest_service or ControlledBacktestService(read=read)
+
     server = MCPServer(
         "etf-quant-draft-proposals",
         version=BRIDGE_VERSION,
         instructions=(
-            "Inspect strategy data and prepare isolated Draft ChangeSet proposals only. "
-            "A proposal does not modify the Draft. No approval or apply capability is available."
+            "Inspect strategy data and prepare isolated Draft ChangeSets or exact-version "
+            "backtest configurations. Only the browser can approve or execute a backtest. "
+            "Resolve 'latest' to an exact immutable version before preparation. Require explicit "
+            "ISO dates and contribution amounts; ask the user to clarify ambiguous dates or DCA. "
+            "Monthly DCA covers the full backtest window; weekly and bounded DCA are unsupported."
         ),
     )
 
@@ -118,6 +130,64 @@ def create_server(
     def quant_get_change_set(change_set_id: str) -> dict[str, Any]:
         """Read a persisted proposal and its effective stale status; no writes."""
         return proposals.get_change_set(_id(change_set_id))
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_strategy_version(strategy_id: str, version_id: str = "") -> dict[str, Any]:
+        """Resolve an exact immutable version, or pin the latest immutable version now."""
+        return controlled_backtests().get_strategy_version(
+            _id(strategy_id), _id(version_id) if version_id else ""
+        )
+
+    @server.tool(annotations=_PROPOSAL)
+    def quant_prepare_backtest_configuration(
+        strategy_id: str,
+        strategy_version_id: str,
+        requested_start: str,
+        requested_end: str,
+        initial_capital: float,
+        contribution_enabled: bool = False,
+        contribution_amount: str | None = None,
+        contribution_frequency: str | None = None,
+        contribution_start_date: str | None = None,
+        contribution_end_date: str | None = None,
+        contribution_requested_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a pending configuration only; no backtest or strategy write occurs.
+
+        Dates must be exact ISO dates. Monthly contributions cover the whole backtest
+        range. Weekly and independently bounded schedules are unsupported and rejected.
+        """
+        try:
+            return controlled_backtests().prepare(
+                strategy_id=_id(strategy_id),
+                strategy_version_id=_id(strategy_version_id),
+                requested_start=requested_start,
+                requested_end=requested_end,
+                initial_capital=initial_capital,
+                contribution_enabled=contribution_enabled,
+                contribution_amount=contribution_amount,
+                contribution_frequency=contribution_frequency,
+                contribution_start_date=contribution_start_date,
+                contribution_end_date=contribution_end_date,
+                contribution_requested_date=contribution_requested_date,
+            )
+        except ControlledBacktestError as exc:
+            return {"status": "REJECTED", "reason": str(exc), "config_id": None}
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_backtest_configuration(config_id: str) -> dict[str, Any]:
+        """Read a persisted pending or terminal configuration without mutation."""
+        return controlled_backtests().get(_id(config_id))
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_list_pending_backtest_configurations() -> dict[str, Any]:
+        """List recent persisted configurations, including rejected and completed history."""
+        return {"configurations": controlled_backtests().list()}
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_backtest_result(config_id: str) -> dict[str, Any]:
+        """Read production analytics for an approved completed backtest only."""
+        return controlled_backtests().get_result(_id(config_id))
 
     return server
 
