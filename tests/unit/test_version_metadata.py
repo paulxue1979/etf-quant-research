@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_RELEASE_VERSION = "1.4.6"
+EXPECTED_RELEASE_VERSION = "1.4.7"
 
 
 def _fastapi_version() -> str:
