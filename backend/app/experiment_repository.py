@@ -28,6 +28,7 @@ from research.exceptions import (
     ExperimentResultConflictError,
     ExperimentResultPersistenceError,
     InvalidExperimentError,
+    InvalidParameterSetError,
 )
 from research.execution import candidate_id_for
 from research.experiment_result import ExperimentResult
@@ -1187,14 +1188,24 @@ class ExperimentRepository:
             ).fetchone()
             if row is None:
                 return None
-            if parameter_space is None and row["parameter_space_hash"] is not None:
-                parameter_space = self._decode_parameter_space(
-                    connection.execute(
-                        "SELECT * FROM experiment_parameter_spaces WHERE parameter_space_hash = ?",
-                        (row["parameter_space_hash"],),
-                    ).fetchone()
-                )
-            parameter_set = self._decode_parameter_set(row, parameter_space)
+            if parameter_space is not None and row["parameter_space_hash"] not in (
+                None,
+                parameter_space.content_hash,
+            ):
+                membership = connection.execute(
+                    "SELECT 1 FROM experiment_candidates AS candidate "
+                    "JOIN experiments AS experiment "
+                    "ON experiment.experiment_id = candidate.experiment_id "
+                    "WHERE candidate.parameter_set_hash = ? "
+                    "AND experiment.parameter_space_hash = ? "
+                    "LIMIT 1",
+                    (parameter_set_hash, parameter_space.content_hash),
+                ).fetchone()
+                if membership is None:
+                    raise ExperimentPersistenceError(
+                        "stored parameter set parameter space mismatch"
+                    )
+            parameter_set = self._decode_parameter_set(connection, row, parameter_space)
             if parameter_set.content_hash != parameter_set_hash:
                 raise ExperimentPersistenceError("stored parameter set hash mismatch")
             return parameter_set
@@ -1432,16 +1443,15 @@ class ExperimentRepository:
             else None
         )
         row = connection.execute(
-            "SELECT canonical_json, parameter_space_hash FROM experiment_parameter_sets "
+            "SELECT parameter_set_hash, canonical_json, parameter_space_hash "
+            "FROM experiment_parameter_sets "
             "WHERE parameter_set_hash = ?",
             (parameter_set.content_hash,),
         ).fetchone()
         if row is not None:
-            if (
-                row["canonical_json"] != payload
-                or row["parameter_space_hash"] != parameter_space_hash
-            ):
+            if row["canonical_json"] != payload:
                 raise ExperimentPersistenceError("parameter set hash collision or corruption")
+            self._decode_parameter_set(connection, row, parameter_set.parameter_space)
             return
         connection.execute(
             "INSERT INTO experiment_parameter_sets VALUES (?, ?, ?)",
@@ -1583,20 +1593,40 @@ class ExperimentRepository:
             raise ExperimentPersistenceError("stored parameter space hash mismatch")
         return parameter_space
 
-    @classmethod
     def _decode_parameter_set(
-        cls, row: sqlite3.Row, parameter_space: ParameterSpace | None
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        parameter_space: ParameterSpace | None,
     ) -> ParameterSet:
-        if (
-            parameter_space is not None
-            and row["parameter_space_hash"] != parameter_space.content_hash
-        ):
+        stored_space_hash = row["parameter_space_hash"]
+        if parameter_space is not None and stored_space_hash is None:
             raise ExperimentPersistenceError("stored parameter set parameter space mismatch")
         raw = row["canonical_json"]
         payload = json.loads(raw, parse_constant=_reject_nonfinite)
-        if raw != cls._canonical_payload(payload):
+        if raw != self._canonical_payload(payload):
             raise ExperimentPersistenceError("stored parameter set is not canonical JSON")
-        parameter_set = ParameterSet.from_dict(payload, parameter_space)
+        if stored_space_hash is not None:
+            stored_space = self._decode_parameter_space(
+                connection.execute(
+                    "SELECT * FROM experiment_parameter_spaces WHERE parameter_space_hash = ?",
+                    (stored_space_hash,),
+                ).fetchone()
+            )
+            try:
+                ParameterSet.from_dict(payload, stored_space)
+            except InvalidParameterSetError as exc:
+                raise ExperimentPersistenceError(
+                    "stored parameter set is incompatible with its original parameter space"
+                ) from exc
+            if parameter_space is None:
+                parameter_space = stored_space
+        try:
+            parameter_set = ParameterSet.from_dict(payload, parameter_space)
+        except InvalidParameterSetError as exc:
+            raise ExperimentPersistenceError(
+                "stored parameter set is incompatible with requested parameter space"
+            ) from exc
         if parameter_set.content_hash != row["parameter_set_hash"]:
             raise ExperimentPersistenceError("stored parameter set hash mismatch")
         return parameter_set
@@ -1613,7 +1643,7 @@ class ExperimentRepository:
         ).fetchone()
         if parameter_row is None:
             raise ExperimentPersistenceError("candidate parameter set is missing")
-        parameter_set = self._decode_parameter_set(parameter_row, parameter_space)
+        parameter_set = self._decode_parameter_set(connection, parameter_row, parameter_space)
         if parameter_set.content_hash != row["parameter_set_hash"]:
             raise ExperimentPersistenceError("candidate parameter binding mismatch")
         return ExperimentCandidateRecord(

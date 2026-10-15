@@ -13,6 +13,8 @@ from backend.app.controlled_backtest_service import (
     ControlledBacktestError,
     ControlledBacktestService,
 )
+from backend.app.controlled_experiment_repository import ControlledExperimentError
+from backend.app.controlled_experiment_service import ControlledExperimentService
 from backend.app.controlled_version_service import ControlledVersionService, VersionRequestError
 from backend.app.operator_change_set_service import (
     ChangeSetPreparationError,
@@ -52,6 +54,7 @@ def create_server(
     change_set_service: OperatorChangeSetService | None = None,
     backtest_service: ControlledBacktestService | None = None,
     version_service: ControlledVersionService | None = None,
+    experiment_service: ControlledExperimentService | None = None,
 ) -> MCPServer:
     """Expose bounded reads and proposal persistence, never Draft mutation."""
     read = service or OperatorReadService()
@@ -62,6 +65,9 @@ def create_server(
 
     def controlled_versions() -> ControlledVersionService:
         return version_service or ControlledVersionService()
+
+    def controlled_experiments() -> ControlledExperimentService:
+        return experiment_service or ControlledExperimentService()
 
     server = MCPServer(
         "etf-quant-draft-proposals",
@@ -193,6 +199,48 @@ def create_server(
     def quant_get_backtest_result(config_id: str) -> dict[str, Any]:
         """Read production analytics for an approved completed backtest only."""
         return controlled_backtests().get_result(_id(config_id))
+
+    @server.tool(annotations=_PROPOSAL)
+    def quant_prepare_experiment_configuration(
+        strategy_id: str,
+        strategy_version_id: str,
+        strategy_version_hash: str,
+        protocol_id: str,
+        requested_is_start: str,
+        requested_is_end: str,
+        initial_capital: float,
+        axes: list[dict[str, Any]],
+        client_request_key: str,
+    ) -> dict[str, Any]:
+        """Persist a bounded IS plan only; requires an exact frozen protocol and version.
+
+        Each axis uses semantic_target_id, unit (percent/native), and discrete values.
+        This tool cannot approve, execute, select, freeze, or evaluate OOS.
+        """
+        try:
+            return controlled_experiments().prepare(
+                strategy_id=_id(strategy_id),
+                strategy_version_id=_id(strategy_version_id),
+                strategy_version_hash=strategy_version_hash,
+                protocol_id=_id(protocol_id),
+                requested_is_start=requested_is_start,
+                requested_is_end=requested_is_end,
+                initial_capital=initial_capital,
+                axes=axes,
+                client_request_key=_id(client_request_key),
+            )
+        except ControlledExperimentError as exc:
+            return {"status": "REJECTED", "reason": str(exc), "config_id": None}
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_experiment_configuration(config_id: str) -> dict[str, Any]:
+        """Read one persisted pending or terminal IS configuration."""
+        return controlled_experiments().get(_id(config_id))
+
+    @server.tool(annotations=_READ_ONLY)
+    def quant_get_experiment_result(config_id: str) -> dict[str, Any]:
+        """Read canonical persisted candidate evidence; never calculate or select."""
+        return controlled_experiments().get_result(_id(config_id))
 
     @server.tool(annotations=_PROPOSAL)
     def quant_prepare_strategy_version_creation(

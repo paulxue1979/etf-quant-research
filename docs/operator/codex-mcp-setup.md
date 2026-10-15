@@ -58,6 +58,9 @@ contain only these fifteen names:
 - `quant_get_backtest_configuration`
 - `quant_list_pending_backtest_configurations`
 - `quant_get_backtest_result`
+- `quant_prepare_experiment_configuration`
+- `quant_get_experiment_configuration`
+- `quant_get_experiment_result`
 
 `quant_get_draft` reports `draft_id: null` because the current durable Draft
 model has no separate Draft ID; its `strategy_id`, revision and hash identify
@@ -96,9 +99,19 @@ into locked form fields on a fresh visit. Only its browser-origin-gated
 `Approve & Run Backtest` action may execute. The plan and BacktestRun remain
 readable after restart. `quant_get_backtest_result` returns stored production
 analytics and does not recalculate them. No MCP approve, run, reject, Draft
-save, version creation, experiment, Grid, Selection, Freeze, OOS, or delete
-tool is registered. The local Codex process must still be trusted because it
+save, version creation, Selection, Freeze, OOS, or delete tool is registered.
+The local Codex process must still be trusted because it
 can read the same local strategy data as the user.
+
+The controlled IS Grid tools bind one exact immutable StrategyVersion ID/hash
+and an explicitly frozen ResearchProtocol with a matching IS window and locked
+candidate set. The prepare tool accepts one or two supported semantic target
+IDs with discrete values and explicit `percent` or `native` units. It persists
+only a pending configuration. The browser Experiment Builder shows its frozen
+inputs and runs the existing Grid service only after a local human approval.
+Blocked data or invalid combinations cannot be approved. MCP has no Grid
+approve/run, candidate selection, freeze, or OOS execution tool. The local
+browser Origin check is not public-network authentication.
 
 ## Disable
 

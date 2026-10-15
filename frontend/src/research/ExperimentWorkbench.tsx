@@ -8,6 +8,7 @@ import type { DataAvailabilityProjection } from "../backtest/types";
 import { researchApi, ResearchApiError } from "./api";
 import { buildParameters, isTransitionTarget, parameterRow, percentageType, type ParameterRow } from "./experimentParameters";
 import { semanticTargetDisplay } from "./semanticTargetDisplay";
+import { PreparedExperimentPanel } from "./PreparedExperimentPanel";
 import type { ExperimentWorkflowList, ExperimentWorkflowRecord, GridSearchPreflight, ResearchProtocolDetail } from "./types";
 
 interface ExperimentWorkbenchProps {
@@ -166,6 +167,7 @@ export function ExperimentWorkbench({ initialVersion, onBack, onOpenResults }: E
     {error && <p className="research-error" role="alert">{error}</p>}
     {libraryWarnings.map((warning) => <p key={warning} role="status">{warning}</p>)}
     {serviceUnavailable && <p role="status">Experiment service unavailable. Reload after connectivity is restored.</p>}
+    <PreparedExperimentPanel versionId={initialVersion?.version_id ?? null} onOpenResults={onOpenResults} />
     {!initialVersion && <section className="panel"><h2>Select an immutable Strategy Version</h2><p className="muted">The builder never accepts a mutable draft as its base.</p></section>}
     {initialVersion && <section className="panel experiment-builder-panel">
       <h2>{initialVersion.configuration.name} · v{initialVersion.version_number}</h2><p className="research-hash">{initialVersion.version_id} · {initialVersion.content_hash}</p>

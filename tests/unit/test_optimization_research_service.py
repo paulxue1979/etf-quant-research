@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +16,10 @@ from backend.app.optimization_research_repository import (
     OptimizationResearchRepository,
 )
 from backend.app.optimization_research_service import OptimizationResearchService
+from research.candidates import generate_candidates
+from research.canonical import canonical_json
+from research.enums import ParameterType
+from research.experiments import ParameterDefinition, ParameterSpace
 from research.optimization_analysis import CandidateFilter
 from tests.unit.test_experiment_execution_service import _setup as _execution_setup
 from tests.unit.test_grid_search import _service_setup
@@ -24,6 +30,141 @@ def _completed_grid(tmp_path):
     service.prepare(experiment.experiment_id, definition)
     service.execute(experiment.experiment_id)
     return experiments, experiments.get(experiment.experiment_id)
+
+
+def _cross_space_completed_grid(tmp_path):
+    service, experiments, _, results, _, _, experiment, definition = _service_setup(tmp_path)
+    historical_space = ParameterSpace(
+        parameters=(ParameterDefinition("period", ParameterType.INTEGER, min=2, max=2, step=1),),
+        max_candidates=1,
+    )
+    historical = replace(
+        experiment,
+        experiment_id="historical-experiment",
+        parameter_space=historical_space,
+        provenance=replace(
+            experiment.provenance, parameter_space_hash=historical_space.content_hash
+        ),
+    )
+    experiments.create(historical)
+    experiments.attach_candidate_set(
+        historical.experiment_id,
+        generate_candidates(historical),
+        transition_key="historical-candidates",
+    )
+    service.prepare(experiment.experiment_id, definition)
+    service.execute(experiment.experiment_id)
+    return experiments, experiments.get(experiment.experiment_id), historical, results
+
+
+def test_repository_reads_completed_grid_reusing_parameter_set_from_other_space(tmp_path) -> None:
+    experiments, experiment, historical, results = _cross_space_completed_grid(tmp_path)
+    repository = OptimizationResearchRepository(experiments.db_path)
+    with sqlite3.connect(experiments.db_path) as connection:
+        origin_hash = connection.execute(
+            "SELECT parameter_space_hash FROM experiment_parameter_sets "
+            "WHERE parameter_set_hash = (SELECT parameter_set_hash FROM experiment_candidates "
+            "WHERE experiment_id = ? AND candidate_index = 0)",
+            (experiment.experiment_id,),
+        ).fetchone()[0]
+    assert origin_hash == historical.parameter_space_hash
+    assert origin_hash != experiment.parameter_space_hash
+
+    summaries = repository.list_candidate_summaries(experiment)
+
+    assert len(summaries) == 2
+    assert [item.parameter_values for item in summaries] == [{"period": 2}, {"period": 3}]
+    assert {item.candidate_id for item in summaries} == {
+        item.candidate_id for item in results.list(experiment.experiment_id)
+    }
+    assert {item.experiment_result_id for item in summaries} == {
+        item.experiment_result_id for item in results.list(experiment.experiment_id)
+    }
+    assert {item.backtest_run_id for item in summaries} == {
+        item.backtest_run_id for item in results.list(experiment.experiment_id)
+    }
+    assert {item.candidate_set_hash for item in summaries} == {
+        experiments.get_candidate_set(experiment.experiment_id).candidate_set_hash
+    }
+    reopened = OptimizationResearchRepository(experiments.db_path)
+    assert summaries == reopened.list_candidate_summaries(experiments.get(experiment.experiment_id))
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE experiment_parameter_sets SET canonical_json = "
+        '\'{"values":{"period":3}}\' WHERE parameter_set_hash = '
+        "(SELECT parameter_set_hash FROM experiment_candidates "
+        "WHERE experiment_id = 'experiment-8d3' AND candidate_index = 0)",
+        "UPDATE experiment_parameter_sets SET canonical_json = "
+        '\'{ "values": {"period": 2}}\' WHERE parameter_set_hash = '
+        "(SELECT parameter_set_hash FROM experiment_candidates "
+        "WHERE experiment_id = 'experiment-8d3' AND candidate_index = 0)",
+        "UPDATE experiment_candidate_sets SET parameter_space_hash = "
+        "(SELECT parameter_space_hash FROM experiment_candidate_sets "
+        "WHERE experiment_id = 'historical-experiment') "
+        "WHERE experiment_id = 'experiment-8d3'",
+        "UPDATE experiment_candidate_sets SET canonical_json = '{}' "
+        "WHERE experiment_id = 'experiment-8d3'",
+        "UPDATE experiment_candidates SET candidate_set_hash = 'bad' "
+        "WHERE experiment_id = 'experiment-8d3' AND candidate_index = 0",
+        "UPDATE experiments SET protocol_id = 'wrong-protocol' "
+        "WHERE experiment_id = 'experiment-8d3'",
+        "UPDATE research_experiment_results SET parameter_set_hash = 'bad' "
+        "WHERE experiment_id = 'experiment-8d3' AND candidate_index = 0",
+        "UPDATE research_experiment_results SET parameter_space_hash = 'bad' "
+        "WHERE experiment_id = 'experiment-8d3' AND candidate_index = 0",
+        "UPDATE experiment_parameter_spaces SET canonical_json = '{}' "
+        "WHERE parameter_space_hash = (SELECT parameter_space_hash "
+        "FROM experiment_parameter_sets WHERE parameter_set_hash = "
+        "(SELECT parameter_set_hash FROM experiment_candidates "
+        "WHERE experiment_id = 'experiment-8d3' AND candidate_index = 0))",
+    ],
+)
+def test_cross_space_projection_still_rejects_corrupt_bindings(tmp_path, statement) -> None:
+    experiments, experiment, _, _ = _cross_space_completed_grid(tmp_path)
+    with sqlite3.connect(experiments.db_path) as connection:
+        connection.execute(statement)
+
+    with pytest.raises(OptimizationResearchPersistenceError) as error:
+        OptimizationResearchRepository(experiments.db_path).list_candidate_summaries(experiment)
+    assert error.value.code == "OPTIMIZATION_INTEGRITY_ERROR"
+
+
+def test_cross_space_projection_rejects_incompatible_original_space(tmp_path) -> None:
+    experiments, experiment, _, _ = _cross_space_completed_grid(tmp_path)
+    incompatible = ParameterSpace(
+        parameters=(ParameterDefinition("period", ParameterType.INTEGER, min=3, max=3, step=1),),
+        max_candidates=1,
+    )
+    with sqlite3.connect(experiments.db_path) as connection:
+        connection.execute(
+            "INSERT INTO experiment_parameter_spaces VALUES (?, 2, ?)",
+            (incompatible.content_hash, canonical_json(incompatible.to_dict())),
+        )
+        connection.execute(
+            "UPDATE experiment_parameter_sets SET parameter_space_hash = ? "
+            "WHERE parameter_set_hash = (SELECT parameter_set_hash FROM experiment_candidates "
+            "WHERE experiment_id = ? AND candidate_index = 0)",
+            (incompatible.content_hash, experiment.experiment_id),
+        )
+
+    with pytest.raises(OptimizationResearchPersistenceError) as error:
+        OptimizationResearchRepository(experiments.db_path).list_candidate_summaries(experiment)
+    assert error.value.code == "OPTIMIZATION_INTEGRITY_ERROR"
+
+
+def test_cross_space_projection_does_not_write_research_data(tmp_path) -> None:
+    experiments, experiment, _, _ = _cross_space_completed_grid(tmp_path)
+    before = sha256(experiments.db_path.read_bytes()).hexdigest()
+
+    summaries = OptimizationResearchRepository(experiments.db_path).list_candidate_summaries(
+        experiment
+    )
+    assert len(summaries) == 2
+
+    assert sha256(experiments.db_path.read_bytes()).hexdigest() == before
 
 
 def test_repository_projects_parameters_and_canonical_metrics_without_full_run(tmp_path) -> None:

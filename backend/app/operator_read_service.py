@@ -373,6 +373,7 @@ class OperatorReadService:
             )
             else "fixed_warmup",
             "assets": projection["assets"],
+            "data_snapshot_reference": projection["data_snapshot_reference"],
             "indicator_requirements": projection["indicator_requirements"],
             "warnings": projection["warnings"],
             "blocking_issues": projection["blocking_issues"],

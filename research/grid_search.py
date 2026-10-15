@@ -548,6 +548,7 @@ class GridSearchPreflight:
     status: GridPreflightStatus
     issues: tuple[str, ...] = ()
     semantic_binding_audit: tuple[Mapping[str, Any], ...] = ()
+    pruned_samples: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def can_execute(self) -> bool:
@@ -581,6 +582,7 @@ class GridSearchPreflight:
             "theoretical_guard": self.definition.theoretical_guard,
             "pruning_reasons": dict(self.pruning_reasons),
             "duplicate_samples": [dict(item) for item in self.duplicate_samples],
+            "pruned_samples": [dict(item) for item in self.pruned_samples],
             "status": self.status.value,
             "can_execute": self.can_execute,
             "issues": list(self.issues),
@@ -639,17 +641,30 @@ def preflight_grid_search(
     parameter_names = tuple(item.name for item in space.parameters)
     domains = tuple(parameter_values(item) for item in space.parameters)
     pruned = Counter()
+    pruned_samples: list[Mapping[str, Any]] = []
     valid: list[tuple[int, ParameterSet]] = []
     for source_index, combination in enumerate(product(*domains)):
         values = dict(zip(parameter_names, combination, strict=True))
         if not parameter_constraints_hold(space.constraints, values):
             pruned["PARAMETER_CONSTRAINT_FAILED"] += 1
+            if len(pruned_samples) < 20:
+                pruned_samples.append(
+                    {
+                        "source_index": source_index,
+                        "values": values,
+                        "reason": "PARAMETER_CONSTRAINT_FAILED",
+                    }
+                )
             continue
         failed = next(
             (item.reason_code for item in definition.constraints if not item.evaluate(values)), None
         )
         if failed is not None:
             pruned[failed] += 1
+            if len(pruned_samples) < 20:
+                pruned_samples.append(
+                    {"source_index": source_index, "values": values, "reason": failed}
+                )
             continue
         valid.append((source_index, ParameterSet(values, space)))
 
@@ -685,6 +700,14 @@ def preflight_grid_search(
             )
         except Exception:
             pruned["MATERIALIZATION_INVALID"] += 1
+            if len(pruned_samples) < 20:
+                pruned_samples.append(
+                    {
+                        "source_index": source_index,
+                        "values": dict(parameter_set.values),
+                        "reason": "MATERIALIZATION_INVALID",
+                    }
+                )
             continue
         strategy_configuration_hash = sha256_hash(derived.configuration.to_dict())
         config_payload = config.snapshot({})
@@ -704,6 +727,8 @@ def preflight_grid_search(
                     MappingProxyType(
                         {
                             "parameter_set_hash": parameter_set.content_hash,
+                            "source_index": source_index,
+                            "values": dict(parameter_set.values),
                             "canonical_candidate_index": owner.candidate_index,
                             "semantic_hash": semantic_hash,
                         }
@@ -741,6 +766,7 @@ def preflight_grid_search(
         executable_count=len(plans),
         pruning_reasons=MappingProxyType(dict(sorted(pruned.items()))),
         duplicate_samples=tuple(duplicates),
+        pruned_samples=tuple(pruned_samples),
         plans=tuple(plans),
         status=status,
         issues=tuple(issues),

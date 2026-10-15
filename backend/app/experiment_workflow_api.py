@@ -72,17 +72,25 @@ def _frozen_strategy_bindings(version: Any, body: dict[str, Any]) -> list[dict[s
     return bindings
 
 
-def _build_experiment(body: dict[str, Any], *, preview: bool = False) -> Experiment:
+def _build_experiment(
+    body: dict[str, Any],
+    *,
+    preview: bool = False,
+    strategies: StrategyRepository | None = None,
+    protocols: ResearchProtocolRepository | None = None,
+) -> Experiment:
+    strategies = strategies or strategy_repository
+    protocols = protocols or protocol_repository
     version_id = str(body.get("base_strategy_version_id", "")).strip()
     protocol_id = str(body.get("protocol_id", "")).strip()
-    version = strategy_repository.get_any_version(version_id)
+    version = strategies.get_any_version(version_id)
     if version is None:
         raise _error(
             "STRATEGY_VERSION_NOT_FOUND",
             "the immutable base strategy version was not found",
             404,
         )
-    protocol = protocol_repository.get_protocol(protocol_id)
+    protocol = protocols.get_protocol(protocol_id)
     if protocol is None:
         raise _error("PROTOCOL_NOT_FOUND", "the research protocol was not found", 404)
     start, end = _dates(body)

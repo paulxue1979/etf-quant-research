@@ -21,6 +21,7 @@ import type {
   ExperimentWorkflowList,
   ExperimentWorkflowRecord,
   ResearchProtocolDetail,
+  PendingExperimentConfiguration,
 } from "./types";
 
 import { apiBaseUrl } from "../apiConfig";
@@ -83,6 +84,18 @@ const path = (protocolId: string, experimentId: string, suffix: string) =>
   `/research/protocols/${encodeURIComponent(protocolId)}/experiments/${encodeURIComponent(experimentId)}/${suffix}`;
 
 export const researchApi = {
+  listPreparedExperiments() {
+    return requestJson<PendingExperimentConfiguration[]>("/experiment-operator/configurations");
+  },
+  getPreparedExperiment(configId: string) {
+    return requestJson<PendingExperimentConfiguration>(`/experiment-operator/configurations/${encodeURIComponent(configId)}`);
+  },
+  rejectPreparedExperiment(configId: string) {
+    return requestJson<PendingExperimentConfiguration>(`/experiment-operator/configurations/${encodeURIComponent(configId)}/reject`, { method: "POST" });
+  },
+  approvePreparedExperiment(configId: string) {
+    return requestJson<PendingExperimentConfiguration>(`/experiment-operator/configurations/${encodeURIComponent(configId)}/approve-run`, { method: "POST" });
+  },
   createProtocol(request: Record<string, unknown>) {
     return requestJson<ResearchProtocolDetail>("/research/protocols", {
       method: "POST", body: JSON.stringify(request),

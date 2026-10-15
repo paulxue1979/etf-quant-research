@@ -477,3 +477,30 @@ export interface OosResearchView {
   };
   provenance: Record<string, unknown>;
 }
+export interface PendingExperimentConfiguration {
+  config_id: string;
+  configuration_hash: string;
+  source: "CODEX_MCP";
+  strategy_id: string;
+  strategy_name: string;
+  strategy_version_id: string;
+  strategy_version_hash: string;
+  protocol_id: string;
+  requested_is_start: string;
+  requested_is_end: string;
+  oos_start: string;
+  oos_end: string;
+  initial_capital: number;
+  axes: Array<{ semantic_target_id: string; unit: string; values: number[]; canonical_values: number[]; value_type: string }>;
+  candidate_count: number;
+  experiment_id: string;
+  experiment_snapshot: { backtest_configuration: { price_field_used: string; execution_rule: string; commission: { rate: number; per_order: number }; slippage: number; rebalance_policy: { frequency: string; threshold: number | null }; fractional_shares: boolean } };
+  validation_status: "READY" | "BLOCKED";
+  validation_issues: string[];
+  grid_preflight: { status: string; theoretical_count: number; executable_count: number; pruned_count: number; duplicate_count: number };
+  invalid_candidates: Array<{ source_index: number; values: Record<string, number>; reason: string }>;
+  data_availability: { status: string; effective_start_expected: string | null; effective_end_expected: string | null; blocking_issues: unknown[] };
+  approval_status: "PROPOSED" | "REJECTED" | "APPROVED" | "STALE";
+  execution_status: "NOT_STARTED" | "RUNNING" | "COMPLETED" | "FAILED";
+  error_code: string | null;
+}

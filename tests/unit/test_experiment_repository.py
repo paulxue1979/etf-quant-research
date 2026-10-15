@@ -164,6 +164,129 @@ def test_parameter_space_and_parameter_set_can_be_loaded_by_hash(tmp_path) -> No
     assert restored_set == generated.candidates[2]
 
 
+def test_identical_parameter_values_can_be_reused_across_spaces(tmp_path) -> None:
+    db_path, _, _, version = _create_dependencies(tmp_path)
+    repository = ExperimentRepository(db_path)
+    historical = _experiment(version, experiment_id="experiment-historical")
+    historical_candidates = generate_candidates(historical)
+    repository.create(historical, historical_candidates)
+
+    expanded_space = ParameterSpace(
+        parameters=(
+            ParameterDefinition("fast", ParameterType.INTEGER, min=5, max=10, step=5),
+            ParameterDefinition("threshold", ParameterType.FLOAT, min=0.0, max=0.2, step=0.1),
+        ),
+        max_candidates=6,
+    )
+    expanded = replace(
+        _experiment(version, experiment_id="experiment-expanded"),
+        parameter_space=expanded_space,
+        provenance=replace(historical.provenance, parameter_space_hash=expanded_space.content_hash),
+    )
+    expanded_candidates = generate_candidates(expanded)
+    assert (
+        historical_candidates.candidates[0].content_hash
+        == expanded_candidates.candidates[0].content_hash
+    )
+
+    repository.create(expanded)
+    repository.attach_candidate_set(
+        expanded.experiment_id, expanded_candidates, transition_key="expanded-candidates"
+    )
+
+    reopened = ExperimentRepository(db_path)
+    assert reopened.get_candidate_set(historical.experiment_id) == historical_candidates
+    assert reopened.get_candidate_set(expanded.experiment_id) == expanded_candidates
+    assert (
+        reopened.get_parameter_set(expanded_candidates.candidates[0].content_hash, expanded_space)
+        == expanded_candidates.candidates[0]
+    )
+    assert len(reopened.list_candidates(expanded.experiment_id)) == 6
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT parameter_space_hash, canonical_json FROM experiment_parameter_sets "
+            "WHERE parameter_set_hash = ?",
+            (historical_candidates.candidates[0].content_hash,),
+        ).fetchone()
+    assert row == (
+        historical.parameter_space_hash,
+        historical_candidates.candidates[0].canonical_json(),
+    )
+
+
+def test_cross_space_reuse_rejects_corrupt_payload_and_incompatible_space(tmp_path) -> None:
+    db_path, _, _, version = _create_dependencies(tmp_path)
+    repository = ExperimentRepository(db_path)
+    historical = _experiment(version, experiment_id="experiment-historical")
+    candidates = generate_candidates(historical)
+    repository.create(historical, candidates)
+    reused_hash = candidates.candidates[0].content_hash
+    incompatible = ParameterSpace(
+        parameters=(
+            ParameterDefinition("fast", ParameterType.INTEGER, min=10, max=10, step=1),
+            ParameterDefinition("threshold", ParameterType.FLOAT, min=0.0, max=0.1, step=0.1),
+        ),
+        max_candidates=2,
+    )
+    repository.save_parameter_space(incompatible)
+    with pytest.raises(ExperimentPersistenceError, match="parameter space mismatch"):
+        repository.get_parameter_set(reused_hash, incompatible)
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE experiment_parameter_sets SET canonical_json = ? WHERE parameter_set_hash = ?",
+            (canonical_json({"values": {"fast": 10, "threshold": 0.0}}), reused_hash),
+        )
+    with pytest.raises(ExperimentPersistenceError, match="hash mismatch"):
+        repository.get_parameter_set(reused_hash)
+    with pytest.raises(ExperimentPersistenceError, match="collision or corruption"):
+        repository.save_parameter_set(candidates.candidates[0])
+
+
+def test_cross_space_attach_failure_rolls_back_without_changing_historical_rows(
+    tmp_path, monkeypatch
+) -> None:
+    db_path, _, _, version = _create_dependencies(tmp_path)
+    repository = ExperimentRepository(db_path)
+    historical = _experiment(version, experiment_id="experiment-historical")
+    historical_candidates = generate_candidates(historical)
+    repository.create(historical, historical_candidates)
+    expanded_space = ParameterSpace(
+        parameters=(
+            ParameterDefinition("fast", ParameterType.INTEGER, min=5, max=10, step=5),
+            ParameterDefinition("threshold", ParameterType.FLOAT, min=0.0, max=0.2, step=0.1),
+        ),
+        max_candidates=6,
+    )
+    expanded = replace(
+        _experiment(version, experiment_id="experiment-expanded"),
+        parameter_space=expanded_space,
+        provenance=replace(historical.provenance, parameter_space_hash=expanded_space.content_hash),
+    )
+    candidates = generate_candidates(expanded)
+    repository.create(expanded)
+    original_insert = repository._insert_candidate
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise sqlite3.IntegrityError("injected candidate persistence failure")
+        return original_insert(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "_insert_candidate", fail_second)
+    with pytest.raises(ExperimentPersistenceError, match="atomically"):
+        repository.attach_candidate_set(expanded.experiment_id, candidates, transition_key="retry")
+    assert repository.get(expanded.experiment_id).status is ExperimentStatus.SPACE_FROZEN
+    assert repository.get_candidate_set(expanded.experiment_id) is None
+    assert repository.list_candidates(expanded.experiment_id) == ()
+    assert repository.get_candidate_set(historical.experiment_id) == historical_candidates
+    monkeypatch.setattr(repository, "_insert_candidate", original_insert)
+    repository.attach_candidate_set(expanded.experiment_id, candidates, transition_key="retry")
+    assert repository.get_candidate_set(expanded.experiment_id) == candidates
+
+
 def test_protocol_and_strategy_version_bindings_are_required(tmp_path) -> None:
     db_path = tmp_path / "missing.db"
     strategies = StrategyRepository(db_path)
